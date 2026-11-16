@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions
+    url: https://github.com/ParkBeomsoo/beom-workbench/discussions
+    about: Ask and answer questions in Discussions.
+  - name: Security problem
+    url: https://github.com/ParkBeomsoo/beom-workbench/security/advisories/new
+    about: Report vulnerabilities privately, not in a public issue.

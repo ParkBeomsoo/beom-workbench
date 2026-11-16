@@ -213,6 +213,13 @@ class Window(QMainWindow):
         self.view.setContextMenuPolicy(Qt.NoContextMenu)
         self.view.load(QUrl.fromLocalFile(str(web_root() / "index.html")))
         self.setCentralWidget(self.view)
+        self.tray = QSystemTrayIcon(app_icon(), self)
+        self.tray.setToolTip(APP_NAME)
+        self.tray.activated.connect(lambda *_: (self.showNormal(), self.activateWindow()))
+        self.tray.messageClicked.connect(lambda: (self.showNormal(), self.activateWindow()))
+        self.tray.show()
+        self.api.notify.connect(self._notify)
+        self.api.attention.connect(self._flash)
 
     def closeEvent(self, e) -> None:  # noqa: N802
         """닫을 때 이 창이 돌리던 작업을 멈춘다 — 에이전트·개발 서버가 감시 없이 계속 폴더를 고치지 않게."""
@@ -230,13 +237,6 @@ class Window(QMainWindow):
             for rid in busy:
                 self.api.threads[rid].join(max(0.1, until - time.monotonic()))
         super().closeEvent(e)
-        self.tray = QSystemTrayIcon(app_icon(), self)
-        self.tray.setToolTip(APP_NAME)
-        self.tray.activated.connect(lambda *_: (self.showNormal(), self.activateWindow()))
-        self.tray.messageClicked.connect(lambda: (self.showNormal(), self.activateWindow()))
-        self.tray.show()
-        self.api.notify.connect(self._notify)
-        self.api.attention.connect(self._flash)
 
     def _notify(self, title: str, body: str) -> None:
         """창을 보고 있으면 띄우지 않는다. 알림을 누르면 창이 앞으로 온다. 작업 표시줄도 함께 깜빡인다."""

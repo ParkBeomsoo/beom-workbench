@@ -7,7 +7,9 @@
 **编码代理的工作台 — 先规划，再按需求或参考仓库实现，并按你批准的验收标准验证**
 
 
-![version](https://img.shields.io/badge/version-0.1.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+> 应用界面目前只有韩语 (计划支持英语)。代理会用与需求相同的语言工作和汇报。
+
+![version](https://img.shields.io/badge/version-0.1.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 与其“粗略读一遍别人写的功能再照着做”，不如对整个代码库进行分析并为每条结论附上证据（文件:行号），
 再通过程序确认移植后的结果与原项目行为一致。本工具包同时提供技能、MCP 工具和 CLI，让 Claude Code 等 AI 代理能够按流程使用；
@@ -407,7 +409,7 @@ beom-workbench compare <基准 pid> <新 pid> --save                # 变更之�
 | `bin/` · `engines/` · `node/` | `setup` 安装的分析引擎 | 可以 — 用 `setup` 重装 |
 
 与代理的对话原文保存在各 CLI 原本的位置 (`~/.claude/projects`、`~/.codex/sessions`)，通过会话 id 继续。
-目标文件夹里只写入 `.beom/cases.json` (验收用例) — 提交或忽略都可以。
+工具把工作文件放在目标文件夹的 `.beom/` 中 (验收用例、策划文档、截图)，不会提交它们 — 只提交程序本身。在 git 仓库中，`.beom/` 会写入该仓库的本地排除列表，因此 `git status` 中也看不到。
 
 | | Claude Code | Codex | 本工具包 |
 |---|---|---|---|
@@ -470,6 +472,6 @@ beom-workbench data --set-cleanup 30       # 启动时自动清理 (0 = 关闭)
 
 - 任何人都可以在未修改的状态下安装·使用（包括公司业务·商业用途）。使用本工具包产出的成果归用户所有。
 - 修改·创作衍生作品·分发修改版·将部分代码纳入其他软件，均需获得作者的书面许可。
-- 改进建议请通过本仓库的 Issue·Pull Request 提交。
+- 改进建议请通过本仓库的 Issue·Pull Request 提交 (Pull Request 不会直接合并，由维护者采纳并反映)。
 
 所使用的库·外部引擎各自遵循其自身的许可 — [THIRD_PARTY.md](THIRD_PARTY.md)。

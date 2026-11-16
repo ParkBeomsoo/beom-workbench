@@ -32,6 +32,8 @@ def _load_json(value: str) -> Any:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="beom-workbench")
+    from beom_workbench import __version__
+    parser.add_argument("--version", action="version", version=f"beom-workbench {__version__}")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("doctor", help="엔진 점검")

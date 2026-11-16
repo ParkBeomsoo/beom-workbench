@@ -32,6 +32,9 @@ function toast(text, ms) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), ms || 3200);
 }
 const fmtMoney = (v) => v == null ? "—" : "$" + Number(v).toFixed(2);
+// 비용을 알려 주지 않는 에이전트(Codex 등)는 토큰 수로 — 사용량이 비어 보이지 않게
+const fmtTokens = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
+const usageText = (run) => run.cost_usd ? fmtMoney(run.cost_usd) : run.tokens ? "토큰 " + fmtTokens(run.tokens) : null;
 function ago(iso) {
   if (!iso) return "";
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -647,7 +650,7 @@ function renderRun() {
       writing ? h("span", { class: "wr", text: writing }) : null,
       h("span", { class: "el", text: `${agentName(run.agent)} · ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}` })));
   } else S.startedAt = null;
-  const cbarSig = JSON.stringify([run.agent, run.model, run.effort, run.round, run.max_rounds, run.cost_usd, D.policy, D.running, run.status, run.accepted]);
+  const cbarSig = JSON.stringify([run.agent, run.model, run.effort, run.round, run.max_rounds, run.cost_usd, run.tokens, D.policy, D.running, run.status, run.accepted]);
   if (cbarSig !== S.sig.cbar) {  // 메뉴가 열린 채로 1.5초마다 다시 그려지지 않게
     S.sig.cbar = cbarSig;
     const opt = (patch) => call("setRunOptions", run.id, JSON.stringify(patch)).then((r) => r.ok && (toast("바꿨습니다 — 다음 라운드부터 적용"), refresh()));
@@ -657,7 +660,7 @@ function renderRun() {
       h("div", { class: "tl" },
         pill("shield", "권한", modeLabel(D.policy), (b) => permMenu(b, D.policy, (p) => opt({ policy: p }), () => optionsPop(b, true, run))),
         h("button", { class: "iconbtn", title: "실행 옵션 (라운드·계획 승인·세부 권한)", onclick: (e) => { e.stopPropagation(); optionsPop(e.currentTarget, false, { ...run, policy: D.policy, plan_approval: D.plan_approval }); } }, ico("sliders")),
-        h("span", { class: "meta", text: `${run.round || 0}회째${run.max_rounds ? ` / ${run.max_rounds}` : ""}` + (run.cost_usd ? ` · ${fmtMoney(run.cost_usd)}` : "") })),
+        h("span", { class: "meta", text: `${run.round || 0}회째${run.max_rounds ? ` / ${run.max_rounds}` : ""}` + (usageText(run) ? " · " + usageText(run) : "") })),
       h("div", { class: "tr" },
         resumable && run.round ? h("button", { class: "btn quiet sm", title: "메시지 없이 이어서 진행", onclick: startRun }, ico("play"), "이어서") : null,
         pill("agent", "모델 · 노력 (다음 라운드부터)", brainLabel(run.agent, run.model, run.effort), (b) => brainPop(b, () => cur,
@@ -828,7 +831,7 @@ function cards() {
   // 질문이 있으면 승인 카드가 알려 준다 — 답하면 에이전트가 기준·계획에 반영한 뒤 다시 확인을 요청한다
   const asking = D.asks.some((a) => a.kind === "question");
   const plan = D.plan;
-  const planOpen = plan && plan.steps && plan.steps.length && !plan.approved;
+  const planOpen = plan && plan.steps && plan.steps.length && !plan.approved && D.run.status !== "done";  // 끝난 작업에 승인할 계획은 없다
   // 처음 한 번 확인: 기준과 계획이 함께 떠 있으면 한 장으로 — 사용자가 무엇을 승인하는지 위에서부터 읽히게
   // 계획까지 세우는 중이면 기준만 먼저 띄우지 않는다 — 기준과 계획은 한 장으로 한 번에 확인한다
   const waitPlan = D.running && D.run.mode === "request" && D.plan_approval !== false && !(plan && plan.steps && plan.steps.length);
@@ -838,6 +841,8 @@ function cards() {
     // 기준과 계획은 함께 승인하므로 둘 다 보여 준다 — 보지 않은 계획(디자인 방향 포함)이 승인되지 않게
     if (planOpen) out.push(planCard(plan, asking));
   }
+  // 레퍼런스: 원본 라이선스 경고 — 사람이 보고 옮겨도 된다고 확인해야 완료할 수 있다 (에이전트는 대신 못 한다)
+  if (D.license && !D.license.acked && !D.run.accepted) out.push(licenseCard(D.license));
   for (const a of D.asks) out.push(a.kind === "permission" ? permCard(a) : askCard(a));  // 맨 아래 — 화면에 바로 보이게
   if (D.handoff) out.push(handoffCard(D.handoff));
   for (const c of out) if (!c.classList.contains("done")) c.classList.add("decide");
@@ -1099,6 +1104,18 @@ function decisionTable(plan, bare) {
       return row;
     }));
 }
+function licenseCard(L) {
+  return h("div", { class: "card warn" },
+    h("div", { class: "ch" }, ico("shield", "chi"), h("h3", { text: "원본 라이선스 확인" }), h("span", { class: "tag", text: "직접 판단" })),
+    h("p", { class: "lead", text: L.warning }),
+    h("p", { class: "f", text: "원본 코드를 이 프로젝트에 옮겨 써도 되는지 직접 확인해 주세요 — 사내 코드라면 사용 허락이 있는지, 공개 코드라면 라이선스 조건을 지킬 수 있는지. 확인하면 남은 완료 판정으로 넘어갑니다. 옮기면 안 되면 작업을 멈추고, 원본을 보지 않고 요구사항만으로 새로 만드는 '요청사항으로 만들기'를 쓰세요." }),
+    h("div", { class: "acts" }, h("button", { class: "btn primary", onclick: async () => {
+      const r = await call("ackLicense", S.current, L.warning);
+      // start 는 이미 돌고 있으면 아무것도 하지 않는다 — 실행기가 기다리는 중이든 앱을 다시 켠 뒤든 바로 이어 간다
+      if (r.ok) { toast("확인했습니다 — 완료 판정을 이어 갑니다"); await call("start", S.current); refresh(); }
+      else toast(r.error || "확인하지 못했습니다");
+    } }, "확인했습니다 — 옮겨도 됩니다")));
+}
 function permCard(a) {
   const input = a.input || {};
   const what = (input.commands && input.commands.join("\n")) || input.command || input.file_path || input.url || JSON.stringify(input).slice(0, 300);
@@ -1176,7 +1193,8 @@ function handoffCard(o) {
   const metrics = plan
     ? [metric((B.requirements || []).length, "요구사항"), metric((B.screens || []).length, "화면"), metric((B.tests || []).length, "테스트 시나리오"),
        metric(B.open_questions || 0, "열린 질문", B.open_questions ? "warn" : "")]
-    : [D.requirements ? metric(`${D.requirements.filter((r) => r.status !== "pending").length}/${D.requirements.length}`, "구현된 요구사항") : null,
+    : [D.requirements && D.requirements.length ? metric(`${D.requirements.filter((r) => r.status !== "pending").length}/${D.requirements.length}`, "구현된 요구사항")
+       : D.items && D.items.total ? metric(`${D.items.done}/${D.items.total}`, "옮긴 항목") : null,  // 레퍼런스는 요구사항이 아니라 옮길 항목
        D.checks && D.checks.cases ? metric(`${D.checks.passed}/${D.checks.cases}`, "합격 케이스", D.checks.passed === D.checks.cases ? "ok" : "warn") : null,
        D.gates ? metric(`${D.gates.filter((g) => g.ok).length}/${D.gates.length}`, "완료 조건") : null].filter(Boolean);
   const sec = (title, list, cls, open, withCopy) => list.length ? h("details", { class: "ho-sec", open: !!open },
@@ -1186,7 +1204,7 @@ function handoffCard(o) {
     h("div", { class: "ho-top" },
       h("div", { class: "ho-badge" }, ico("check")),
       h("div", { class: "ho-title" }, h("b", { text: plan ? "기획 패키지가 준비됐습니다" : "만들고 검증까지 끝났습니다" }),
-        h("span", { text: [`${run.round}라운드`, run.cost_usd ? `$${(+run.cost_usd).toFixed(2)}` : null, o.at ? ago(o.at) : null].filter(Boolean).join(" · ") })),
+        h("span", { text: [`${run.round}라운드`, usageText(run), o.at ? ago(o.at) : null].filter(Boolean).join(" · ") })),
       h("span", { class: "tag" + (run.accepted ? " ok" : ""), text: run.accepted ? "수락함" : "검토 후 수락" })),
     head ? h("p", { class: "ho-lead" }, ...inlineMd(head)) : null,
     metrics.length ? h("div", { class: "ho-ms" }, ...metrics) : null,
@@ -1487,7 +1505,7 @@ function shotImg(path, title) {
 // ---------------------------------------------------------------- 오른쪽 패널
 function renderRight() {
   const D = S.detail; if (!D) return;
-  const sig = JSON.stringify([S.tab, D.stage, D.gates, D.requirements, D.checks, D.plan, D.items, D.run.cost_usd, D.checkpoints, S.changes, S.file, D.spec, D.handoff, D.run.round]);
+  const sig = JSON.stringify([S.tab, D.stage, D.gates, D.requirements, D.checks, D.plan, D.items, D.run.cost_usd, D.run.tokens, D.checkpoints, S.changes, S.file, D.spec, D.handoff, D.run.round]);
   if (sig === S.sig.right) return; S.sig.right = sig;
   const right = $("#right");
   const nfiles = S.changes ? S.changes.files.length : null;
@@ -1518,7 +1536,7 @@ function progressPane(p) {
       D.run.mode === "request" ? (reqs.length ? impl / reqs.length : 0) : D.items && D.items.total ? D.items.done / D.items.total : 0),
     stat(ck.cases ? `${ck.passed}/${ck.cases}` : "—", "케이스 통과", ck.cases ? ck.passed / ck.cases : 0),
     stat(gates.length ? `${gok}/${gates.length}` : "—", "완료 조건", gates.length ? gok / gates.length : 0),
-    stat(fmtMoney(D.run.cost_usd), `사용량 · ${D.run.round || 0}라운드`))));
+    stat(usageText(D.run) || "—", `사용량 · ${D.run.round || 0}라운드`))));
   if (D.plan && D.plan.steps && D.plan.steps.length) {
     const done = D.plan.steps.filter((s) => s.status === "done").length;
     p.append(h("div", { class: "sec plan" }, h("h4", {}, "계획", h("span", { text: D.plan.approved ? `${done}/${D.plan.steps.length}` : "승인 전" })),
@@ -1530,6 +1548,8 @@ function progressPane(p) {
     h("span", { class: "s " + (r.status === "ported" ? "ok" : r.status === "omitted" ? "" : "wait"), text: { ported: "구현됨", omitted: "제외", pending: "남음", replaced: "대체" }[r.status] || r.status })))));
   if (gates.length) p.append(h("div", { class: "sec" }, h("h4", { text: "완료 조건" }),
     ...gates.map((g) => h("div", { class: "gate" + (g.ok ? " ok" : ""), title: g.name }, g.ok ? ico("check", "gi") : h("i"), g.label || g.name))));
+  // 막지 않는 참고 — 원본에 라이선스 표기가 없을 때 (완료 조건은 아니다)
+  if (D.license_note) p.append(h("div", { class: "sec" }, h("h4", { text: "참고" }), h("p", { class: "f", text: D.license_note })));
 }
 function stat(v, l, ratio) {
   return h("div", { class: "stat" }, h("div", { class: "v", text: v }), h("div", { class: "l", text: l }),
