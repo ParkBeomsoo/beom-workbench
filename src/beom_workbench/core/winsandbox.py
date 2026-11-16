@@ -22,7 +22,9 @@ from ctypes import wintypes as wt
 from pathlib import Path
 
 SID_TEXT = "S-1-5-21-1141592653-589793238-462643383-4242"  # 이 툴킷의 격리 SID (계정은 없다 — ACL·제한 목록에만 쓰는 고정 값)
-_GRANTED = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "beom-workbench-sandbox" / "granted.txt"
+# 권한을 준 폴더 기록 — BEOM_WORKBENCH_SANDBOX_DIR 로 옮길 수 있다 (시험이 사용자 기록에 남지 않게)
+_GRANTED = Path(os.environ.get("BEOM_WORKBENCH_SANDBOX_DIR")
+                or Path(os.environ.get("LOCALAPPDATA", Path.home())) / "beom-workbench-sandbox") / "granted.txt"
 
 if sys.platform == "win32":
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)

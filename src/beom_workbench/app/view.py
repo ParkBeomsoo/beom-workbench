@@ -552,7 +552,7 @@ def _detail(settings, run_id: str) -> dict:
                                            "feature", "agent", "model", "effort", "accepted", "cost_usd", "created_at",
                                            "limit_until", "error", "streaming", "work_branch", "tampered", "sandbox")},
            "mode_text": MODE_TEXT[mode], "status": label, "tone": tone, "stages": STAGES[mode], "stage": _stage(run, st),
-           "activity": _activity(run, asks, len(reviews)), "plan": run.get("plan"), "handoff": run.get("handoff"), "asks": asks,
+           "activity": _activity(run, asks, len(reviews), bool(st and (st.get("license") or {}).get("acked") is False)), "plan": run.get("plan"), "handoff": run.get("handoff"), "asks": asks,
            "feed": feed(settings, run, live=run.get("status") == "running" and runner.lock_owner(settings, run_id) is not None),
            "messages": run.get("messages") or [],
            "plan_sig": sig(plan_core(run["plan"])) if (run.get("plan") or {}).get("steps") else None,
@@ -576,6 +576,7 @@ def _detail(settings, run_id: str) -> dict:
                            **({"now_ok": st["gates"].get(k)} if at_finish and not accepted and st["gates"].get(k) != v else {})}
                           for k, v in sorted(shown.items(), key=lambda kv: order.get(kv[0], 99))], next_step=st["next_step"],
                    gates_at=(fin or {}).get("created_at") if at_finish else None, accepted_done=accepted,
+                   license=st.get("license"),
                    reviews=_reviews(reviews, conn, run["port_id"]) if reviews else None, review_sig=sig(reviews),
                    requirements=[{"id": r["item_id"], "text": r["label"], "status": r["status"], "target": r["target_ref"]}
                                  for r in conn.execute("SELECT item_id, label, status, target_ref FROM port_map WHERE port_id = ? "
@@ -613,9 +614,17 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _activity(run: dict, asks: list, reviews: int = 0) -> dict | None:
+def _activity(run: dict, asks: list, reviews: int = 0, license_open: bool = False) -> dict | None:
     """지금 하는 일 한 줄 — 사람을 기다리는 동안에는 에이전트가 마지막에 남긴 '…하는 중'이 아니라 기다리는 이유를 보여 준다."""
     s = run.get("status")
+    if s == "done":  # 끝난 작업에 '…하는 중'(마지막 활동)을 남겨 두지 않는다
+        return None if run.get("accepted") else {"text": "끝났습니다 — 인수인계를 보고 수락하거나, 고칠 점을 보내 주세요"}
+    if s == "waiting_approval" and license_open and not reviews:
+        return {"text": "원본 라이선스 확인을 기다리는 중 — 아래 카드를 보고 옮겨도 되는지 확인해 주세요"}
+    plan_open = bool((run.get("plan") or {}).get("steps")) and not (run.get("plan") or {}).get("approved") \
+        and run.get("plan_approval", True) and run.get("confirm_at", "start") != "end"
+    if s == "waiting_approval" and not reviews and not license_open and not plan_open and not asks:
+        return {"text": "확인할 것을 모두 처리했습니다 — 곧 이어서 진행합니다 (멈춰 있으면 '이어서'를 누르세요)"}
     if s in ("waiting_approval", "waiting_plan"):
         return {"text": "확인을 기다리는 중 — 아래 '시작 전 확인'을 보고 승인하거나 고칠 점을 보내 주세요"}
     if s == "waiting_answer" or asks:

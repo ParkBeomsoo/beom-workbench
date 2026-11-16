@@ -5,7 +5,7 @@
 **코딩 에이전트의 작업대 — 기획하고, 요청이나 참고 저장소로 만들고, 승인한 합격 기준대로 되는지 검증합니다**
 
 
-![version](https://img.shields.io/badge/version-0.1.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 에이전트가 "다 됐다"고 할 때까지 맡기는 대신, 요구사항과 합격 케이스를 먼저 정하고, 에이전트는 자기 브랜치에서만 일하게 하고,
 결과가 그 기준을 채우는지(옮겨 오는 경우 원본과 같은 동작인지) 프로그램으로 확인합니다. 분석 결론에는 모두 근거(파일:줄)가 붙습니다. Claude Code 같은 AI 에이전트가 절차를 따라 쓰도록
@@ -87,7 +87,7 @@ Windows 10/11 이 주 플랫폼입니다(매일 사용). macOS·Linux 도 같은
 4. 케이스가 옮길 함수를 모두 실행함 (원본 커버리지, 안 되면 내 코드 커버리지)
 5. 사람 확인 항목이 모두 승인됨 (차이 허용·생략·케이스 변경·기대값, 승인 뒤 내용이 바뀌면 무효)
 6. 기록이 툴킷 밖에서 바뀌지 않음 (원장 해시 사슬·골든 해시)
-7. 라이선스 확인이 필요한 파일이 없음
+7. 라이선스 확인이 필요한 파일이 없음 — 또는 사용자가 라이선스 경고를 직접 확인함 (앱이 카드로 묻고, 에이전트는 대신 못 함)
 
 모든 포팅 명령 응답에는 `next_step`(다음에 할 일)이 붙습니다.
 
@@ -293,6 +293,10 @@ push·배포·폴더 밖 삭제·시스템 변경은 언제나 거절합니다. 
 - 에이전트의 **질문**(번호·줄바꿈이 살아 있고, 선택지는 한 줄에 하나, *추천대로* 단추)과 **권한 요청** (`Y` 허용 · `N` 거절).
   묻고 답한 것은 대화 흐름에 그대로 남습니다.
 - 마지막 **인수인계**: 수락하거나, 메시지를 보내 계속 — 멈췄거나 끝난 실행에 메시지를 보내면 이어서 진행합니다.
+  추가 요청은 정해 둔 기준 위에서 고치고 관련 케이스만 다시 검증합니다 (범위가 바뀌는 요청이면 기준부터 고쳐 확인받음).
+  수락했던 작업도 추가 요청이 끝나면 바뀐 결과를 다시 수락합니다. 기획·분석부터 다시 하려면 새 작업으로 시작합니다.
+- 레퍼런스 모드에서 원본 라이선스가 제한형이거나 확인되지 않으면 (사내 저장소에 LICENSE 파일이 없을 때 등) **라이선스 카드**:
+  옮겨 써도 되는지 확인하면 완료 판정으로 넘어갑니다. 그동안 에이전트는 라운드를 쓰지 않고 기다립니다.
 
 승인은 앱 안에서만, 화면에 보인 내용 그대로에 묶여 원장에 기록됩니다. 에이전트가 닿을 수 있는 승인 경로는 없습니다.
 
@@ -577,6 +581,7 @@ beom-workbench data --revoke-sandbox       # Windows: 격리 실행에 준 폴�
 | `BEOM_WORKBENCH_HOME` | `~/.beom-workbench` | 원장·clone·엔진·백업 위치 |
 | `BEOM_WORKBENCH_CONTAINER` | `auto` | 격리 실행 엔진 `auto`·`docker`·`wsl`·`none` |
 | `BEOM_WORKBENCH_WSL_DISTRO` | `beom-sandbox` | Windows 에서 쓸 WSL 배포판 |
+| `BEOM_WORKBENCH_SANDBOX_DIR` | `%LOCALAPPDATA%eom-workbench-sandbox` | Windows: 내장 격리 실행이 권한을 준 폴더 기록 위치 |
 | `BEOM_WORKBENCH_LEASE_SECONDS` | `3600` | 분석 단위 임대 시간 |
 | `BEOM_WORKBENCH_UNIT_MAX_LINES` / `_UNIT_MAX_CHARS` | `1500` / `45000` | 분석 단위 크기 상한 |
 | `BEOM_WORKBENCH_CONTEXT_MAX_CHARS` | `24000` | `context` 한 페이지 크기 |
@@ -629,6 +634,7 @@ beom-workbench data --revoke-sandbox       # Windows: 격리 실행에 준 폴�
 | **격리 실행 · 구성 필요** | Linux 에서 `bubblewrap`·`socat` 이 없습니다 — **구성** 을 누릅니다. Windows 는 앱에 들어 있고 macOS 는 기본 내장이라 설치할 것이 없습니다. |
 | Ubuntu 24.04 이상에서 설치 후에도 **격리 실행 · 구성 필요** | `bubblewrap` 은 깔렸지만 AppArmor 가 필요한 사용자 이름공간을 막습니다 (26.04 는 `bubblewrap` 안에서도). 앱은 실제로 샌드박스를 띄워 확인합니다. **구성** 을 누르면 시스템 전체에서 그 제한을 풉니다 (관리자 암호, 다시 켜도 유지): `kernel.apparmor_restrict_unprivileged_userns=0` 을 설정하고, 있으면 `bwrap-userns-restrict` 프로필을 끕니다. |
 | **분석 엔진 · 설치** 가 *rate limit* 으로 실패 | 회사망처럼 여러 PC 가 주소 하나를 쓰면 GitHub API 의 시간당 한도를 같이 씁니다. 그러면 같은 릴리스 파일을 API 없이 바로 받고, 체크섬 확인은 그대로 합니다. `GITHUB_TOKEN` 을 두면 한도도 늘어납니다. |
+| 레퍼런스 모드가 *could not load saved runtime settings* 로 실패 | 분석 엔진은 상위 폴더에 다른 계정의 쓰기 권한이 있는 폴더를 거부합니다. 데이터 폴더를 옮긴 경우에만 생깁니다 (`BEOM_WORKBENCH_HOME` 을 `AppData` 아래로 두는 등) — 사용자 폴더 아래(기본값 `~/.beom-workbench`)에 둡니다. |
 | 에이전트 설치가 *Get-FileHash is not recognized* 로 실패 | 앱을 PowerShell 7 터미널에서 켜서, 그 모듈 경로가 Windows PowerShell 을 깨뜨린 경우입니다. 이제 앱이 시작할 때 정리합니다 — 앱을 한 번 다시 켭니다. |
 | **분석 엔진 · 설치 필요** | 레퍼런스 모드가 원본 저장소를 분석할 때 쓰는 엔진 두 가지(구조 지도·진입점 규칙)입니다. **설치** 를 누르면 공식 배포본을 체크섬으로 확인해 설치합니다. |
 | `develop` 에서 하던 커밋 안 된 변경이 없어졌다 | `develop` 에서 작업을 시작하면 그 변경을 실행 이름을 붙인 stash 에 보관합니다 (`git stash list`). `develop` 으로 돌아가 `git stash pop` 하면 됩니다. |

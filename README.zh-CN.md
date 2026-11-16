@@ -7,7 +7,7 @@
 **编码代理的工作台 — 先规划，再按需求或参考仓库实现，并按你批准的验收标准验证**
 
 
-![version](https://img.shields.io/badge/version-0.1.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 与其“粗略读一遍别人写的功能再照着做”，不如对整个代码库进行分析并为每条结论附上证据（文件:行号），
 再通过程序确认移植后的结果与原项目行为一致。本工具包同时提供技能、MCP 工具和 CLI，让 Claude Code 等 AI 代理能够按流程使用；

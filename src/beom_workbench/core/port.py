@@ -155,6 +155,12 @@ def _owner_class(by_path, s: dict) -> dict | None:
     return best
 
 
+def _files_text(paths: list[str], limit: int = 5) -> str:
+    """'a.py, b.py 외 3개' — 사람이 읽는 파일 목록."""
+    shown = ", ".join(paths[:limit])
+    return f"{shown} 외 {len(paths) - limit}개" if len(paths) > limit else shown
+
+
 def slice_(conn, proj: dict, targets: list[str], depth: int = 10, within: list[str] | None = None) -> dict:
     """within: 포팅 경계(경로 접두 목록). 경계 밖으로 나가는 호출은 하나하나 따라가지 않고 'boundary' 항목으로
     남긴다 — 예) 검색 엔진 전체를 OpenSearch 로 바꿀 때 그 내부는 옮길 대상이 아니라 '대체할 의존'이다."""
@@ -320,10 +326,12 @@ def slice_(conn, proj: dict, targets: list[str], depth: int = 10, within: list[s
         "external": {"imports": {k: sorted(v) for k, v in sorted(imports.items())},
                      "calls": {k: sorted(v) for k, v in sorted(external_calls.items())}},
         "config_keys": config_keys, "tests": tests, "licenses": licenses,
+        # 사용자가 카드에서 읽는 글 — 파일 목록은 사람이 읽는 꼴로 (파이썬 목록 표기·도구 이름 없이)
         "license_warning": " / ".join(w for w in (
-            f"허용형이 아닌 라이선스 파일 {restricted} — 코드를 옮겨 쓰기 전에 조건 확인 "
-            "(다른 언어로 다시 쓰더라도 구조·표현을 그대로 옮기면 파생 저작물이 될 수 있음)" if restricted else "",
-            f"라이선스를 확인하지 못한 파일 {unknown_lic} — license 스캔 또는 직접 확인" if unknown_lic else "") if w) or None,
+            f"허용형이 아닌 라이선스의 원본 파일 {_files_text(restricted)} — 옮겨 쓰기 전에 조건을 확인하세요 "
+            "(다른 언어로 다시 쓰더라도 구조·표현을 그대로 옮기면 파생 저작물이 될 수 있습니다)" if restricted else "",
+            f"라이선스를 확인하지 못한 원본 파일 {_files_text(unknown_lic)} — 원본 저장소에서 라이선스 표기를 찾지 못했습니다"
+            if unknown_lic else "") if w) or None,
         "open_unknowns": open_unknowns,
         "limitations": ["dispatch 갈래는 인터페이스 메서드 이름 기준 — 인터페이스로 잡히지 않은 덕 타이핑·콜백은 빠질 수 있음",
                         *(["경계(within) 밖은 구조 지도 호출만 boundary 로 남김 — 이름 기반 갈래는 경계 밖으로 따라가지 않음"]
@@ -484,6 +492,32 @@ def map_items(conn, port_id: str, updates: list[dict], actor: str = "agent") -> 
     return out
 
 
+def _license_ok(conn, port_id: str, warning: str | None) -> bool:
+    """라이선스 경고가 없거나, 사람이 지금 그 경고를 보고 옮겨도 된다고 확인했다 (경고 문구가 바뀌면 다시 확인)."""
+    if not warning:
+        return True
+    for r in conn.execute("SELECT payload FROM port_log WHERE port_id = ? AND action = 'license_ack'", (port_id,)).fetchall():
+        try:
+            if json.loads(r["payload"]).get("warning") == warning:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def ack_license(conn, port_id: str, *, channel: str, approved_by: str | None = None) -> dict:
+    """사용자가 라이선스 경고를 확인했다 — 원본을 옮겨 써도 된다는 사람의 판단. 결정 기록(사슬)에 남긴다.
+    에이전트 도구에는 없다 (앱의 확인 카드에서만)."""
+    port = _port(conn, port_id)
+    warning = port["slice"].get("license_warning")
+    if not warning:
+        return {"acked": False, "reason": "라이선스 경고가 없습니다"}
+    if _license_ok(conn, port_id, warning):
+        return {"acked": True, "already": True}
+    guard.record(conn, port_id, "license_ack", {"warning": warning, "channel": channel, "approved_by": approved_by})
+    return {"acked": True}
+
+
 def _port(conn, port_id: str) -> dict:
     row = ledger.row_to_dict(conn.execute("SELECT * FROM port WHERE id = ?", (port_id,)).fetchone())
     if row is None:
@@ -631,7 +665,7 @@ def status_(conn, port_id: str, brief: bool = False, fp_max_age: float = 0) -> d
         GATE_ADEQUACY: adequacy["ok"],
         GATE_HUMAN: all(h["approved"] for h in human),
         GATE_INTEGRITY: integ["ok"],
-        GATE_LICENSE: not port["slice"].get("license_warning"),
+        GATE_LICENSE: _license_ok(conn, port_id, port["slice"].get("license_warning")),
     }
     request_mode = make_mod.is_request(port)
     req_state = None
@@ -661,6 +695,9 @@ def status_(conn, port_id: str, brief: bool = False, fp_max_age: float = 0) -> d
            "approvals": {"pending": sum(1 for h in human if not h["approved"]),
                          "approved": sum(1 for h in human if h["approved"])},
            "last_check": {k: last[k] for k in ("kind", "cases", "passed", "failed", "evidence_id", "created_at")} if last else None}
+    warning = port["slice"].get("license_warning")
+    if warning:  # 화면이 확인 카드를 그리도록 (간략 판정에도)
+        out["license"] = {"warning": warning, "acked": gates[GATE_LICENSE]}
     if not integ["ok"] or integ.get("legacy"):
         out["integrity"] = integ
     if not brief:
@@ -1286,7 +1323,7 @@ def commands_in_cases(settings: Settings, proj_id: str, port_id: str, cases_file
 
 
 def _load_cases(path: Path) -> tuple[dict, list[dict]]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))  # Windows PowerShell 은 BOM 을 붙여 쓴다
     defaults = data.get("defaults", {}) if isinstance(data, dict) else {}
     cases = data["cases"] if isinstance(data, dict) else data
     if not cases:
@@ -1613,7 +1650,7 @@ def _run_source_cases(conn, proj, settings, port, cases, *, url, cmd, cli, trust
 def _adequacy(conn, proj: dict, port: dict, report: Path, *, roots: list[str], command: str | None) -> dict:
     """원본을 케이스로 돌린 커버리지에서, 슬라이스 함수가 모두 실행됐는지와 안 거친 줄을 낸다.
     같은 리포트를 coverage 원장에도 적재 → 실행된 심볼에 L3 근거."""
-    fmt, data = runtime.parse(report.read_text(encoding="utf-8", errors="replace"))
+    fmt, data = runtime.parse(report.read_text(encoding="utf-8-sig", errors="replace"))
     files = {r["path"] for r in conn.execute("SELECT path FROM file").fetchall()}
     mapping, _ = runtime._match_paths(list(data), files, roots + [proj["repo_dir"]])
     by_repo = {mapping[k]: data[k] for k in mapping}
@@ -1898,7 +1935,7 @@ def _target_adequacy(conn, port: dict, report: Path, fp: str) -> dict:
     """대상(내 코드)을 케이스로 돌린 커버리지에서, ported 로 매핑한 함수가 모두 실행됐는지.
     원본을 계측할 수 없을 때(릴리스 빌드 바이너리 등)의 대안 — 원본 쪽 분기를 다 거쳤다는 뜻은 아니다."""
     root = Path(port["target_root"])
-    fmt, data = runtime.parse(report.read_text(encoding="utf-8", errors="replace"))
+    fmt, data = runtime.parse(report.read_text(encoding="utf-8-sig", errors="replace"))
     norm = {k.replace("\\", "/").lower(): v for k, v in data.items()}
 
     def find(rel: str):

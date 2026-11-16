@@ -828,7 +828,7 @@ function cards() {
   // 질문이 있으면 승인 카드가 알려 준다 — 답하면 에이전트가 기준·계획에 반영한 뒤 다시 확인을 요청한다
   const asking = D.asks.some((a) => a.kind === "question");
   const plan = D.plan;
-  const planOpen = plan && plan.steps && plan.steps.length && !plan.approved;
+  const planOpen = plan && plan.steps && plan.steps.length && !plan.approved && D.run.status !== "done";  // 끝난 작업에 승인할 계획은 없다
   // 처음 한 번 확인: 기준과 계획이 함께 떠 있으면 한 장으로 — 사용자가 무엇을 승인하는지 위에서부터 읽히게
   // 계획까지 세우는 중이면 기준만 먼저 띄우지 않는다 — 기준과 계획은 한 장으로 한 번에 확인한다
   const waitPlan = D.running && D.run.mode === "request" && D.plan_approval !== false && !(plan && plan.steps && plan.steps.length);
@@ -838,6 +838,8 @@ function cards() {
     // 기준과 계획은 함께 승인하므로 둘 다 보여 준다 — 보지 않은 계획(디자인 방향 포함)이 승인되지 않게
     if (planOpen) out.push(planCard(plan, asking));
   }
+  // 레퍼런스: 원본 라이선스 경고 — 사람이 보고 옮겨도 된다고 확인해야 완료할 수 있다 (에이전트는 대신 못 한다)
+  if (D.license && !D.license.acked && !D.run.accepted) out.push(licenseCard(D.license));
   for (const a of D.asks) out.push(a.kind === "permission" ? permCard(a) : askCard(a));  // 맨 아래 — 화면에 바로 보이게
   if (D.handoff) out.push(handoffCard(D.handoff));
   for (const c of out) if (!c.classList.contains("done")) c.classList.add("decide");
@@ -1099,6 +1101,18 @@ function decisionTable(plan, bare) {
       return row;
     }));
 }
+function licenseCard(L) {
+  return h("div", { class: "card warn" },
+    h("div", { class: "ch" }, ico("shield", "chi"), h("h3", { text: "원본 라이선스 확인" }), h("span", { class: "tag", text: "직접 판단" })),
+    h("p", { class: "lead", text: L.warning }),
+    h("p", { class: "f", text: "원본 코드를 이 프로젝트에 옮겨 써도 되는지 직접 확인해 주세요 — 사내 코드라면 사용 허락이 있는지, 공개 코드라면 라이선스 조건을 지킬 수 있는지. 확인하면 남은 완료 판정으로 넘어갑니다. 옮기면 안 되면 작업을 멈추고, 원본을 보지 않고 요구사항만으로 새로 만드는 '요청사항으로 만들기'를 쓰세요." }),
+    h("div", { class: "acts" }, h("button", { class: "btn primary", onclick: async () => {
+      const r = await call("ackLicense", S.current, L.warning);
+      // start 는 이미 돌고 있으면 아무것도 하지 않는다 — 실행기가 기다리는 중이든 앱을 다시 켠 뒤든 바로 이어 간다
+      if (r.ok) { toast("확인했습니다 — 완료 판정을 이어 갑니다"); await call("start", S.current); refresh(); }
+      else toast(r.error || "확인하지 못했습니다");
+    } }, "확인했습니다 — 옮겨도 됩니다")));
+}
 function permCard(a) {
   const input = a.input || {};
   const what = (input.commands && input.commands.join("\n")) || input.command || input.file_path || input.url || JSON.stringify(input).slice(0, 300);
@@ -1176,7 +1190,8 @@ function handoffCard(o) {
   const metrics = plan
     ? [metric((B.requirements || []).length, "요구사항"), metric((B.screens || []).length, "화면"), metric((B.tests || []).length, "테스트 시나리오"),
        metric(B.open_questions || 0, "열린 질문", B.open_questions ? "warn" : "")]
-    : [D.requirements ? metric(`${D.requirements.filter((r) => r.status !== "pending").length}/${D.requirements.length}`, "구현된 요구사항") : null,
+    : [D.requirements && D.requirements.length ? metric(`${D.requirements.filter((r) => r.status !== "pending").length}/${D.requirements.length}`, "구현된 요구사항")
+       : D.items && D.items.total ? metric(`${D.items.done}/${D.items.total}`, "옮긴 항목") : null,  // 레퍼런스는 요구사항이 아니라 옮길 항목
        D.checks && D.checks.cases ? metric(`${D.checks.passed}/${D.checks.cases}`, "합격 케이스", D.checks.passed === D.checks.cases ? "ok" : "warn") : null,
        D.gates ? metric(`${D.gates.filter((g) => g.ok).length}/${D.gates.length}`, "완료 조건") : null].filter(Boolean);
   const sec = (title, list, cls, open, withCopy) => list.length ? h("details", { class: "ho-sec", open: !!open },

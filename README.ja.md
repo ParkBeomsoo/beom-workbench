@@ -7,7 +7,7 @@
 **コーディングエージェントの作業台 — 企画し、要望や参考リポジトリから作り、承認した合格基準どおりかを検証します**
 
 
-![version](https://img.shields.io/badge/version-0.1.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 他人が作った機能を「ざっと読んで真似して作る」のではなく、コード全体を根拠(ファイル:行)付きで分析し、
 移植した結果がオリジナルと同じ動作をするかをプログラムで確認します。Claude Code のような AI エージェントが手順どおりに使えるよう

@@ -283,14 +283,23 @@ class Api(QObject):
                                 effort=v.get("effort") or None, confirm_at=v.get("confirm_at") or "start",
                                 new_branch=v.get("new_branch", True) is not False, sandbox=v.get("sandbox", True) is not False)
             if v["mode"] == "reference":
-                conn, proj = project.load(self.settings, run["project_id"])
-                if not proj.get("inventory_at"):
-                    inventory.build(conn, self.settings, proj, False)
+                try:
+                    conn, proj = project.load(self.settings, run["project_id"])
+                    if not proj.get("inventory_at"):
+                        inventory.build(conn, self.settings, proj, False)
+                except Exception:
+                    # 원본을 분석하지 못하면 진행할 수 없는 실행이다 — 목록에 '준비됨'으로 남기지 않는다 (오류는 화면에 알린다)
+                    from beom_workbench.core import storage
+                    storage.trash_run(self.settings, run["id"])
+                    raise
             for note in notes:
                 inbox.log(self.settings, run["id"], "note", text=note, tone="warn")
             self.created.emit(json.dumps({"run_id": run["id"], "start": bool(v.get("start", True))}))
         except Exception as e:  # noqa: BLE001
-            self.created.emit(json.dumps({"error": getattr(e, "message", None) or f"{type(e).__name__}: {e}"}, ensure_ascii=False))
+            msg = getattr(e, "message", None) or f"{type(e).__name__}: {e}"
+            if getattr(e, "recovery", None):
+                msg += f" — {e.recovery}"
+            self.created.emit(json.dumps({"error": msg}, ensure_ascii=False))
 
     def _attach(self, v: dict) -> tuple[str, list[str]]:
         """첨부한 기획서·문서·링크를 대상 폴더의 .beom/brief/ 에 두고 요청에 '먼저 읽으라'고 적는다 (에이전트 샌드박스 안).
@@ -858,6 +867,20 @@ class Api(QObject):
 
     @Slot(str, str, result=str)
     @safe
+    def ackLicense(self, run_id, shown_warning):
+        """레퍼런스: 원본 라이선스 경고를 사람이 보고 '옮겨도 됨'으로 확인 — 본 경고 문구 그대로일 때만."""
+        run = inbox.load_run(self.settings, run_id)
+        conn, _ = project.load(self.settings, run["project_id"])
+        st = port.status_(conn, run["port_id"], brief=True)
+        if ((st.get("license") or {}).get("warning") or "") != shown_warning:
+            raise ToolError("conflict", "확인하는 사이에 라이선스 경고가 바뀌었습니다. 새 내용을 보고 다시 확인해 주세요")
+        integrity.record(run_id, "reviews")
+        out = port.ack_license(conn, run["port_id"], channel="desktop-app", approved_by=getpass.getuser())
+        inbox.log(self.settings, run_id, "license_ack", warning=shown_warning[:500])
+        return out
+
+    @Slot(str, str, result=str)
+    @safe
     def approvePlan(self, run_id, shown_sig):
         return self._approve_plan(run_id, shown_sig, {})
 
@@ -917,6 +940,11 @@ class Api(QObject):
             if run.get("status") == "done":
                 run["status"] = "stopped"
                 run.pop("handoff", None)
+                run["revision"] = True  # 끝난 결과를 고치는 요청 — 실행기가 그에 맞는 지시를 붙인다
+                if run.get("accepted"):  # 수락한 것은 그때의 결과 — 추가 요청으로 바뀐 결과는 다시 보고 수락한다
+                    run.setdefault("accepted_before", []).append(run.get("accepted_at") or view.now())
+                    run["accepted"] = False
+                    run.pop("accepted_at", None)
 
         inbox.update_run(self.settings, run_id, add)
         inbox.log(self.settings, run_id, "user_message", text=text[:4000])

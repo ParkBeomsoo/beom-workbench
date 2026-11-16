@@ -5,7 +5,7 @@
 **A desktop workbench for coding agents: plan a feature, build it from a request or from a reference repository, and verify it against acceptance criteria you approved.**
 
 
-![version](https://img.shields.io/badge/version-0.1.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.1.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 Instead of letting an agent build until it says "done", the workbench fixes the requirements and acceptance cases first, has the
 agent work on its own branch, and checks by program that the result meets them — or, when porting, that it behaves like the
@@ -89,7 +89,7 @@ New sessions and several agents working in parallel continue the same record.
 4. Cases execute every function being ported (original coverage, or your code's coverage when the original cannot be instrumented)
 5. Every item needing human review is approved (accepted differences, omissions, case changes, expected values; invalid if the content changes after approval)
 6. Records were not changed outside the toolkit (ledger hash chain, golden hash)
-7. No files need a license review
+7. No files need a license review — or you confirmed the license warning yourself (the app shows a card; the agent cannot confirm it)
 
 Every porting command response includes `next_step` (what to do next).
 
@@ -258,6 +258,10 @@ environment variable, billed per use) — both can do the same things.
   (the agent revises without approval).
 - The agent's **questions** and **permission requests** (`Y` allow · `N` refuse).
 - The **handoff** at the end: accept, or keep going by sending a message — sending a message to a stopped or finished run continues it.
+  A follow-up builds on the agreed criteria (fix, then re-verify the affected cases; criteria change only if the request changes the scope),
+  and an accepted run asks to be accepted again once the follow-up is done. To start over from planning or analysis, start a new task.
+- In reference mode, a **license card** when the original has a restrictive or unknown license (e.g. no LICENSE file in an internal repo):
+  confirm you may use the code, and the run finishes; the agent waits instead of spending rounds.
 
 Approvals are written to the ledger inside the app only, bound to exactly what was shown; there is no approval endpoint the agent can reach.
 
@@ -548,6 +552,7 @@ In the app: **Storage** at the bottom of the sidebar, and **Move to trash** in a
 | `BEOM_WORKBENCH_HOME` | `~/.beom-workbench` | location of ledgers, clones, engines and backups |
 | `BEOM_WORKBENCH_CONTAINER` | `auto` | isolated execution engine: `auto`·`docker`·`wsl`·`none` |
 | `BEOM_WORKBENCH_WSL_DISTRO` | `beom-sandbox` | WSL distribution used on Windows |
+| `BEOM_WORKBENCH_SANDBOX_DIR` | `%LOCALAPPDATA%eom-workbench-sandbox` | Windows: where the built-in isolation records which folders it granted |
 | `BEOM_WORKBENCH_LEASE_SECONDS` | `3600` | analysis unit lease time |
 | `BEOM_WORKBENCH_UNIT_MAX_LINES` / `_UNIT_MAX_CHARS` | `1500` / `45000` | analysis unit size limits |
 | `BEOM_WORKBENCH_CONTEXT_MAX_CHARS` | `24000` | page size of `context` |
@@ -605,6 +610,7 @@ In the app: **Storage** at the bottom of the sidebar, and **Move to trash** in a
 | **Isolated execution · Set up** | Linux only: `bubblewrap` and `socat` are missing — press **Set up**. Windows needs nothing (built in) and macOS has it built in. |
 | **Isolated execution · Set up** again on Ubuntu 24.04 or later | `bubblewrap` is installed but AppArmor blocks the user namespaces it needs (on 26.04 also inside `bubblewrap` itself). The app checks this by actually starting a sandbox. **Set up** lifts the restriction system-wide (admin password; it persists): sets `kernel.apparmor_restrict_unprivileged_userns=0` and, where present, disables the `bwrap-userns-restrict` profile. |
 | **Analysis engines · Install** fails with *rate limit* | Many PCs behind one address (an office network) share GitHub's hourly API limit. The installer then downloads the same release files directly, still checksum-verified; setting `GITHUB_TOKEN` also raises the limit. |
+| Reference mode fails with *could not load saved runtime settings* | The analysis engine refuses folders whose parent folders are writable by another account. This happens only if the data folder was moved (e.g. `BEOM_WORKBENCH_HOME` under `AppData`); keep it under your user folder (default `~/.beom-workbench`). |
 | Installing an agent fails with *Get-FileHash is not recognized* | The app was started from a PowerShell 7 terminal, whose module path breaks Windows PowerShell. The app now clears it at start; restart the app once. |
 | **Analysis engines · Install** | Reference mode analyzes the original repository with two engines (structure map, entry-point rules). Press **Install** — the official releases are downloaded and checksum-verified. |
 | Where did my uncommitted `develop` changes go? | Starting a task from `develop` keeps them in a stash named after the run (`git stash list`); switch back to `develop` and run `git stash pop`. |
