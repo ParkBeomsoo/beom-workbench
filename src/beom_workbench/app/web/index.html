@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' qrc:; script-src 'self' qrc:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src beomproto:">
+<title>beom-workbench</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="side">
+    <div class="brand"><div class="mark"><i></i></div><div class="bn"><b>beom-workbench</b><span class="ver" id="ver"></span></div></div>
+    <button class="newbtn" id="newbtn"><span class="plus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>새 작업<kbd>Ctrl N</kbd></button>
+    <nav id="runs" class="runs"></nav>
+    <div class="agents" id="agents"></div>
+    <button class="databtn" id="databtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><ellipse cx="12" cy="6.5" rx="7" ry="2.5"/><path d="M5 6.5v11c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-11M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/></svg>저장 공간</button>
+  </aside>
+  <main class="main" id="main"></main>
+  <aside class="right" id="right"></aside>
+</div>
+<div class="toast" id="toast"></div>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script src="proto.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

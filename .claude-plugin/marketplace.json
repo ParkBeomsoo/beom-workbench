@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "beom-workbench",
+  "owner": {
+    "name": "ParkBeomsoo",
+    "url": "https://github.com/ParkBeomsoo"
+  },
+  "plugins": [
+    {
+      "name": "beom-workbench",
+      "description": "Workbench for coding agents: plan, build from a request or a reference repository, and verify against approved acceptance criteria (skill + MCP). Requires the toolkit to be installed separately.",
+      "source": "./",
+      "version": "0.1.0",
+      "category": "development"
+    }
+  ]
+}

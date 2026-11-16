@@ -1,0 +1,67 @@
+name: smoke
+
+on:
+  push:
+    branches: [main, develop, "feature/**", "fix/**", "hotfix/**"]
+  pull_request:
+
+# 기본 토큰은 읽기만 — 점검에는 쓰기 권한이 필요 없다 (fork 에서 온 PR 도 안전하게)
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QTWEBENGINE_CHROMIUM_FLAGS: "--disable-gpu --no-sandbox"
+      PYTHONIOENCODING: utf-8
+      BEOM_WORKBENCH_HOME: ${{ github.workspace }}/.home
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # 데스크톱 앱 구성요소는 Windows·macOS — Linux 러너에는 WebEngine 시스템 라이브러리가 없다
+          if [ "$RUNNER_OS" = "Linux" ]; then pip install -e .; else pip install -e ".[app]"; fi
+      - name: CLI
+        shell: bash
+        run: |
+          beom-workbench --help > /dev/null
+          beom-workbench doctor > doctor.json || true
+          python -c "import json; d = json.load(open('doctor.json', encoding='utf-8')); print('doctor ok' if 'data' in d else d)"
+      - name: Core
+        shell: bash
+        run: |
+          git config --global user.email ci@example.invalid
+          git config --global user.name ci
+          python .github/smoke.py
+      - name: App starts (headless)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: python .github/smoke.py --app
+      - name: Sandbox setup (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # 처음 설정에서 설치하는 것과 같은 도구 — 설치 뒤 '준비됨'으로 바뀌는지
+          sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap socat
+          # 깔렸어도 실제로 격리 공간을 만드는지 — 막혀 있으면 앱의 '구성'과 같은 명령으로 풀고 다시 본다
+          python -c "from beom_workbench.core import sandbox; s = sandbox.status(); print(s); open('fix.sh', 'w').write(s.get('install') or '') if not s['ready'] else None"
+          if [ -s fix.sh ]; then bash fix.sh; fi
+          python -c "from beom_workbench.core import sandbox; s = sandbox.status(); print(s); assert s['ready'], s"
