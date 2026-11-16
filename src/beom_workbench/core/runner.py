@@ -162,6 +162,12 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
 - 효율 — 토큰과 시간을 아낀다: 파일은 필요한 부분만 읽고, 같은 파일을 되풀이해 읽지 않는다. 명령은 한 번에 끝나는 형태로
   (테스트는 감시 모드 없이 — vitest run·jest --watchAll=false, 서버·앱을 앞에 띄워 두고 기다리지 않는다, 긴 sleep 금지).
   새 창을 띄우는 명령(Start-Process·start·explorer·브라우저 열기)은 쓰지 않는다 — 사용자 화면에 창이 튀어나온다. 
+  커버리지(케이스가 만든 코드를 실행했는지)는 새 도구를 깔거나 변환 스크립트를 짜지 말고, 측정 명령을 wb_port_verify 의
+  target_coverage_cmd·target_coverage_report 로 넘겨 툴킷이 돌리게 한다 — 파이썬: `python -m coverage run --include=<파일> -m pytest -q`
+  다음 `python -m coverage json -o .beom/tmp/cov.json` / Node: `node --test --test-isolation=none --experimental-test-coverage
+  --test-reporter=lcov --test-reporter-destination=.beom/tmp/lcov.info` (설치 없음. 격리 실행 안에서는 테스트 파일마다 하위 프로세스를
+  띄우지 못해 --test-isolation=none 을 쓴다). 브라우저에서만 도는 화면 코드는 로직을 따로 .js 파일로 두어 Node
+  테스트로 부를 수 있게 만든다 (HTML 안 스크립트를 계측하려고 jsdom·c8 등을 새로 깔지 않는다).
   화면 확인은 브라우저 자동화 스크립트를 새로 짜지 말고 툴킷의 화면 케이스·wb_screen_shot 을 쓴다. 같은 명령이 같은 이유로
   두 번 실패하면 세 번째로 되풀이하지 말고 원인을 바꿔 보거나 막힌 점을 남기고 넘어간다.
 - 사용자에게 보이는 글은 모두 사용자 요청과 같은 언어로 쓴다 — 작업 중간에 남기는 한 줄 메시지도 (영어로 혼잣말하지 않는다).
@@ -244,7 +250,9 @@ choices 를 줄 때 선택지 하나는 짧은 이름(20자 안)으로 — 긴 �
    이 표는 '이 기획으로 만들기'에서 합격 기준이 된다.
 6) 점검·인계 — mcp__beom-workbench__wb_brief_check 로 문서끼리 맞물리는지 보고 problems 를 모두 고친다. 그다음
    mcp__beom-workbench__wb_handoff: summary=기획 결과 한두 문장, changes=핵심 결정 3~6개(한 줄씩), how_to_run=[".beom/brief/기획서.md 부터 읽기"],
-   checked=점검한 것(문서끼리 맞물림·시나리오 범위 등), risks=남은 열린 질문·확인할 가정(한 줄씩), follow_ups=다음에 정할 것. 사용자가 고칠 점을 보내면 관련 문서를 모두 맞춰 고치고 다시 점검·인계한다."""
+   checked=점검한 것(문서끼리 맞물림·시나리오 범위 등), risks=남은 열린 질문·확인할 가정(한 줄씩), follow_ups=다음에 정할 것. 사용자가 고칠 점을 보내면 관련 문서를 모두 맞춰 고치고 다시 점검·인계한다.
+   고칠 점은 보낸 것만 반영한다 — 새 기능·범위를 넓히는 것은 묻는 글에 '추천'으로 넣지 말고(값 확인과 한 번에 승인되지 않게)
+   인계의 follow_ups 로 남긴다. 범위를 다시 잡으려면 사용자가 새 작업으로 기획을 시작한다."""
 
 
 SKIP_DIRS = {".beom", ".git", "node_modules", ".venv", "venv", "dist", "build", "__pycache__", ".next", "target", ".idea", ".vscode"}
@@ -588,6 +596,11 @@ def _mtime(p: Path) -> int:
 FOLLOW_UP = ("\n\n이번 라운드: 끝난 작업에 사용자가 위 [사용자 추가 요청]을 보냈다 — 요청대로 고친다. 처음부터 다시 분석·기획하지 않는다. "
              "승인된 요구사항 안의 수정이면 바뀐 동작을 확인하는 합격 케이스를 고치거나 더하고(wb_port_capture) 다시 검증한다(wb_port_verify). "
              "요청이 요구사항·범위를 바꾸면 요구사항·합격 케이스를 먼저 고쳐 사용자 확인을 받은 뒤 구현한다. 끝나면 인수인계(wb_handoff)를 새로 남긴다.")
+
+# 인계까지 끝난 기획에 고칠 점이 왔다 — 반영할 것이 없으면(이미 들어 있으면) 되묻지 말고 그렇다고 인계를 다시 남긴다
+PLAN_FOLLOW_UP = ("\n\n[이번 라운드] 인계까지 끝난 기획에 사용자가 위 내용을 보냈다. 보낸 것만 관련 문서 모두에 맞춰 반영하고 다시 점검한 뒤 "
+                  "wb_handoff 로 인계를 새로 남긴다. 이미 기획에 들어 있어 바꿀 것이 없으면 문서는 그대로 두고, 어디에 이미 있는지를 "
+                  "인계 summary 에 적어 다시 인계한다 — 무엇을 할지 되묻지 않는다.")
 
 LOCK_FILE = "runner.lock"
 WATCHDOG_SEC = 15
@@ -968,6 +981,18 @@ class Runner:
                     result = {"is_error": not e.get("ok", True), **e}
                     inbox.log(self.settings, self.run_id, "agent_result", subtype=e.get("subtype"), is_error=not e.get("ok", True),
                               cost_usd=e.get("cost_usd"), turns=e.get("turns"), usage=e.get("usage"), result=e.get("text"))
+                    u = e.get("usage")
+                    if not e.get("cost_usd") and isinstance(u, dict):
+                        # 비용을 알려 주지 않는 에이전트(Codex 등)는 쓴 토큰을 센다 — 화면에 사용량이 비어 보이지 않게
+                        # 이어 받은 세션은 그 세션 전체 누적값을 알려 준다 — 세션마다 마지막 값만 두고 합한다 (비용과 같은 방식)
+                        n = int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0)
+                        sid = e.get("session_id") or run.get("session_id") or f"round-{run.get('round')}"
+                        if n:
+                            def put(r, n=n, sid=sid):
+                                per = r.setdefault("token_sessions", {})
+                                per[sid] = max(int(per.get(sid) or 0), n)
+                                r["tokens"] = sum(per.values())
+                            run = inbox.update_run(self.settings, self.run_id, put)
                 if e.get("session_id"):
                     run = self._set(session_id=e["session_id"])
                     if e.get("cost_usd"):
@@ -1084,7 +1109,8 @@ class Runner:
             only_human_left = bool(st) and all(v for k, v in st["gates"].items() if k != port.GATE_HUMAN)
             plan = run.get("plan") or {}
             plan_needed = run.get("plan_approval", True) and not end_mode
-            plan_pending = bool(plan_needed and plan.get("steps") and not plan.get("approved"))
+            # 완료 조건을 다 채운 뒤에 나온 계획은 기다리지 않는다 (끝난 일에 대한 계획 — 인계로 넘어간다)
+            plan_pending = bool(plan_needed and plan.get("steps") and not plan.get("approved")) and not (st and st["complete"])
             spec_ready = bool(waiting) or self._spec_settled(run)  # 기준을 저장했다 (승인 전이든 후든)
             # 처음에 한 번: 기준(+계획)이 모두 나오면 한 번 멈춰 함께 승인받고, 그 뒤로는 끝까지 간다
             # 마지막에 한 번: 승인 말고 다른 조건이 다 채워졌을 때만 멈춘다
@@ -1093,6 +1119,10 @@ class Runner:
                 gate_wait = bool(waiting) and "승인" in st["next_step"]
                 stop = (gate_wait and only_human_left) if end_mode else (
                     (gate_wait or plan_pending) and spec_ready and (not plan_needed or bool(plan.get("steps"))))
+                # 레퍼런스: 원본 라이선스 확인만 남았다 — 에이전트는 대신 못 하므로 라운드를 쓰지 않고 사람의 확인을 기다린다
+                license_wait = bool(st) and not st["gates"].get(port.GATE_LICENSE, True) and all(
+                    v for k, v in st["gates"].items() if k != port.GATE_LICENSE)
+                stop = stop or license_wait
                 if stop:
                     self._set(status="waiting_approval")
                     inbox.log(self.settings, self.run_id, "waiting_approval", items=len(waiting or []) + int(plan_pending))
@@ -1114,7 +1144,11 @@ class Runner:
                         p = r.get("plan") or {}
                         need = r.get("plan_approval", True) and r.get("confirm_at", "start") != "end"
                         open_plan = need and p.get("steps") and not p.get("approved")
-                        return not port.pending_reviews(project.load(self.settings, r["project_id"])[0], r["port_id"]) and not open_plan
+                        conn_ = project.load(self.settings, r["project_id"])[0]
+                        if port.pending_reviews(conn_, r["port_id"]) or open_plan:
+                            return False
+                        lic = (port.status_(conn_, r["port_id"], brief=True).get("license") or {}) if license_wait else {}
+                        return not lic or bool(lic.get("acked"))
 
                     if not self._wait(lambda: self._new_messages() or settled() or self._answered()):
                         break
@@ -1157,10 +1191,11 @@ class Runner:
             elif end_mode and not (st and st["complete"]) and not only_human_left:
                 prompt += ("\n\n이번 라운드: 사용자 확인은 마지막에 한 번 받는다 — 승인을 기다리지 말고 남은 구현·검증을 진행해 "
                            "승인 말고 다른 완료 조건을 모두 채운다. 진행을 막는 질문만 한다.")
+            elif st and st["complete"] and not run.get("handoff"):
+                # 완료 조건을 다 채웠으면 계획이 없었더라도 인계로 — 끝난 일에 계획을 새로 내고 승인을 기다리지 않게
+                prompt += "\n\n이번 라운드: 완료 조건을 모두 채웠다. wb_handoff 로 인수인계를 남긴다 (코드는 바꾸지 않는다)."
             elif (self._spec_settled(run) or (waiting and plan_needed)) and not (run.get("plan") or {}).get("steps"):
                 prompt += "\n\n이번 라운드: 구현 계획을 wb_plan_set 으로 낸다 (단계·바꿀 파일·실행할 명령). 코드는 아직 바꾸지 않는다."
-            elif st and st["complete"] and not run.get("handoff"):
-                prompt += "\n\n이번 라운드: 완료 조건을 모두 채웠다. wb_handoff 로 인수인계를 남긴다 (코드는 바꾸지 않는다)."
             sent = [m for m in run.get("messages") or [] if not m.get("delivered")]
             self._mark_delivered([(m.get("at"), m.get("text")) for m in sent])
             finish_tries = 0
@@ -1223,6 +1258,8 @@ class Runner:
                         prompt += "\n" + line
             else:
                 prompt = "\n\n".join(m["text"] for m in msgs) or "이어서 진행한다."
+                if run["mode"] == "plan" and run.get("revision") and msgs:
+                    prompt += PLAN_FOLLOW_UP
             self._mark_delivered([(m.get("at"), m.get("text")) for m in msgs])
             before = self._progress_sig(run)
             result = self._turn(run, prompt)

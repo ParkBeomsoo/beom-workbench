@@ -68,7 +68,22 @@ def mode_of(policy: dict) -> str:
 BUILD_COMMANDS = re.compile(
     r"^(npm (ci|install|test|run (build|test|lint))|pnpm (install|test|build)|yarn (install|test|build)|"
     r"cargo (build|test|check|fmt|clippy)|go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
-    r"\./gradlew (test|build)|pytest|python -m pytest|py -m pytest|uv run pytest|pip install -e \.|dotnet (build|test))\s*$")
+    r"\./gradlew (test|build)|pip install -e \.|dotnet (build|test)|"
+    # pytest 는 실행기를 바꾸지 않는 인자만 (출력·멈춤·고르기·테스트 파일) — -p(플러그인)·-c·--rootdir 같은 것은 묻는다
+    r"(?:(?:python3?|py) -m coverage run (?:--include=[\w./\\*,-]+ |--source=[\w./\\,-]+ |--omit=[\w./\\*,-]+ |--branch )*-m (?:pytest|unittest)|"
+    r"pytest|(?:python3?|py) -m pytest|uv run pytest|(?:python3?|py) -m unittest)"
+    r"(?: (?:-q|-qq|-v|-vv|-x|-s|-rA|-ra|-b|-f|--no-header|--tb=\w+|--maxfail=\d+|-k [\w.]+|discover|-s [\w./\\-]+"
+    r"|[\w./\\-]+\.py(?:::[\w:\[\]-]+)?|[\w.\\-]+[/\\]))*|"
+    r"(?:python3?|py) -m coverage (?:report|json|html|xml)(?: -m| --include=[\w./\\*,-]+| --show-missing| -o (?!\S*\.\.)[\w./\\-]+)*|"
+    # Node 내장 테스트 실행기 — 결과·커버리지 출력만 고르는 인자 (--import·--require 처럼 다른 코드를 불러오는 것은 묻는다)
+    r"node --test(?: (?:--test-isolation=none|--experimental-test-coverage|--test-reporter=[\w-]+|--test-reporter-destination=(?!\S*\.\.)[\w./\\-]+"
+    r"|--test-name-pattern=[\w.-]+|[\w./\\-]+\.(?:test\.)?[cm]?js))*)\s*$")
+# 끝에 붙여 출력만 줄이는 것 — 무엇을 실행하는지는 바꾸지 않는다 (따옴표·다른 연결 기호가 들어가면 떼지 않는다)
+OUTPUT_FILTER = re.compile(r"(?:\s*2>&1)?(?:\s*\|\s*(?:Select-Object|select|Select-String|sls|Out-String|head|tail|more)\b"
+                           r"[^|;&<>`$()\"'{}@=%]*)+$|\s*2>&1\s*$", re.I)  # 스크립트 블록({ }·@{ })·대입은 떼지 않는다
+# 명령마다 새 셸이라 에이전트는 'cd <대상 폴더 안>; 명령' 으로 쓴다 (격리 실행 규칙이 그렇게 시킨다) — 앞의 이동만 떼고 나머지로 판단한다
+CD_PREFIX = re.compile(r"^(?:cd|chdir|Set-Location|sl|Push-Location|pushd)\s+(?:-LiteralPath\s+|-Path\s+)?"
+                       r"(?:\"([^\"$`;|&<>]*)\"|'([^'$`;|&<>]*)'|([^\s\"'$`;|&<>]+))\s*(?:;|&&)\s*", re.I)
 PUBLISH = re.compile(r"\bgit(?:\.exe)?\b[^;&|\n]*\bpush\b|\b(?:npm|pnpm|yarn|bun)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b"
                      r"|\bdocker\s+push\b|\bgh\s+(?:release|pr\s+(?:create|merge)|repo\s+create)\b|\bkubectl\s+apply\b|\bhelm\s+(?:install|upgrade)\b", re.I)
 # 시스템·설정 — 레지스트리·예약 작업·서비스, git 설정 바꾸기(훅 경로·fsmonitor 로 앱의 커밋 때 명령을 심을 수 있다)
@@ -79,6 +94,8 @@ SYSTEM = re.compile(r"\b(?:setx|reg(?:\.exe)?\s+(?:add|delete|import)|sudo|chmod
 # 대상 폴더 안이라도 에이전트가 쓰면 안 되는 곳 — 에이전트 자신의 권한·훅 설정, git 내부(HEAD·hooks·config)
 CONFIG_PATHS = re.compile(r"(^|/)(\.claude|\.git|\.codex|\.gemini|\.cursor)(/|$)|(^|/)\.mcp\.json$", re.I)
 CHAINING = re.compile(r"[\n\r&|;`<>]|\$\(|\$\{")
+# 검증(wb_port_verify)이 툴킷 홈에 남기는 화면 그림 — 에이전트가 결과를 보도록 읽기만 허용 (.. 로 빠져나가는 경로는 아님)
+VERIFY_SHOT = re.compile(r"[\\/]projects[\\/][\w.-]+[\\/]ports[\\/][\w.-]+[\\/]screens[\\/](?:[\w.-]+[\\/])*[\w.-]+\.(?:png|jpe?g|webp)$", re.I)
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 READ_TOOLS = {"Read", "Glob", "Grep", "LS", "NotebookRead"}
 
@@ -307,6 +324,9 @@ def decide(run: dict, kind: str) -> str:
 def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Path]) -> str:
     """권한 요청을 종류로 나눈다. protected: 툴킷 홈·실행 폴더 — 여기 닿으면 system."""
     path = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("notebook_path")
+    if tool == "Read" and path and VERIFY_SHOT.search(os.path.normpath(str(path))) and ".." not in Path(os.path.normpath(str(path))).parts \
+            and any(_inside(path, p) for p in protected):
+        return "edit"  # 검증이 찍은 화면 그림을 보기만 — 툴킷 홈의 다른 것(원장·골든·질문함)은 그대로 막는다
     if path and any(_inside(path, p) for p in protected):
         return "system"
     if tool in FILE_TOOLS:
@@ -323,15 +343,22 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
             return "system"
         if PUBLISH.search(cmd):
             return "publish"
+        cmd = _strip_cd(cmd, target_root)
         if workbranch.moves_branch(cmd):
             return "branch"
         if DELETE_CMD.search(cmd) and not _deletes_inside(cmd, target_root):
             return "delete"
-        # 이어 붙이기·치환·리다이렉트가 있으면 빌드 명령 뒤에 다른 명령이 숨을 수 있다 — 물어보는 쪽으로
-        if BUILD_COMMANDS.match(cmd) and not CHAINING.search(cmd):
+        # 이어 붙이기·치환·리다이렉트가 있으면 빌드 명령 뒤에 다른 명령이 숨을 수 있다 — 물어보는 쪽으로.
+        # 다만 끝에 붙인 출력 거르기(2>&1 | Select-Object -Last 8)는 떼고 보고, ; · && 로 이은 조각이 하나하나 모두 빌드·확인
+        # 명령이면 빌드로 본다 (조각마다 따로 검사 — 거르기 말고 다른 연결이 남아 있으면 그대로 묻는다)
+        core = OUTPUT_FILTER.sub("", cmd).strip()
+        if BUILD_COMMANDS.match(core) and not CHAINING.search(core):
+            return "build"
+        parts = [x.strip() for x in re.split(r"\s*(?:;|&&)\s*", core) if x.strip()]
+        if len(parts) > 1 and all((BUILD_COMMANDS.match(x) and not CHAINING.search(x)) or _inspect_only(x) for x in parts):
             return "build"
         # 버전·설치 여부만 보는 명령(node --version; Test-Path …)은 아무것도 바꾸지 않는다 — 묻지 않고 빌드와 같이 둔다
-        return "build" if _inspect_only(cmd) else "commands"
+        return "build" if _inspect_only(core) else "commands"
     if tool.startswith("mcp__beom-workbench__"):
         return "other" if tool.endswith(("port_approve",)) else "edit"
     return "other"
@@ -340,10 +367,20 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
 INSPECT_COMMANDS = re.compile(
     r"^(?:(?:node|npm|npx|pnpm|yarn|bun|deno|python3?|py|pip3?|uv|git|java|javac|dotnet|cargo|rustc|go|gcc|cmake|docker|code)"
     r"(?:\.exe)? (?:--version|-v|-V|version)"
+    r"|(?:python3?|py) -m (?:coverage|pytest|pip) --version"
     r"|(?:where(?:\.exe)?|which|command -v|type) [\w.\-]+"
     r"|\(?Get-Command [\w.\-]+(?: -ErrorAction (?:SilentlyContinue|Ignore))?\)?(?:\.(?:Source|Path|Version))?"
     r"|Test-Path (?:-LiteralPath |-Path )?(?:\"[^\"$`;|&<>]*\"|'[^'$`;|&<>]*'|[^\s\"'$`;|&<>]+)"
     r"|\$PSVersionTable(?:\.PSVersion)?|uname(?: -[a-z]+)?|echo \$env:[A-Z_]+)$", re.I)
+
+
+def _strip_cd(cmd: str, target_root: Path) -> str:
+    """'cd <대상 폴더 안>; 나머지' → '나머지'. 대상 폴더 밖으로 가는 이동이면 그대로 둔다 (그 명령은 그대로 묻는다)."""
+    m = CD_PREFIX.match(cmd)
+    if not m:
+        return cmd
+    where = next(g for g in m.groups() if g is not None)
+    return cmd[m.end():].strip() if _inside(where, target_root) else cmd
 
 
 def _inspect_only(cmd: str) -> bool:

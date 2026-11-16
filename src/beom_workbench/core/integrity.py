@@ -45,7 +45,7 @@ def _approvals(settings, run: dict) -> int | None:
     try:
         from beom_workbench.core import project
         conn, _ = project.load(settings, run["project_id"])
-        return conn.execute("SELECT COUNT(*) FROM port_log WHERE port_id = ? AND action = 'approve'", (run["port_id"],)).fetchone()[0]
+        return conn.execute("SELECT COUNT(*) FROM port_log WHERE port_id = ? AND action IN ('approve', 'license_ack')", (run["port_id"],)).fetchone()[0]
     except Exception:  # noqa: BLE001 — 원장이 아직 없으면 비교하지 않는다
         return None
 
@@ -74,7 +74,7 @@ def changes(settings, run_id: str, snap: dict) -> list[str]:
     if snap["approvals"] is not None and run.get("port_id") == snap["port_id"]:
         now = _approvals(settings, run)
         if now is not None and now > snap["approvals"] and not _done_since(run_id, "reviews", since):
-            out.append(f"요구사항·합격 기준 승인 {now - snap['approvals']}건이 앱 밖에서 기록됐습니다")
+            out.append(f"사람 확인(기준 승인·라이선스) {now - snap['approvals']}건이 앱 밖에서 기록됐습니다")
     return out
 
 

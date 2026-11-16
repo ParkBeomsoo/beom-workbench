@@ -5,7 +5,9 @@
 **코딩 에이전트의 작업대 — 기획하고, 요청이나 참고 저장소로 만들고, 승인한 합격 기준대로 되는지 검증합니다**
 
 
-![version](https://img.shields.io/badge/version-0.1.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+> 앱 화면은 지금 한국어만 지원합니다 (영어 화면은 준비 중). 에이전트는 요청한 언어로 일하고 보고합니다.
+
+![version](https://img.shields.io/badge/version-0.1.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 에이전트가 "다 됐다"고 할 때까지 맡기는 대신, 요구사항과 합격 케이스를 먼저 정하고, 에이전트는 자기 브랜치에서만 일하게 하고,
 결과가 그 기준을 채우는지(옮겨 오는 경우 원본과 같은 동작인지) 프로그램으로 확인합니다. 분석 결론에는 모두 근거(파일:줄)가 붙습니다. Claude Code 같은 AI 에이전트가 절차를 따라 쓰도록
@@ -87,7 +89,7 @@ Windows 10/11 이 주 플랫폼입니다(매일 사용). macOS·Linux 도 같은
 4. 케이스가 옮길 함수를 모두 실행함 (원본 커버리지, 안 되면 내 코드 커버리지)
 5. 사람 확인 항목이 모두 승인됨 (차이 허용·생략·케이스 변경·기대값, 승인 뒤 내용이 바뀌면 무효)
 6. 기록이 툴킷 밖에서 바뀌지 않음 (원장 해시 사슬·골든 해시)
-7. 라이선스 확인이 필요한 파일이 없음
+7. 옮길 코드에 제한형 라이선스가 없음 — 또는 사용자가 직접 확인함 (앱이 카드로 묻고, 에이전트는 대신 못 함). 라이선스 표기가 없는 것은 참고로만 알림
 
 모든 포팅 명령 응답에는 `next_step`(다음에 할 일)이 붙습니다.
 
@@ -266,7 +268,7 @@ push·배포·폴더 밖 삭제·시스템 변경은 언제나 거절합니다. 
 
 **작업 브랜치** — 고른 폴더가 기존 git 저장소면 `main`(없으면 `master`)에서 `feature/<작업명>` 브랜치를 만들어 그 안에서만
 작업합니다 (지금 브랜치는 그대로). 저장소 여럿이 든 상위 폴더면 에이전트가 고친 저장소마다 라운드가 끝날 때 같은 이름의 브랜치를 만들어
-그 변경을 옮깁니다 — 손대지 않은 저장소는 그대로입니다. 라운드가 끝날 때마다 바뀐 것을 그 브랜치에 커밋하고(`.beom/tmp` 는 빼고), 커밋하지 않은 채 있던 변경은 첫 커밋
+그 변경을 옮깁니다 — 손대지 않은 저장소는 그대로입니다. 라운드가 끝날 때마다 프로그램 변경을 그 브랜치에 커밋하고(툴킷 작업 폴더 `.beom/` 은 커밋하지 않음), 커밋하지 않은 채 있던 변경은 첫 커밋
 '작업 전 변경'으로 따로 담습니다. 브랜치를 바꾸는 명령(switch·checkout <브랜치>·병합·pull·rebase·reset --hard·브랜치 삭제)은
 권한 규칙 *작업 브랜치 밖으로* 가 막고, 라운드 앞뒤로 브랜치를 확인해 벗어났으면 되돌립니다 (못 되돌리면 멈춤).
 지금 브랜치에서 바로 작업하려면 새 작업 화면의 *새 브랜치에서 작업* 을 끕니다. 저장소가 아닌 폴더(새로 만드는 프로젝트)는 그대로입니다.
@@ -293,6 +295,10 @@ push·배포·폴더 밖 삭제·시스템 변경은 언제나 거절합니다. 
 - 에이전트의 **질문**(번호·줄바꿈이 살아 있고, 선택지는 한 줄에 하나, *추천대로* 단추)과 **권한 요청** (`Y` 허용 · `N` 거절).
   묻고 답한 것은 대화 흐름에 그대로 남습니다.
 - 마지막 **인수인계**: 수락하거나, 메시지를 보내 계속 — 멈췄거나 끝난 실행에 메시지를 보내면 이어서 진행합니다.
+  추가 요청은 정해 둔 기준 위에서 고치고 관련 케이스만 다시 검증합니다 (범위가 바뀌는 요청이면 기준부터 고쳐 확인받음).
+  수락했던 작업도 추가 요청이 끝나면 바뀐 결과를 다시 수락합니다. 기획·분석부터 다시 하려면 새 작업으로 시작합니다.
+- 레퍼런스 모드에서 원본에 제한형 라이선스(카피레프트 등)가 있으면 **라이선스 카드**: 옮겨 써도 되는지 확인하면 완료 판정으로 넘어갑니다.
+  그동안 에이전트는 라운드를 쓰지 않고 기다립니다. 라이선스 표기가 아예 없으면(사내 저장소는 보통 그렇습니다) 막지 않고 참고로만 보여 줍니다.
 
 승인은 앱 안에서만, 화면에 보인 내용 그대로에 묶여 원장에 기록됩니다. 에이전트가 닿을 수 있는 승인 경로는 없습니다.
 
@@ -545,7 +551,8 @@ Claude Code(`~/.claude`)·Codex(`~/.codex`)처럼 홈 아래 폴더 하나(`~/.b
 | `bin/` · `engines/` · `node/` | `setup` 이 설치한 분석 엔진 | 됨 — `setup` 으로 다시 설치 |
 
 에이전트와의 대화 원본은 각 CLI 가 원래 두는 곳(`~/.claude/projects`, `~/.codex/sessions`)에 있고 세션 id 로 이어 갑니다.
-대상 폴더에는 `.beom/cases.json`(합격 케이스)만 씁니다 — 커밋하든 무시하든 선택입니다.
+대상 폴더에는 툴킷 작업 파일을 `.beom/` 에 둡니다 (합격 케이스·기획 문서·스크린샷). 커밋하지 않습니다 — 커밋은 프로그램만 —
+git 저장소면 그 저장소의 로컬 제외 목록에 넣어 `git status` 에도 보이지 않게 합니다.
 
 | | Claude Code | Codex | 이 툴킷 |
 |---|---|---|---|
@@ -577,6 +584,7 @@ beom-workbench data --revoke-sandbox       # Windows: 격리 실행에 준 폴�
 | `BEOM_WORKBENCH_HOME` | `~/.beom-workbench` | 원장·clone·엔진·백업 위치 |
 | `BEOM_WORKBENCH_CONTAINER` | `auto` | 격리 실행 엔진 `auto`·`docker`·`wsl`·`none` |
 | `BEOM_WORKBENCH_WSL_DISTRO` | `beom-sandbox` | Windows 에서 쓸 WSL 배포판 |
+| `BEOM_WORKBENCH_SANDBOX_DIR` | `%LOCALAPPDATA%eom-workbench-sandbox` | Windows: 내장 격리 실행이 권한을 준 폴더 기록 위치 |
 | `BEOM_WORKBENCH_LEASE_SECONDS` | `3600` | 분석 단위 임대 시간 |
 | `BEOM_WORKBENCH_UNIT_MAX_LINES` / `_UNIT_MAX_CHARS` | `1500` / `45000` | 분석 단위 크기 상한 |
 | `BEOM_WORKBENCH_CONTEXT_MAX_CHARS` | `24000` | `context` 한 페이지 크기 |
@@ -636,7 +644,7 @@ beom-workbench data --revoke-sandbox       # Windows: 격리 실행에 준 폴�
 | 첨부한 링크에 **로그인 필요** 가 뜬다 | 앱이 그 페이지를 앱 안의 브라우저 창으로 엽니다 — 로그인한 뒤 **이 문서 가져오기** 를 누릅니다. 이런 링크를 남긴 채 시작하면 먼저 로그인을 요청합니다. |
 | 터미널 창이 잠깐 뜬다 | 자식 프로세스는 창 없이 띄웁니다. 확인된 원인은 에이전트 CLI 의 자동 업데이트가 앱의 로그인 확인(약 15분마다) 때 자기 콘솔을 연 것이었고, 이제 앱이 띄우는 CLI 는 자동 업데이트를 끕니다. CLI 업데이트는 터미널에서 직접 하세요. |
 | macOS: Finder 로 열면 에이전트를 못 찾는다 | 앱이 시작할 때 로그인 셸의 PATH(Homebrew·nvm·`~/.local/bin`)를 읽어 씁니다. |
-| 레퍼런스 분석이 권한(DACL) 오류로 실패 | 구조 지도 엔진이 공유 AppData 폴더를 거부합니다 — 앱이 `~/.beom-workbench/cbm-run` 을 쓰게 합니다. |
+| 레퍼런스 분석이 권한(DACL) 오류나 *could not load saved runtime settings* 로 실패 | 구조 지도 엔진은 상위 폴더에 다른 계정의 쓰기 권한이 있는 폴더를 거부합니다. 앱은 엔진 폴더를 `~/.beom-workbench` 아래에 둡니다 — 데이터 폴더를 옮긴 경우에만 생깁니다 (`BEOM_WORKBENCH_HOME` 을 `AppData` 아래로 두는 등). 사용자 폴더 아래에 두세요. |
 | 빌드에 필요한 도구가 없다 (예: Windows 에서 Rust 저장소의 OpenSSL) | 폴더를 고르면 새 작업 화면이 없는 빌드 도구(Rust·OpenSSL·Node.js·JDK·Go)와 **설치** 단추(winget·Homebrew)를 보여 줍니다. 에이전트도 처음에 알고 시작해 중간에 멈추지 않습니다. OpenSSL 을 설치하면 에이전트에게 `OPENSSL_DIR` 을 알아서 넘깁니다. |
 | 검증이 "서버에 연결하지 못함" 으로 실패 | 검증할 때 서버가 떠 있지 않았습니다 — 대개 빌드가 안 됨(빌드 준비물 없음). 검증 탭이 원인별로 묶어 보여 줍니다. |
 | "앱 밖에서 바뀐 결정이 있어 멈췄습니다" | 아래 *안전 원칙* 참고 — 변경 탭을 확인하고 **확인했음** 을 누르면 이어 갑니다. |
@@ -660,7 +668,8 @@ beom-workbench data --revoke-sandbox       # Windows: 격리 실행에 준 폴�
 ## 보안 신고와 기여
 
 - 취약점은 GitHub 의 **Report a vulnerability**(Security 탭)로 비공개 신고해 주세요 — [SECURITY.md](SECURITY.md).
-- 버그 제보와 기능 요청은 이슈로 받습니다. 라이선스상 수정본을 허용하지 않아 PR 은 합치지 않습니다.
+- 버그 제보와 기능 요청은 이슈로 받습니다. PR 은 제안으로 받지만 그대로 합치지는 않습니다 — 라이선스상 수정본을 허용하지 않아,
+  받아들인 변경은 관리자가 반영합니다. [CONTRIBUTING.md](CONTRIBUTING.md) 를 보세요.
 - 브랜치: `main` 은 배포본(버전마다 `vX.Y.Z` 태그)입니다. 작업은 `main` 에서 만든 짧은 `feature/…`·`fix/…` 브랜치에서 하고, 그 브랜치를
   `develop`(실험 공간)에 합쳐 시험한 뒤 같은 브랜치를 PR 로 `main` 에 합쳐 적용합니다 (Windows·macOS·Linux CI 통과). `develop` 은 `main` 에
   합치지 않습니다 — 필수 점검 *branch-policy* 가 `develop` 에서 왔거나 `develop` 전용 커밋이 섞인 `main` PR 을 막고, `develop` 에는
@@ -672,6 +681,6 @@ beom-workbench data --revoke-sandbox       # Windows: 격리 실행에 준 폴�
 
 - 수정하지 않은 상태로 설치·사용하는 것은 누구나 가능합니다 (회사 업무·상업적 목적 포함). 툴킷으로 만든 결과물은 사용자의 것입니다.
 - 수정·2차 저작물·수정본 배포·코드 일부를 다른 소프트웨어에 넣는 것은 저작자의 서면 허락이 필요합니다.
-- 개선 제안은 이 저장소의 이슈·풀 리퀘스트로 받습니다.
+- 개선 제안은 이 저장소의 이슈·풀 리퀘스트로 받습니다 (풀 리퀘스트는 그대로 합치지 않고 관리자가 반영합니다).
 
 사용하는 라이브러리·외부 엔진은 각자의 라이선스를 따릅니다 — [THIRD_PARTY.md](THIRD_PARTY.md).

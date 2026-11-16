@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import subprocess
 from pathlib import Path
@@ -13,6 +14,9 @@ from typing import Any
 
 from beom_workbench.common.response import ToolError
 from beom_workbench.config import Settings
+
+# 엔진이 폴더 권한 때문에 거부할 때 내는 문구 (엔진 0.12 에서 직접 확인함)
+_UNTRUSTED = re.compile(r"untrusted identity|could not load saved runtime settings|secure CLI coordination", re.I)
 
 # 분석 단위로 커버리지를 요구하는 심볼 종류
 SYMBOL_LABELS = ["Function", "Method", "Class", "Struct", "Interface", "Enum", "Type", "Trait", "Macro", "Impl"]
@@ -44,8 +48,15 @@ class CodebaseMemory:
             input=json.dumps(args).encode("utf-8"), capture_output=True, timeout=timeout, env=env,
         )
         stdout = proc.stdout.decode("utf-8", "replace").strip()
-        if proc.returncode != 0:
-            raise ToolError("engine_error", f"codebase-memory-mcp {tool} 실패: {proc.stderr.decode('utf-8', 'replace')[-800:]}")
+        err = proc.stderr.decode("utf-8", "replace")
+        if proc.returncode != 0 or (not stdout and _UNTRUSTED.search(err)):
+            # 엔진은 데이터·조정 폴더의 상위 폴더에 다른 계정이 쓸 수 있으면 실행을 거부한다 (보통은 사용자 폴더 아래라 괜찮고,
+            # 툴킷 홈을 AppData 같은 곳으로 옮겼을 때 생긴다). 엔진 문구만으로는 원인을 알기 어려워 할 일을 함께 적는다.
+            hint = None
+            if _UNTRUSTED.search(err):
+                hint = (f"분석 엔진이 이 데이터 폴더({self.settings.home})를 쓰지 못합니다 — 상위 폴더에 다른 계정의 쓰기 권한이 있습니다. "
+                        "BEOM_WORKBENCH_HOME 을 사용자 폴더 아래(기본값 ~/.beom-workbench)로 두세요")
+            raise ToolError("engine_error", f"codebase-memory-mcp {tool} 실패: {err.strip()[-800:]}", recovery=hint)
         # 경고 로그가 stdout 앞에 섞여 나올 수 있어 마지막 JSON 줄을 찾는다
         for line in reversed(stdout.splitlines()):
             line = line.strip()
