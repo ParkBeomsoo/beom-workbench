@@ -7,6 +7,8 @@
 **コーディングエージェントの作業台 — 企画し、要望や参考リポジトリから作り、承認した合格基準どおりかを検証します**
 
 
+> アプリの画面は現在韓国語のみです (英語の画面は予定しています)。エージェントは依頼と同じ言語で作業・報告します。
+
 ![version](https://img.shields.io/badge/version-0.1.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 他人が作った機能を「ざっと読んで真似して作る」のではなく、コード全体を根拠(ファイル:行)付きで分析し、
@@ -409,7 +411,7 @@ Claude Code (`~/.claude`)・Codex (`~/.codex`) と同様に、ホーム下の一
 | `bin/` · `engines/` · `node/` | `setup` がインストールした分析エンジン | 可 — `setup` で再インストール |
 
 エージェントとの会話の原本は各 CLI が本来置く場所 (`~/.claude/projects`、`~/.codex/sessions`) にあり、セッション id で続けます。
-対象フォルダには `.beom/cases.json` (合格ケース) だけを書きます — コミットするか無視するかは自由です。
+対象フォルダでは作業ファイルを `.beom/` に置きます (合格ケース・企画文書・スクリーンショット)。コミットはしません — コミットするのはプログラムだけです。git リポジトリでは `.beom/` をそのリポジトリのローカル除外リストに入れるので `git status` にも出ません。
 
 | | Claude Code | Codex | このツールキット |
 |---|---|---|---|
@@ -474,6 +476,6 @@ beom-workbench data --set-cleanup 30       # 起動時に自動整理 (0 = オ�
 
 - 改変していない状態でのインストール・使用は、誰でも可能です (会社の業務・商用目的を含む)。ツールキットで作成した成果物はユーザーのものです。
 - 改変・二次的著作物の作成・改変版の配布・コードの一部を他のソフトウェアに組み込むことには、著作者の書面による許可が必要です。
-- 改善の提案は、このリポジトリの Issue・プルリクエストで受け付けます。
+- 改善の提案は、このリポジトリの Issue・プルリクエストで受け付けます (プルリクエストはそのままマージせず、管理者が反映します)。
 
 使用しているライブラリ・外部エンジンは、それぞれのライセンスに従います — [THIRD_PARTY.md](THIRD_PARTY.md)。

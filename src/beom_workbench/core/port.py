@@ -326,12 +326,12 @@ def slice_(conn, proj: dict, targets: list[str], depth: int = 10, within: list[s
         "external": {"imports": {k: sorted(v) for k, v in sorted(imports.items())},
                      "calls": {k: sorted(v) for k, v in sorted(external_calls.items())}},
         "config_keys": config_keys, "tests": tests, "licenses": licenses,
-        # 사용자가 카드에서 읽는 글 — 파일 목록은 사람이 읽는 꼴로 (파이썬 목록 표기·도구 이름 없이)
-        "license_warning": " / ".join(w for w in (
-            f"허용형이 아닌 라이선스의 원본 파일 {_files_text(restricted)} — 옮겨 쓰기 전에 조건을 확인하세요 "
-            "(다른 언어로 다시 쓰더라도 구조·표현을 그대로 옮기면 파생 저작물이 될 수 있습니다)" if restricted else "",
-            f"라이선스를 확인하지 못한 원본 파일 {_files_text(unknown_lic)} — 원본 저장소에서 라이선스 표기를 찾지 못했습니다"
-            if unknown_lic else "") if w) or None,
+        # 사용자가 카드에서 읽는 글 — 파일 목록은 사람이 읽는 꼴로 (파이썬 목록 표기·도구 이름 없이).
+        # 막는 것은 허용형이 아닌 라이선스가 '찾아졌을' 때만 — 표기가 없는 것은 막지 않고 알리기만 한다 (사내 저장소는 보통 없다)
+        "license_warning": (f"허용형이 아닌 라이선스의 원본 파일 {_files_text(restricted)} — 옮겨 쓰기 전에 조건을 확인하세요 "
+                            "(다른 언어로 다시 쓰더라도 구조·표현을 그대로 옮기면 파생 저작물이 될 수 있습니다)") if restricted else None,
+        "license_note": (f"원본 파일 {_files_text(unknown_lic)} 에서 라이선스 표기를 찾지 못했습니다 — 사내 코드라면 보통 그렇고, "
+                         "공개 저장소라면 옮겨 써도 되는지 확인하세요") if unknown_lic else None,
         "open_unknowns": open_unknowns,
         "limitations": ["dispatch 갈래는 인터페이스 메서드 이름 기준 — 인터페이스로 잡히지 않은 덕 타이핑·콜백은 빠질 수 있음",
                         *(["경계(within) 밖은 구조 지도 호출만 boundary 로 남김 — 이름 기반 갈래는 경계 밖으로 따라가지 않음"]
@@ -368,7 +368,7 @@ def create(conn, proj: dict, *, name: str, targets: list[str], target_language: 
     guard.record(conn, pid, "create", {"targets": targets, "items": len(items), "author": author})
     return {"port_id": pid, "items": len(items), "boundary": len(sl.get("boundary", [])),
             "slice": {k: sl[k] for k in ("entries", "files", "lines", "external",
-                                                                              "config_keys", "tests", "license_warning",
+                                                                              "config_keys", "tests", "license_warning", "license_note",
                                                                               "registrations", "wiring")}}
 
 
@@ -698,6 +698,8 @@ def status_(conn, port_id: str, brief: bool = False, fp_max_age: float = 0) -> d
     warning = port["slice"].get("license_warning")
     if warning:  # 화면이 확인 카드를 그리도록 (간략 판정에도)
         out["license"] = {"warning": warning, "acked": gates[GATE_LICENSE]}
+    if port["slice"].get("license_note"):  # 막지 않는 참고 — 화면·인계에 한 줄로
+        out["license_note"] = port["slice"]["license_note"]
     if not integ["ok"] or integ.get("legacy"):
         out["integrity"] = integ
     if not brief:

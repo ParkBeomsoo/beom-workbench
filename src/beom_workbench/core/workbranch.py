@@ -26,7 +26,9 @@ from pathlib import Path
 from beom_workbench.common.response import ToolError
 
 _NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
-EXCLUDE = [":(exclude,glob)**/.beom/tmp/**"]  # 에이전트 임시 스크립트·메모는 커밋하지 않는다 (.beom/brief 같은 결과물은 담는다)
+# 툴킷 작업 폴더(.beom — 합격 케이스·기획 문서·임시 파일)는 커밋하지 않는다. 사용자 저장소에는 프로그램 자체만 담는다
+# (작업 결과물은 대상 폴더에 그대로 남고, 내보내기로 따로 받는다)
+EXCLUDE = [":(exclude,glob)**/.beom/**"]
 # 라운드 커밋에서 더 빼는 것 — 테스트·커버리지 실행이 만드는 캐시. 저장소가 .gitignore 로 안 막아 두면 사용자 브랜치(그리고 합친 main)에
 # 바이너리 캐시가 들어간다 (시험에서 .coverage 가 커밋된 것을 확인함). build/·dist/·coverage/ 는 실제 파일을 두는 프로젝트가 있어 넣지 않는다.
 COMMIT_EXCLUDE = EXCLUDE + [f":(exclude,glob){g}" for g in (
@@ -200,6 +202,8 @@ def _identity(top: Path) -> list[str]:
 def _commit(top: Path, message: str, path: str = ".") -> str | None:
     """path(대상 폴더, 저장소 맨 위 기준) 안에서 바뀐 것이 있으면 커밋하고 짧은 해시를, 없으면 None. 훅이 막으면 ToolError."""
     add = _git(top, "add", "-A", "--", path, *COMMIT_EXCLUDE, timeout=120)
+    if add.returncode == 0:  # 캐시 제외는 새 파일에만 — 저장소가 일부러 추적하는 파일의 변경은 그대로 담는다
+        add = _git(top, "add", "-u", "--", path, *EXCLUDE, timeout=120)
     if add.returncode != 0:
         raise ToolError("engine_error", f"git add 실패: {add.stderr.strip()[-300:]}")
     if _git(top, "diff", "--cached", "--quiet").returncode == 0:
@@ -212,7 +216,7 @@ def _commit(top: Path, message: str, path: str = ".") -> str | None:
 
 
 def _ignore_tmp(top: Path) -> None:
-    """툴킷 임시 폴더(.beom/tmp)를 이 저장소의 로컬 제외 목록(.git/info/exclude)에 — 커밋하지 않는 것이라 git status 에 남지 않게.
+    """툴킷 작업 폴더(.beom)를 이 저장소의 로컬 제외 목록(.git/info/exclude)에 — 커밋하지 않는 것이라 git status 에 남지 않게.
     저장소 파일(.gitignore)은 건드리지 않는다."""
     try:
         d = _git(top, "rev-parse", "--git-path", "info/exclude").stdout.strip()
@@ -220,10 +224,10 @@ def _ignore_tmp(top: Path) -> None:
             return
         f = Path(d) if Path(d).is_absolute() else top / d
         text = f.read_text(encoding="utf-8", errors="replace") if f.is_file() else ""
-        if ".beom/tmp/" not in text.splitlines():
+        if ".beom/" not in text.splitlines():
             f.parent.mkdir(parents=True, exist_ok=True)
             with f.open("a", encoding="utf-8") as fh:
-                fh.write(("" if not text or text.endswith("\n") else "\n") + "# beom-workbench\n.beom/tmp/\n")
+                fh.write(("" if not text or text.endswith("\n") else "\n") + "# beom-workbench\n.beom/\n")
     except OSError:
         pass
 

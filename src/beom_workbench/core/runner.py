@@ -164,8 +164,9 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   새 창을 띄우는 명령(Start-Process·start·explorer·브라우저 열기)은 쓰지 않는다 — 사용자 화면에 창이 튀어나온다. 
   커버리지(케이스가 만든 코드를 실행했는지)는 새 도구를 깔거나 변환 스크립트를 짜지 말고, 측정 명령을 wb_port_verify 의
   target_coverage_cmd·target_coverage_report 로 넘겨 툴킷이 돌리게 한다 — 파이썬: `python -m coverage run --include=<파일> -m pytest -q`
-  다음 `python -m coverage json -o .beom/tmp/cov.json` / Node: `node --test --experimental-test-coverage --test-reporter=lcov
-  --test-reporter-destination=.beom/tmp/lcov.info` (설치 없음). 브라우저에서만 도는 화면 코드는 로직을 따로 .js 파일로 두어 Node
+  다음 `python -m coverage json -o .beom/tmp/cov.json` / Node: `node --test --test-isolation=none --experimental-test-coverage
+  --test-reporter=lcov --test-reporter-destination=.beom/tmp/lcov.info` (설치 없음. 격리 실행 안에서는 테스트 파일마다 하위 프로세스를
+  띄우지 못해 --test-isolation=none 을 쓴다). 브라우저에서만 도는 화면 코드는 로직을 따로 .js 파일로 두어 Node
   테스트로 부를 수 있게 만든다 (HTML 안 스크립트를 계측하려고 jsdom·c8 등을 새로 깔지 않는다).
   화면 확인은 브라우저 자동화 스크립트를 새로 짜지 말고 툴킷의 화면 케이스·wb_screen_shot 을 쓴다. 같은 명령이 같은 이유로
   두 번 실패하면 세 번째로 되풀이하지 말고 원인을 바꿔 보거나 막힌 점을 남기고 넘어간다.
@@ -980,6 +981,18 @@ class Runner:
                     result = {"is_error": not e.get("ok", True), **e}
                     inbox.log(self.settings, self.run_id, "agent_result", subtype=e.get("subtype"), is_error=not e.get("ok", True),
                               cost_usd=e.get("cost_usd"), turns=e.get("turns"), usage=e.get("usage"), result=e.get("text"))
+                    u = e.get("usage")
+                    if not e.get("cost_usd") and isinstance(u, dict):
+                        # 비용을 알려 주지 않는 에이전트(Codex 등)는 쓴 토큰을 센다 — 화면에 사용량이 비어 보이지 않게
+                        # 이어 받은 세션은 그 세션 전체 누적값을 알려 준다 — 세션마다 마지막 값만 두고 합한다 (비용과 같은 방식)
+                        n = int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0)
+                        sid = e.get("session_id") or run.get("session_id") or f"round-{run.get('round')}"
+                        if n:
+                            def put(r, n=n, sid=sid):
+                                per = r.setdefault("token_sessions", {})
+                                per[sid] = max(int(per.get(sid) or 0), n)
+                                r["tokens"] = sum(per.values())
+                            run = inbox.update_run(self.settings, self.run_id, put)
                 if e.get("session_id"):
                     run = self._set(session_id=e["session_id"])
                     if e.get("cost_usd"):

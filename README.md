@@ -5,6 +5,8 @@
 **A desktop workbench for coding agents: plan a feature, build it from a request or from a reference repository, and verify it against acceptance criteria you approved.**
 
 
+> The app's interface is in Korean for now (an English interface is planned). Agents work and report in the language of your request.
+
 ![version](https://img.shields.io/badge/version-0.1.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 Instead of letting an agent build until it says "done", the workbench fixes the requirements and acceptance cases first, has the
@@ -89,7 +91,7 @@ New sessions and several agents working in parallel continue the same record.
 4. Cases execute every function being ported (original coverage, or your code's coverage when the original cannot be instrumented)
 5. Every item needing human review is approved (accepted differences, omissions, case changes, expected values; invalid if the content changes after approval)
 6. Records were not changed outside the toolkit (ledger hash chain, golden hash)
-7. No files need a license review — or you confirmed the license warning yourself (the app shows a card; the agent cannot confirm it)
+7. No restrictive license on the code being ported — or you confirmed it yourself (the app shows a card; the agent cannot confirm it). A missing license is only noted
 
 Every porting command response includes `next_step` (what to do next).
 
@@ -260,14 +262,14 @@ environment variable, billed per use) — both can do the same things.
 - The **handoff** at the end: accept, or keep going by sending a message — sending a message to a stopped or finished run continues it.
   A follow-up builds on the agreed criteria (fix, then re-verify the affected cases; criteria change only if the request changes the scope),
   and an accepted run asks to be accepted again once the follow-up is done. To start over from planning or analysis, start a new task.
-- In reference mode, a **license card** when the original has a restrictive or unknown license (e.g. no LICENSE file in an internal repo):
-  confirm you may use the code, and the run finishes; the agent waits instead of spending rounds.
+- In reference mode, a **license card** when the original carries a restrictive license (e.g. copyleft): confirm you may use the code,
+  and the run finishes; the agent waits instead of spending rounds. No license at all (common in internal repos) does not block — it is shown as a note.
 
 Approvals are written to the ledger inside the app only, bound to exactly what was shown; there is no approval endpoint the agent can reach.
 
 **Work branch** — when the chosen folder is an existing git repository, the run creates `feature/<task name>` from `main`
 (or `master`) and works only there, leaving the current branch alone. In a parent folder holding several repositories, each repository the agent changes
-gets a branch with the same name at the end of the round, carrying those changes; untouched repositories stay as they are. Changes are committed to that branch after every round (`.beom/tmp` excluded); uncommitted
+gets a branch with the same name at the end of the round, carrying those changes; untouched repositories stay as they are. Program changes are committed to that branch after every round — the toolkit's own work folder `.beom/` is never committed; uncommitted
 changes that were already there go into a separate first commit. Commands that leave the branch (switch, checkout <branch>, merge, pull,
 rebase, reset --hard, branch deletion) are refused by the *leave the work branch* permission kind, and the branch is checked before and
 after each round and restored if it moved (the run stops if it cannot be). Turn off *Work on a new branch* on the new-task screen to work
@@ -519,7 +521,8 @@ keys and tokens are read from environment variables only and masked in output.
 | `bin/` · `engines/` · `node/` | analysis engines installed by `setup` | yes — reinstall with `setup` |
 
 The agent's own conversation stays where its CLI keeps it (`~/.claude/projects`, `~/.codex/sessions`) and is resumed by session id.
-In your target folder the toolkit writes only `.beom/cases.json` (acceptance cases) — commit it or ignore it as you like.
+In your target folder the toolkit keeps its work files in `.beom/` (acceptance cases, planning documents, screenshots). They are never committed —
+only the program is — and in a git repository the folder is listed in the repository's local exclude file so `git status` stays clean.
 
 | | Claude Code | Codex | this toolkit |
 |---|---|---|---|
@@ -610,7 +613,6 @@ In the app: **Storage** at the bottom of the sidebar, and **Move to trash** in a
 | **Isolated execution · Set up** | Linux only: `bubblewrap` and `socat` are missing — press **Set up**. Windows needs nothing (built in) and macOS has it built in. |
 | **Isolated execution · Set up** again on Ubuntu 24.04 or later | `bubblewrap` is installed but AppArmor blocks the user namespaces it needs (on 26.04 also inside `bubblewrap` itself). The app checks this by actually starting a sandbox. **Set up** lifts the restriction system-wide (admin password; it persists): sets `kernel.apparmor_restrict_unprivileged_userns=0` and, where present, disables the `bwrap-userns-restrict` profile. |
 | **Analysis engines · Install** fails with *rate limit* | Many PCs behind one address (an office network) share GitHub's hourly API limit. The installer then downloads the same release files directly, still checksum-verified; setting `GITHUB_TOKEN` also raises the limit. |
-| Reference mode fails with *could not load saved runtime settings* | The analysis engine refuses folders whose parent folders are writable by another account. This happens only if the data folder was moved (e.g. `BEOM_WORKBENCH_HOME` under `AppData`); keep it under your user folder (default `~/.beom-workbench`). |
 | Installing an agent fails with *Get-FileHash is not recognized* | The app was started from a PowerShell 7 terminal, whose module path breaks Windows PowerShell. The app now clears it at start; restart the app once. |
 | **Analysis engines · Install** | Reference mode analyzes the original repository with two engines (structure map, entry-point rules). Press **Install** — the official releases are downloaded and checksum-verified. |
 | Where did my uncommitted `develop` changes go? | Starting a task from `develop` keeps them in a stash named after the run (`git stash list`); switch back to `develop` and run `git stash pop`. |
@@ -618,7 +620,7 @@ In the app: **Storage** at the bottom of the sidebar, and **Move to trash** in a
 | An attached link says **login needed** | The app opens its own browser window for that page — sign in there, then press **Get this document**. Starting a run with such a link still attached asks for the sign-in first. |
 | A terminal window flashes up | Child processes are started without windows. The one known source was an agent CLI's own auto-updater opening a console when the app checked logins (about every 15 minutes); the app now disables CLI auto-update for the processes it starts. Update the CLIs yourself from a terminal. |
 | macOS: agents not found when opened from Finder | The app reads your login shell's PATH at start (Homebrew, nvm, `~/.local/bin`). |
-| Reference analysis fails with a permission (DACL) error | The structure-map engine refuses a shared AppData folder; the app points it at `~/.beom-workbench/cbm-run` instead. |
+| Reference analysis fails with a permission (DACL) error or *could not load saved runtime settings* | The structure-map engine refuses folders whose parent folders another account can write to. The app keeps its engine folders under `~/.beom-workbench`; this only happens if the data folder was moved (e.g. `BEOM_WORKBENCH_HOME` under `AppData`) — keep it under your user folder. |
 | A build needs a tool you don't have (e.g. OpenSSL for a Rust project on Windows) | When you pick a folder, the new-task screen lists missing build tools (Rust, OpenSSL, Node.js, JDK, Go) with an **Install** button (winget / Homebrew); the agent is told up front instead of stopping mid-run. Once OpenSSL is installed, `OPENSSL_DIR` is set for the agent automatically. |
 | Checks fail with "could not connect to the server" | The server was not running during the check — usually it could not be built (missing build prerequisites). The Checks tab groups failures by cause. |
 | A run stopped with "decisions changed outside the app" | See *Safety principles* — review the Changes tab, then press **Confirmed** to continue. |
@@ -639,7 +641,8 @@ In the app: **Storage** at the bottom of the sidebar, and **Move to trash** in a
 ## Security and contributions
 
 - Report vulnerabilities privately via GitHub's **Report a vulnerability** (Security tab) — see [SECURITY.md](SECURITY.md).
-- Bug reports and feature requests are welcome as issues. The license does not allow modified versions, so pull requests are not merged.
+- Bug reports and feature requests are welcome as issues. Pull requests are welcome as suggestions but are not merged as they are —
+  the license does not allow modified versions, so the maintainer applies accepted changes. See [CONTRIBUTING.md](CONTRIBUTING.md).
 - Branches: `main` holds releases (each tagged `vX.Y.Z`). Work happens on short-lived `feature/…` or `fix/…` branches created from
   `main`; a branch is tried on `develop` (the experiment branch) and applied by merging that same branch into `main` through a pull
   request with CI on Windows, macOS and Linux. `develop` is never merged into `main` — a required *branch-policy* check fails any pull
@@ -652,6 +655,6 @@ In the app: **Storage** at the bottom of the sidebar, and **Move to trash** in a
 
 - Anyone may install and use the unmodified software (including business and commercial use). Output you create with the toolkit is yours.
 - Modifying it, creating derivative works, distributing modified versions or putting any part of the code into other software requires the author's written permission.
-- Suggestions are welcome as issues or pull requests in this repository.
+- Suggestions are welcome as issues or pull requests in this repository (pull requests are applied by the maintainer, not merged as they are).
 
 Libraries and external engines keep their own licenses — [THIRD_PARTY.md](THIRD_PARTY.md).

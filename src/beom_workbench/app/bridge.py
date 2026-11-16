@@ -275,6 +275,12 @@ class Api(QObject):
                 if not proj.get("inventory_at"):
                     inventory.build(conn, self.settings, proj, False)
                 context = proj["id"]
+            if v["mode"] == "reference":
+                # 원본 분석을 먼저 — 실패하면 실행도 작업 브랜치도 만들지 않는다 (대상 저장소를 새 브랜치·stash 에 남기지 않게)
+                opened = project.open_repo(self.settings, v["source"], None, v.get("name") or None)
+                conn, proj = project.load(self.settings, opened["project"]["id"])
+                if not proj.get("inventory_at"):
+                    inventory.build(conn, self.settings, proj, False)
             run = runner.create(self.settings, mode=v["mode"], target_root=v["target_root"], request=v.get("request", ""),
                                 name=v.get("name") or None, source=v.get("source"), feature=v.get("feature"),
                                 source_run=v.get("source_run"), context_project=context, max_rounds=int(v.get("max_rounds") or 0),
@@ -282,16 +288,6 @@ class Api(QObject):
                                 agent=v.get("agent", "claude"), plan_approval=bool(v.get("plan_approval", True)),
                                 effort=v.get("effort") or None, confirm_at=v.get("confirm_at") or "start",
                                 new_branch=v.get("new_branch", True) is not False, sandbox=v.get("sandbox", True) is not False)
-            if v["mode"] == "reference":
-                try:
-                    conn, proj = project.load(self.settings, run["project_id"])
-                    if not proj.get("inventory_at"):
-                        inventory.build(conn, self.settings, proj, False)
-                except Exception:
-                    # 원본을 분석하지 못하면 진행할 수 없는 실행이다 — 목록에 '준비됨'으로 남기지 않는다 (오류는 화면에 알린다)
-                    from beom_workbench.core import storage
-                    storage.trash_run(self.settings, run["id"])
-                    raise
             for note in notes:
                 inbox.log(self.settings, run["id"], "note", text=note, tone="warn")
             self.created.emit(json.dumps({"run_id": run["id"], "start": bool(v.get("start", True))}))

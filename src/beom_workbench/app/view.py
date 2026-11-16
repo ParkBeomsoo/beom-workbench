@@ -550,7 +550,7 @@ def _detail(settings, run_id: str) -> dict:
     mode = run["mode"]
     out = {"run": {k: run.get(k) for k in ("id", "name", "mode", "status", "round", "max_rounds", "target_root", "request",
                                            "feature", "agent", "model", "effort", "accepted", "cost_usd", "created_at",
-                                           "limit_until", "error", "streaming", "work_branch", "tampered", "sandbox")},
+                                           "limit_until", "error", "streaming", "work_branch", "tampered", "sandbox", "tokens")},
            "mode_text": MODE_TEXT[mode], "status": label, "tone": tone, "stages": STAGES[mode], "stage": _stage(run, st),
            "activity": _activity(run, asks, len(reviews), bool(st and (st.get("license") or {}).get("acked") is False)), "plan": run.get("plan"), "handoff": run.get("handoff"), "asks": asks,
            "feed": feed(settings, run, live=run.get("status") == "running" and runner.lock_owner(settings, run_id) is not None),
@@ -576,7 +576,7 @@ def _detail(settings, run_id: str) -> dict:
                            **({"now_ok": st["gates"].get(k)} if at_finish and not accepted and st["gates"].get(k) != v else {})}
                           for k, v in sorted(shown.items(), key=lambda kv: order.get(kv[0], 99))], next_step=st["next_step"],
                    gates_at=(fin or {}).get("created_at") if at_finish else None, accepted_done=accepted,
-                   license=st.get("license"),
+                   license=st.get("license"), license_note=st.get("license_note"),
                    reviews=_reviews(reviews, conn, run["port_id"]) if reviews else None, review_sig=sig(reviews),
                    requirements=[{"id": r["item_id"], "text": r["label"], "status": r["status"], "target": r["target_ref"]}
                                  for r in conn.execute("SELECT item_id, label, status, target_ref FROM port_map WHERE port_id = ? "

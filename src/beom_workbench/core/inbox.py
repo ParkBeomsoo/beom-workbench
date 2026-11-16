@@ -70,16 +70,17 @@ BUILD_COMMANDS = re.compile(
     r"cargo (build|test|check|fmt|clippy)|go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
     r"\./gradlew (test|build)|pip install -e \.|dotnet (build|test)|"
     # pytest 는 실행기를 바꾸지 않는 인자만 (출력·멈춤·고르기·테스트 파일) — -p(플러그인)·-c·--rootdir 같은 것은 묻는다
-    r"(?:(?:python3?|py) -m coverage run (?:--include=[\w./\\*,-]+ |--source=[\w./\\,-]+ |--branch )*-m pytest|"
-    r"pytest|(?:python3?|py) -m pytest|uv run pytest)"
-    r"(?: (?:-q|-qq|-v|-vv|-x|-s|-rA|-ra|--no-header|--tb=\w+|--maxfail=\d+|-k [\w.]+|[\w./\\-]+\.py(?:::[\w:\[\]-]+)?|[\w.\\-]+[/\\]))*|"
+    r"(?:(?:python3?|py) -m coverage run (?:--include=[\w./\\*,-]+ |--source=[\w./\\,-]+ |--omit=[\w./\\*,-]+ |--branch )*-m (?:pytest|unittest)|"
+    r"pytest|(?:python3?|py) -m pytest|uv run pytest|(?:python3?|py) -m unittest)"
+    r"(?: (?:-q|-qq|-v|-vv|-x|-s|-rA|-ra|-b|-f|--no-header|--tb=\w+|--maxfail=\d+|-k [\w.]+|discover|-s [\w./\\-]+"
+    r"|[\w./\\-]+\.py(?:::[\w:\[\]-]+)?|[\w.\\-]+[/\\]))*|"
     r"(?:python3?|py) -m coverage (?:report|json|html|xml)(?: -m| --include=[\w./\\*,-]+| --show-missing| -o (?!\S*\.\.)[\w./\\-]+)*|"
     # Node 내장 테스트 실행기 — 결과·커버리지 출력만 고르는 인자 (--import·--require 처럼 다른 코드를 불러오는 것은 묻는다)
     r"node --test(?: (?:--test-isolation=none|--experimental-test-coverage|--test-reporter=[\w-]+|--test-reporter-destination=(?!\S*\.\.)[\w./\\-]+"
     r"|--test-name-pattern=[\w.-]+|[\w./\\-]+\.(?:test\.)?[cm]?js))*)\s*$")
 # 끝에 붙여 출력만 줄이는 것 — 무엇을 실행하는지는 바꾸지 않는다 (따옴표·다른 연결 기호가 들어가면 떼지 않는다)
 OUTPUT_FILTER = re.compile(r"(?:\s*2>&1)?(?:\s*\|\s*(?:Select-Object|select|Select-String|sls|Out-String|head|tail|more)\b"
-                           r"[^|;&<>`$()\"']*)+$|\s*2>&1\s*$", re.I)
+                           r"[^|;&<>`$()\"'{}@=%]*)+$|\s*2>&1\s*$", re.I)  # 스크립트 블록({ }·@{ })·대입은 떼지 않는다
 # 명령마다 새 셸이라 에이전트는 'cd <대상 폴더 안>; 명령' 으로 쓴다 (격리 실행 규칙이 그렇게 시킨다) — 앞의 이동만 떼고 나머지로 판단한다
 CD_PREFIX = re.compile(r"^(?:cd|chdir|Set-Location|sl|Push-Location|pushd)\s+(?:-LiteralPath\s+|-Path\s+)?"
                        r"(?:\"([^\"$`;|&<>]*)\"|'([^'$`;|&<>]*)'|([^\s\"'$`;|&<>]+))\s*(?:;|&&)\s*", re.I)
@@ -357,7 +358,7 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
         if len(parts) > 1 and all((BUILD_COMMANDS.match(x) and not CHAINING.search(x)) or _inspect_only(x) for x in parts):
             return "build"
         # 버전·설치 여부만 보는 명령(node --version; Test-Path …)은 아무것도 바꾸지 않는다 — 묻지 않고 빌드와 같이 둔다
-        return "build" if _inspect_only(cmd) else "commands"
+        return "build" if _inspect_only(core) else "commands"
     if tool.startswith("mcp__beom-workbench__"):
         return "other" if tool.endswith(("port_approve",)) else "edit"
     return "other"
@@ -366,6 +367,7 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
 INSPECT_COMMANDS = re.compile(
     r"^(?:(?:node|npm|npx|pnpm|yarn|bun|deno|python3?|py|pip3?|uv|git|java|javac|dotnet|cargo|rustc|go|gcc|cmake|docker|code)"
     r"(?:\.exe)? (?:--version|-v|-V|version)"
+    r"|(?:python3?|py) -m (?:coverage|pytest|pip) --version"
     r"|(?:where(?:\.exe)?|which|command -v|type) [\w.\-]+"
     r"|\(?Get-Command [\w.\-]+(?: -ErrorAction (?:SilentlyContinue|Ignore))?\)?(?:\.(?:Source|Path|Version))?"
     r"|Test-Path (?:-LiteralPath |-Path )?(?:\"[^\"$`;|&<>]*\"|'[^'$`;|&<>]*'|[^\s\"'$`;|&<>]+)"
