@@ -7,9 +7,9 @@
 **コーディングエージェントの作業台 — 企画し、要望や参考リポジトリから作り、承認した合格基準どおりかを検証します**
 
 
-> アプリの画面は韓国語・英語・日本語・中国語 (簡体字) に対応しています。初回はシステムの言語に合わせ (それ以外の言語なら韓国語)、サイドバーの言語ボタンで変更できます。エージェントは依頼と同じ言語で作業・報告します。
+> アプリの画面は韓国語・英語・日本語・中国語 (簡体字) に対応しています。初回はシステムの言語に合わせ (それ以外の言語なら韓国語)、サイドバーの言語ボタンで変更できます。エージェントが使う言語はエージェント自身のルールに従います — 依頼の言語が明確ならその言語を使うよう伝え、分からない場合 (添付・リンクのみ) やエージェントの設定で応答言語を決めている場合 (Claude Code `language`) はその設定に従います。コマンドラインのヘルプ (`--help`) とインストーラーの案内も同じ言語に従います。
 
-![version](https://img.shields.io/badge/version-0.2.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.3.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 他人が作った機能を「ざっと読んで真似して作る」のではなく、コード全体を根拠(ファイル:行)付きで分析し、
 移植した結果がオリジナルと同じ動作をするかをプログラムで確認します。Claude Code のような AI エージェントが手順どおりに使えるよう
@@ -163,7 +163,7 @@ beom-workbench app --shortcut          # スタートメニュー(検索) + デ�
 
 **添付** — どのモードでも企画書・文書・リンクを付けられます: md · txt · pdf · 画像、Word · PowerPoint · Excel · ハングル (HWPX)
 (テキストに変換したコピーも渡す)。公開ページは内容を保存して渡し、ログインが必要なページ (Confluence など) はリンクで渡します —
-その場合はファイルに書き出して添付すると確実です。エージェントは添付を最初に読みます。
+その場合はファイルに書き出して添付すると確実です。エージェントは添付を最初に読みます。ファイルはウィンドウにドラッグ＆ドロップしても、スクリーンショットは貼り付けても (Ctrl+V) 添付できます。実行中・完了したタスクに送るメッセージにも添付できます — 例: 直してほしい箇所のスクリーンショット。
 
 リファレンスモードで必須なのはリポジトリの URL (またはパス) だけです。機能は入力欄に言葉で書くか、空のままにするとエージェントが機能一覧を示して選ばせます。
 
@@ -438,6 +438,8 @@ beom-workbench data --set-cleanup 30       # 起動時に自動整理 (0 = オ�
 | `BEOM_WORKBENCH_HOME` | `~/.beom-workbench` | 台帳・clone・エンジン・バックアップの場所 |
 | `BEOM_WORKBENCH_CONTAINER` | `auto` | 隔離実行エンジン `auto`・`docker`・`wsl`・`none` |
 | `BEOM_WORKBENCH_WSL_DISTRO` | `beom-sandbox` | Windows で使用する WSL ディストリビューション |
+| `BEOM_WORKBENCH_SANDBOX_DIR` | `%LOCALAPPDATA%\beom-workbench-sandbox` | Windows: 内蔵の隔離実行が権限を与えたフォルダの記録場所 |
+| `BEOM_WORKBENCH_NO_UPDATE_CHECK` | — | `1` にするとアプリは新しいバージョン (公開リリース一覧) を確認しない |
 | `BEOM_WORKBENCH_LEASE_SECONDS` | `3600` | 分析単位のリース時間 |
 | `BEOM_WORKBENCH_UNIT_MAX_LINES` / `_UNIT_MAX_CHARS` | `1500` / `45000` | 分析単位のサイズ上限 |
 | `BEOM_WORKBENCH_CONTEXT_MAX_CHARS` | `24000` | `context` の 1 ページあたりのサイズ |

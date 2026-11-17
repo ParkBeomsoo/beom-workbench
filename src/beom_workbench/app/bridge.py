@@ -113,6 +113,18 @@ def _open_terminal(cmd, shell: bool = False) -> None:
         subprocess.Popen([term, "-e", "bash", "-lc", line + "; exec bash"])
 
 
+def _unique_dest(folder: Path, src: Path) -> Path:
+    """folder 안에 src 를 둘 이름 — 같은 이름이 있고 내용이 다르면 name-2.ext, name-3.ext …"""
+    import filecmp
+
+    dest = folder / src.name
+    n = 2
+    while dest.exists() and not (dest.is_file() and filecmp.cmp(dest, src, shallow=False)):
+        dest = folder / f"{src.stem}-{n}{src.suffix}"
+        n += 1
+    return dest
+
+
 class Api(QObject):
     created = Signal(str)       # JSON {"run_id"} 또는 {"error"}
     notify = Signal(str, str)   # 제목, 내용 — 창 밖 알림
@@ -121,6 +133,8 @@ class Api(QObject):
     exportDone = Signal(str)     # PDF 내보내기가 끝남 — JSON {ok, path, folder}
     linkChecked = Signal(str)    # 첨부 링크를 미리 읽어 봄 — JSON {url, ok, needs_login, error, title}
     linkSaved = Signal(str)      # 앱 브라우저에서 로그인해 가져옴 — JSON {url, path} (path 빈 값 = 닫음)
+    filesDropped = Signal(str)   # 창에 끌어다 놓은 파일 — JSON [경로] (창이 브라우저처럼 그 파일로 넘어가지 않게 가로챈다)
+    updateFound = Signal(str)    # 새 버전이 나옴 — JSON {version, url}
 
     def __init__(self, settings, window=None):
         super().__init__()
@@ -292,6 +306,9 @@ class Api(QObject):
         try:
             # 첨부는 에이전트가 실제로 일할 폴더에 — 바탕 화면 같은 공용 폴더면 그 안의 작업 폴더 (create 와 같은 규칙)
             v = {**v, "target_root": runner.work_folder(v["target_root"], v.get("name"), v["mode"])}
+            # 처음 입력 그대로 — '같은 요청으로 새 작업'(다른 에이전트로 다시)이 첨부 안내가 붙기 전 요청과 첨부 목록을 되살릴 수 있게
+            origin = {"request": (v.get("request") or "").strip(), "attachments": list(v.get("attachments") or []) + list(v.get("urls") or []),
+                      "context_dir": v.get("context_dir") or ""}
             request, notes = self._attach(v)
             v["request"] = request
             context = None
@@ -314,6 +331,7 @@ class Api(QObject):
                                 agent=v.get("agent", "claude"), plan_approval=bool(v.get("plan_approval", True)),
                                 effort=v.get("effort") or None, confirm_at=v.get("confirm_at") or "start",
                                 new_branch=v.get("new_branch", True) is not False, sandbox=v.get("sandbox", True) is not False)
+            inbox.update_run(self.settings, run["id"], lambda r: r.update(origin=origin))
             for note in notes:
                 inbox.log(self.settings, run["id"], "note", text=note, tone="warn")
             self.created.emit(json.dumps({"run_id": run["id"], "start": bool(v.get("start", True))}))
@@ -323,7 +341,41 @@ class Api(QObject):
                 msg += f" — {e.recovery}"
             self.created.emit(json.dumps({"error": msg}, ensure_ascii=False))
 
-    def _attach(self, v: dict) -> tuple[str, list[str]]:
+    @Slot(str, result=str)
+    @safe
+    def retryDraft(self, run_id):
+        """'같은 요청으로 새 작업' — 이 실행의 처음 입력으로 새 작업 화면을 채운다 (에이전트·모델을 바꿔 다시 해 보고 비교).
+
+        저장소면 같은 폴더 그대로 (새 작업 브랜치라 앞의 결과와 나란히 남는다), 저장소가 아니면 폴더를 비워
+        새 폴더에 만든다 — 앞의 실행이 만든 파일 위에서 시작하지 않게.
+        """
+        run = inbox.load_run(self.settings, run_id)
+        o = run.get("origin")
+        if o is None:  # 이 기능 전에 만든 실행 — 저장된 요청에서 첨부 안내를 떼고, 대상 폴더에 남은 첨부·링크를 다시 쓴다
+            text = run.get("request") or ""
+            brief = Path(run["target_root"]) / ".beom" / "brief"
+            atts = []
+            for line in text.splitlines():
+                line = line.strip()
+                m = re.match(r"- (\.beom/brief/.+?)(?: \((원본|출처|로그인해) ?(.*)\))?$", line)
+                if m:
+                    f = Path(run["target_root"]) / m.group(1)
+                    if m.group(2) == "원본" and (brief / m.group(3)).is_file():  # spec.docx.md (원본 spec.docx) → 원본 파일
+                        f = brief / m.group(3)
+                    atts.append(str(f))
+                elif re.match(r"- https?://\S+$", line):
+                    atts.append(line[2:])
+            o = {"request": runner.user_request(run), "attachments": list(dict.fromkeys(atts)), "context_dir": ""}
+        atts = [a for a in o.get("attachments") or [] if re.match(r"https?://", str(a)) or Path(a).is_file()]
+        missing = len(o.get("attachments") or []) - len(atts)
+        keep_folder = bool(run.get("work_branch"))
+        return {"mode": run["mode"], "request": o.get("request") or "", "attachments": atts, "missing": missing,
+                "target_root": run["target_root"] if keep_folder else "", "kept_folder": keep_folder,
+                "context_dir": o.get("context_dir") or "", "source": run.get("source") or "", "feature": run.get("feature") or "",
+                **{k: run.get(k) for k in ("agent", "model", "effort", "policy", "max_rounds", "confirm_at", "auth", "plan_approval")
+                   if run.get(k) is not None}}
+
+    def _attach(self, v: dict, *, follow_up: bool = False) -> tuple[str, list[str]]:
         """첨부한 기획서·문서·링크를 대상 폴더의 .beom/brief/ 에 두고 요청에 '먼저 읽으라'고 적는다 (에이전트 샌드박스 안).
 
         docx·pptx·xlsx·hwpx 는 글로 바꾼 .md 를 함께 둔다. 링크는 공개 페이지면 글로 저장하고,
@@ -340,12 +392,13 @@ class Api(QObject):
         brief = Path(v["target_root"]) / ".beom" / "brief"
         brief.mkdir(parents=True, exist_ok=True)
         names, links = [], []
-        for f in files:
+        for f in files:  # 모두 확인한 뒤에 복사한다 — 하나가 잘못돼도 앞의 파일만 반쯤 복사된 채 남지 않게
             if not f.is_file():
                 raise ToolError("not_found", f"첨부 파일이 없습니다: {f}")
             if f.stat().st_size > 20 * 1024 * 1024:
                 raise ToolError("invalid_request", f"첨부 파일이 너무 큽니다 (20MB 까지): {f.name}")
             docs.check_attachable(f)  # .hwp 등 읽을 수 없는 형식은 복사하기 전에 거절
+        for f in files:
             if docs.is_link_package(f) and not f.resolve().is_relative_to(brief.resolve()):  # 로그인 창으로 가져온 문서 — 그림·첨부와 함께
                 dest = brief / f"link-{f.parent.name}"
                 shutil.copytree(f.parent, dest, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".link.json"))
@@ -354,14 +407,15 @@ class Api(QObject):
             if f.resolve().is_relative_to(brief.resolve()):  # 같은 폴더의 기획 패키지 — 그 자리에 있는 파일을 그대로 읽게
                 names.append(".beom/brief/" + f.resolve().relative_to(brief.resolve()).as_posix())
                 continue
-            shutil.copy2(f, brief / f.name)
+            dest = _unique_dest(brief, f)  # 같은 이름의 다른 파일(예: 두 번째 screenshot.png)이 앞의 첨부를 덮지 않게
+            shutil.copy2(f, dest)
             text = docs.to_text(f)
             if text:
-                md = brief / f"{f.name}.md"  # spec.docx → spec.docx.md (spec.md 나 기획 결과 기획서.md 와 겹치지 않게)
-                md.write_text(f"<!-- {f.name} 에서 뽑은 글 -->\n\n{text}", encoding="utf-8")
-                names.append(f".beom/brief/{md.name} (원본 {f.name})")
+                md = brief / f"{dest.name}.md"  # spec.docx → spec.docx.md (spec.md 나 기획 결과 기획서.md 와 겹치지 않게)
+                md.write_text(f"<!-- {dest.name} 에서 뽑은 글 -->\n\n{text}", encoding="utf-8")
+                names.append(f".beom/brief/{md.name} (원본 {dest.name})")
             else:
-                names.append(f".beom/brief/{f.name}")
+                names.append(f".beom/brief/{dest.name}")
         for i, url in enumerate(dict.fromkeys(urls), 1):
             n = i
             while (brief / f"link-{n}").exists():
@@ -375,8 +429,12 @@ class Api(QObject):
                 why = "로그인이 필요한 페이지" if got.get("needs_login") else got.get("error", "가져오지 못함")
                 notes.append(f"{url} — {why}라 내용을 가져오지 못했습니다. 에이전트가 웹으로 읽으려 하면 권한을 묻습니다 "
                                           "(새 작업 화면에서 링크의 '로그인'을 누르면 앱 브라우저로 로그인해 내용을 가져옵니다).")
-        head = request or "첨부한 기획서대로 만든다."
-        out = head + "\n\n[첨부 문서 — 먼저 모두 읽고 요구사항·합격 기준에 반영한다. 문서와 요청이 다르면 묻는다]\n" + "\n".join(f"- {n}" for n in names)
+        if follow_up:  # 진행 중·끝난 실행에 보내는 메시지의 첨부 — 기준을 새로 세우는 게 아니라 이 메시지의 근거
+            head = request or "첨부한 파일을 보고 반영한다."
+            out = head + "\n\n[이 메시지의 첨부 — 먼저 읽고 반영한다]\n" + "\n".join(f"- {n}" for n in names)
+        else:
+            head = request or "첨부한 기획서대로 만든다."
+            out = head + "\n\n[첨부 문서 — 먼저 모두 읽고 요구사항·합격 기준에 반영한다. 문서와 요청이 다르면 묻는다]\n" + "\n".join(f"- {n}" for n in names)
         if links:
             out += "\n[링크 — 내용을 미리 받지 못했다. 웹으로 읽을 수 있으면 읽고, 못 읽으면 사용자에게 내용을 요청한다]\n" + "\n".join(f"- {u}" for u in links)
         return out, notes
@@ -556,8 +614,18 @@ class Api(QObject):
 
         ok, rejected = [], []
         for f in files:
+            p = Path(f)
+            if p.is_dir():  # 끌어다 놓은 폴더
+                rejected.append(f"폴더는 첨부할 수 없습니다 — 파일을 골라 주세요: {p.name}")
+                continue
+            if not p.is_file():
+                rejected.append(f"첨부 파일이 없습니다: {p.name}")
+                continue
+            if p.stat().st_size > 20 * 1024 * 1024:
+                rejected.append(f"첨부 파일이 너무 큽니다 (20MB 까지): {p.name}")
+                continue
             try:
-                docs.check_attachable(Path(f))
+                docs.check_attachable(p)
                 ok.append(f)
             except ToolError as e:
                 rejected.append(e.message)
@@ -771,6 +839,13 @@ class Api(QObject):
             threading.Thread(target=work, daemon=True).start()
         return storage.report(self.settings, sizes=False)
 
+    @Slot(result=str)
+    @safe
+    def usageSummary(self):
+        """작업 전체 사용량 — 이번 달·전체, 에이전트별, 많이 쓴 작업."""
+        from beom_workbench.core import usage
+        return usage.summary(self.settings)
+
     @Slot(str, result=str)
     @safe
     def trashRun(self, run_id):
@@ -951,14 +1026,22 @@ class Api(QObject):
         inbox.answer(self.settings, run_id, request_id, data)
         return {"answered": True}
 
-    @Slot(str, str, result=str)
+    @Slot(str, str, str, result=str)
     @safe
-    def sendMessage(self, run_id, text):
-        text = text.strip()
-        if not text:
+    def sendMessage(self, run_id, text, atts=""):
+        text = text.strip()[:4000]
+        files = [str(f) for f in json.loads(atts or "[]") if str(f).strip()]
+        if not text and not files:
             raise ToolError("invalid_request", "내용이 비어 있습니다")
+        notes: list[str] = []
+        if files:  # 고칠 점을 보여 주는 스크린샷·문서 — 처음 첨부와 같은 규칙으로 대상 폴더의 .beom/brief/ 에 둔다
+            target = inbox.load_run(self.settings, run_id).get("target_root")
+            if not target:
+                raise ToolError("not_found", "실행을 찾을 수 없습니다")
+            text, notes = self._attach({"target_root": target, "request": text, "attachments": files}, follow_up=True)
+
         def add(run):
-            run.setdefault("messages", []).append({"text": text[:4000], "at": view.now(), "delivered": False})
+            run.setdefault("messages", []).append({"text": text, "at": view.now(), "delivered": False})
             if run.get("status") == "done":
                 run["status"] = "stopped"
                 run.pop("handoff", None)
@@ -969,8 +1052,36 @@ class Api(QObject):
                     run.pop("accepted_at", None)
 
         inbox.update_run(self.settings, run_id, add)
-        inbox.log(self.settings, run_id, "user_message", text=text[:4000])
-        return {"queued": True}
+        inbox.log(self.settings, run_id, "user_message", text=text)
+        return {"queued": True, "notes": notes}
+
+    @Slot(str, str, result=str)
+    @safe
+    def pasteImage(self, b64, ext):
+        """붙여 넣은 그림(클립보드 스크린샷)을 파일로 — 첨부와 같은 길로 넘길 수 있게 툴킷 홈에 둔다."""
+        import base64
+        import time
+
+        ext = (ext or "png").lower().lstrip(".")
+        if ext not in ("png", "jpg", "jpeg", "gif", "webp"):
+            raise ToolError("invalid_request", "붙여 넣을 수 있는 그림은 png · jpg · gif · webp 입니다")
+        data = base64.b64decode(b64.split(",", 1)[-1])
+        if len(data) > 20 * 1024 * 1024:
+            raise ToolError("invalid_request", "첨부 파일이 너무 큽니다 (20MB 까지): 붙여 넣은 그림")
+        folder = self.settings.home / "pasted"
+        folder.mkdir(parents=True, exist_ok=True)
+        for old in folder.glob("pasted-*"):  # 첨부할 때 대상 폴더로 복사되므로 오래된 원본은 지운다 (30일)
+            try:
+                if time.time() - old.stat().st_mtime > 30 * 86400:
+                    old.unlink()
+            except OSError:
+                pass
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        f, n = folder / f"pasted-{stamp}.{ext}", 2
+        while f.exists():
+            f, n = folder / f"pasted-{stamp}-{n}.{ext}", n + 1
+        f.write_bytes(data)
+        return {"path": str(f)}
 
     @Slot(str, result=str)
     @safe
@@ -1154,6 +1265,23 @@ class Api(QObject):
         _open_terminal(cmd)
         self._agents_at = 0  # 터미널에서 로그인을 마치고 창으로 돌아오면 바로 다시 확인
         return {"opened": True}
+
+    @Slot(result=str)
+    @safe
+    def checkUpdate(self):
+        """새 버전이 나왔는지 뒤에서 한 번 확인한다 (updateFound 로 알림) — 공개 릴리스 목록만 읽는다."""
+        from beom_workbench import __version__
+        from beom_workbench.core import update
+        if not update.enabled():
+            return {"checking": False}
+
+        def work():
+            got = update.latest(__version__)
+            if got:
+                self.updateFound.emit(json.dumps(got))
+
+        threading.Thread(target=work, daemon=True).start()
+        return {"checking": True}
 
     @Slot(str, result=str)
     @safe

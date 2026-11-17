@@ -5,9 +5,9 @@
 **코딩 에이전트의 작업대 — 기획하고, 요청이나 참고 저장소로 만들고, 승인한 합격 기준대로 되는지 검증합니다**
 
 
-> 앱 화면은 한국어·영어·일본어·중국어(간체)를 지원합니다. 처음에는 시스템 언어를 따르고(그 밖의 언어면 한국어), 사이드바의 언어 단추로 바꿀 수 있습니다. 에이전트는 요청한 언어로 일하고 보고합니다.
+> 앱 화면은 한국어·영어·일본어·중국어(간체)를 지원합니다. 처음에는 시스템 언어를 따르고(그 밖의 언어면 한국어), 사이드바의 언어 단추로 바꿀 수 있습니다. 에이전트가 쓰는 언어는 에이전트 자체 규칙을 따릅니다 — 요청 언어가 분명하면 그 언어로 쓰라고 알려 주고, 알 수 없거나(첨부·링크뿐) 에이전트 설정에 응답 언어를 정해 두었으면(Claude Code `language`) 그 설정을 따릅니다. 명령줄 도움말(`--help`)과 설치 스크립트 안내도 같은 언어를 따릅니다.
 
-![version](https://img.shields.io/badge/version-0.2.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.3.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 에이전트가 "다 됐다"고 할 때까지 맡기는 대신, 요구사항과 합격 케이스를 먼저 정하고, 에이전트는 자기 브랜치에서만 일하게 하고,
 결과가 그 기준을 채우는지(옮겨 오는 경우 원본과 같은 동작인지) 프로그램으로 확인합니다. 분석 결론에는 모두 근거(파일:줄)가 붙습니다. Claude Code 같은 AI 에이전트가 절차를 따라 쓰도록
@@ -192,7 +192,7 @@ beom-workbench app --shortcut          # 시작 메뉴(검색) + 바탕화면 �
 기획서는 표와 화면 설계 그림이 내용의 절반이기 때문입니다. 로그인이 필요한 페이지(컨플루언스·지라 등)는 앱이 로그인을 요청합니다 — 앱 안의
 브라우저 창에서 로그인하고 **이 문서 가져오기** 를 누릅니다. 컨플루언스는 로그인한 그 세션으로 사이트의 REST API 를 읽어 본문과 함께 하위
 페이지·댓글·첨부까지, 지라는 이슈의 설명·하위 작업·연결된 이슈·댓글·첨부까지 가져옵니다. 그 밖의 사이트는 페이지의 본문 영역을 같은 방식으로
-바꿉니다. 로그인은 앱 전용 프로필에 남습니다 (**저장 공간 → 문서 로그인 기록** 에서 지움). 에이전트는 첨부를 먼저 읽습니다.
+바꿉니다. 로그인은 앱 전용 프로필에 남습니다 (**저장 공간 → 문서 로그인 기록** 에서 지움). 에이전트는 첨부를 먼저 읽습니다. 파일을 창에 끌어다 놓거나 스크린샷을 붙여 넣어도(Ctrl+V) 되고, 진행 중이거나 끝난 작업에 보내는 메시지에도 첨부할 수 있습니다 — 예) 고칠 곳의 스크린샷.
 
 **기획 패키지** — 기획 모드는 문서 한 장이 아니라 기획자가 넘기는 묶음을 만듭니다 (대상 폴더의 `.beom/brief/`).
 
@@ -584,7 +584,8 @@ beom-workbench data --revoke-sandbox       # Windows: 격리 실행에 준 폴�
 | `BEOM_WORKBENCH_HOME` | `~/.beom-workbench` | 원장·clone·엔진·백업 위치 |
 | `BEOM_WORKBENCH_CONTAINER` | `auto` | 격리 실행 엔진 `auto`·`docker`·`wsl`·`none` |
 | `BEOM_WORKBENCH_WSL_DISTRO` | `beom-sandbox` | Windows 에서 쓸 WSL 배포판 |
-| `BEOM_WORKBENCH_SANDBOX_DIR` | `%LOCALAPPDATA%eom-workbench-sandbox` | Windows: 내장 격리 실행이 권한을 준 폴더 기록 위치 |
+| `BEOM_WORKBENCH_SANDBOX_DIR` | `%LOCALAPPDATA%\beom-workbench-sandbox` | Windows: 내장 격리 실행이 권한을 준 폴더 기록 위치 |
+| `BEOM_WORKBENCH_NO_UPDATE_CHECK` | — | `1` 이면 앱이 새 버전(공개 릴리스 목록)을 확인하지 않음 |
 | `BEOM_WORKBENCH_LEASE_SECONDS` | `3600` | 분석 단위 임대 시간 |
 | `BEOM_WORKBENCH_UNIT_MAX_LINES` / `_UNIT_MAX_CHARS` | `1500` / `45000` | 분석 단위 크기 상한 |
 | `BEOM_WORKBENCH_CONTEXT_MAX_CHARS` | `24000` | `context` 한 페이지 크기 |

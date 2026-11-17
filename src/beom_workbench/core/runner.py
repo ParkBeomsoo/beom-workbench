@@ -372,8 +372,18 @@ def _existing_line(ex: dict) -> str:
             + " — 새로 만들기 전에 언어·업무 규칙·화면 톤앤매너를 먼저 파악해 맞춘다 (기존 자산 기반)")
 
 
-def lang_of(text: str | None) -> str:
-    """사용자 요청의 언어 — 에이전트 중간 메시지가 영어로 새지 않게 지시 머리에 못 박는다."""
+def ui_lang(settings: Settings) -> str:
+    """앱 화면 언어 코드 (설정 → 운영체제 언어 → 한국어)."""
+    from beom_workbench import i18n
+    from beom_workbench.core import storage
+    try:
+        return i18n.resolve(storage.load_prefs(settings).get("lang") or "auto")
+    except Exception:  # noqa: BLE001
+        return i18n.DEFAULT
+
+
+def lang_of(text: str | None) -> str | None:
+    """사용자 요청의 언어 — 알 수 없으면 None (첨부·링크·코드뿐인 요청)."""
     t = text or ""
     if re.search(r"[가-힣]", t):
         return "한국어"
@@ -381,7 +391,46 @@ def lang_of(text: str | None) -> str:
         return "日本語"
     if re.search(r"[\u4e00-\u9fff]", t):
         return "中文"
-    return "English"
+    # 코드·링크·경로·첨부 안내는 빼고 본다 — 남은 영어 낱말이 거의 없으면 요청 언어를 알 수 없다
+    prose = re.sub(r"`[^`]*`|https?://\S+|[A-Za-z]:[\\/]\S*|\S*[\\/]\S+|\.beom\S*", " ", t)
+    return "English" if len(re.findall(r"[A-Za-z]{2,}", prose)) >= 3 else None
+
+
+def agent_language_setting(agent: str | None) -> str | None:
+    """사용자가 에이전트 자체 설정에 정해 둔 응답 언어 (Claude Code settings.json 의 "language") — 있으면 그것을 따른다."""
+    if (agent or "claude") != "claude":
+        return None
+    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    try:
+        lang = json.loads((base / "settings.json").read_text(encoding="utf-8")).get("language")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return (str(lang).strip() or None) if lang else None
+
+
+ATTACH_HEADS = ("첨부한 기획서대로 만든다.", "첨부한 파일을 보고 반영한다.")
+
+
+def user_request(run: dict) -> str:
+    """사용자가 직접 적은 요청 — 앱이 붙인 첨부·링크 안내(한국어)는 뺀다 (언어 판단·다시 하기에 쓴다)."""
+    o = run.get("origin")
+    if isinstance(o, dict) and "request" in o:
+        return o.get("request") or ""
+    text = run.get("request") or ""
+    for mark in ("\n\n[첨부 문서 — ", "\n\n[링크 — ", "\n\n[이 메시지의 첨부 — "):
+        text = text.split(mark, 1)[0]
+    text = text.strip()
+    return "" if text in ATTACH_HEADS else text
+
+
+def lang_line(run: dict, text: str | None, what: str) -> str | None:
+    """에이전트에게 줄 언어 지시 한 줄. 기본은 에이전트 자체 규칙(사용자 설정)을 따른다 —
+    우리 지시문이 한국어라, 요청 언어가 분명할 때만 그 언어로 쓰라고 적는다 (영어 요청이 한국어로 끌려가지 않게).
+    요청 언어를 알 수 없거나(첨부·링크뿐) 사용자가 에이전트 설정에 언어를 정해 두었으면 적지 않는다."""
+    lang = lang_of(text)
+    if not lang or agent_language_setting(run.get("agent")):
+        return None
+    return f"[언어] {lang} — {what}"
 
 
 MODE_REF = ("레퍼런스 기반 — 원본 저장소의 기능·동작을 참고해 대상 프로젝트에 맞게 옮기거나(포팅) 새로 만든다. 사용자 요청이 "
@@ -390,9 +439,9 @@ MODE_REF = ("레퍼런스 기반 — 원본 저장소의 기능·동작을 참�
 
 
 def _brief(run: dict, st: dict | None) -> str:
-    lines = [f"[언어] {lang_of(run.get('request') or run.get('feature'))} — 중간 메시지·보고·질문 모두",
+    lines = [x for x in [lang_line(run, user_request(run) or run.get('feature'), "중간 메시지·보고·질문 모두"),
              f"[모드] {'요청사항 기반 만들기' if run['mode'] == 'request' else MODE_REF}",
-             f"[대상 폴더] {run['target_root']}"]
+             f"[대상 폴더] {run['target_root']}"] if x]
     if run.get("request"):
         lines.append(f"[사용자 요청]\n{run['request']}")
     if run["mode"] == "reference":
@@ -1251,7 +1300,8 @@ class Runner:
                 if msgs:
                     prompt += "\n\n" + "\n".join(m["text"] for m in msgs)
                 if run["mode"] == "plan":
-                    prompt = f"[언어] {lang_of(run.get('request'))} — 문서·질문·중간 메시지 모두\n[기획할 것]\n{prompt}\n\n[대상 폴더] {run['target_root']}"
+                    head = lang_line(run, user_request(run), "문서·질문·중간 메시지 모두")
+                    prompt = (head + "\n" if head else "") + f"[기획할 것]\n{prompt}\n\n[대상 폴더] {run['target_root']}"
                     if run.get("existing"):
                         prompt += "\n" + _existing_line(run["existing"])
                     for line in _guides_lines(run.get("guides")):
