@@ -15,7 +15,23 @@ from beom_workbench.common.response import ToolError
 # 스냅샷에 넣지 않는 것 — 빌드 결과·의존성·캐시, 그리고 툴킷의 임시 폴더(명령 스크립트·내보내기). 라운드마다 쌓여 숨은 저장소가 불지 않게.
 EXCLUDE = [".git/", ".beom-workbench/", "node_modules/", "target/", "__pycache__/", ".venv/", "venv/", "dist/", "build/",
            ".beom/tmp/", ".next/", ".nuxt/", ".turbo/", ".gradle/", ".pytest_cache/", "coverage/", ".cache/"]
+# 변경 탭·파일 되돌리기에서 빼는 것 — 프로그램이 아닌 툴킷 작업 파일(.beom/: 합격 케이스·첨부)과 검증이 남기는 커버리지 데이터.
+# 작업 브랜치 커밋과 같은 기준이다 (프로그램만). 예전 실행의 숨은 저장소가 이미 추적하는 파일도 여기서 걸러진다.
+HIDDEN = [":(exclude).beom", ":(exclude,glob)**/.coverage", ":(exclude,glob)**/.coverage.*", ":(exclude,glob)**/htmlcov/**",
+          ":(exclude,glob)**/.nyc_output/**"]
 MAX_DIFF = 400_000
+
+
+def hidden(path: str) -> bool:
+    """변경 탭에 보이지 않는(되돌리지 않는) 경로인가."""
+    p = path.replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    name = p.rsplit("/", 1)[-1]
+    return p == ".beom" or p.startswith(".beom/") or name == ".coverage" or name.startswith(".coverage.") \
+        or "/htmlcov/" in "/" + p or "/.nyc_output/" in "/" + p
+
+
 _LIST_CACHE: dict[str, tuple] = {}
 
 
@@ -106,8 +122,9 @@ class Checkpoints:
         # 화면용 비교는 따로 둔 인덱스로 — 라운드 스냅샷(실행기)과 같은 인덱스를 동시에 잠그지 않게
         idx = self.shadow / "index.view"
         _git(self.shadow, self.root, "add", "-A", ".", index=idx)
-        stat = _git(self.shadow, self.root, "diff", "--cached", "--numstat", "--no-renames", base, check=False, index=idx).stdout
-        names = _git(self.shadow, self.root, "diff", "--cached", "--name-status", "--no-renames", base, check=False,
+        spec = ["--", ".", *HIDDEN]
+        stat = _git(self.shadow, self.root, "diff", "--cached", "--numstat", "--no-renames", base, *spec, check=False, index=idx).stdout
+        names = _git(self.shadow, self.root, "diff", "--cached", "--name-status", "--no-renames", base, *spec, check=False,
                      index=idx).stdout
         status = {}
         for line in names.splitlines():
@@ -122,7 +139,7 @@ class Checkpoints:
                 path = path.split(" => ")[-1].rstrip("}") if " => " in path else path
                 files.append({"path": path, "added": None if add == "-" else int(add), "removed": None if rem == "-" else int(rem),
                               "status": status.get(path, "M")})
-        diff = _git(self.shadow, self.root, "diff", "--cached", "--no-renames", base, check=False, index=idx).stdout
+        diff = _git(self.shadow, self.root, "diff", "--cached", "--no-renames", base, *spec, check=False, index=idx).stdout
         return {"files": files, "diff": diff[:MAX_DIFF], "truncated": len(diff) > MAX_DIFF, "base": base}
 
     def restore(self, checkpoint: str) -> dict:

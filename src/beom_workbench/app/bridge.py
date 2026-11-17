@@ -24,7 +24,6 @@ from beom_workbench import __version__
 from beom_workbench.app import view
 from beom_workbench.common.response import ToolError
 from beom_workbench.core import agents, inbox, integrity, inventory, port, project, rounds, runner
-from beom_workbench.core import port_guard as guard
 from beom_workbench.core.checkpoints import Checkpoints
 
 
@@ -369,7 +368,7 @@ class Api(QObject):
         atts = [a for a in o.get("attachments") or [] if re.match(r"https?://", str(a)) or Path(a).is_file()]
         missing = len(o.get("attachments") or []) - len(atts)
         keep_folder = bool(run.get("work_branch"))
-        return {"mode": run["mode"], "request": o.get("request") or "", "attachments": atts, "missing": missing,
+        return {"mode": run["mode"], "name": run.get("name") or "", "request": o.get("request") or "", "attachments": atts, "missing": missing,
                 "target_root": run["target_root"] if keep_folder else "", "kept_folder": keep_folder,
                 "context_dir": o.get("context_dir") or "", "source": run.get("source") or "", "feature": run.get("feature") or "",
                 **{k: run.get(k) for k in ("agent", "model", "effort", "policy", "max_rounds", "confirm_at", "auth", "plan_approval")
@@ -952,29 +951,15 @@ class Api(QObject):
     @Slot(str, str, result=str)
     @safe
     def approveReviews(self, run_id, shown_sig):
-        run = inbox.load_run(self.settings, run_id)
-        conn, _ = project.load(self.settings, run["project_id"])
-        reviews = port.pending_reviews(conn, run["port_id"])
-        if view.sig(reviews) != shown_sig:  # 화면을 본 뒤 에이전트가 내용을 바꿨다 — 본 것만 승인한다
-            raise ToolError("conflict", "확인하는 사이에 내용이 바뀌었습니다. 새 내용을 보고 다시 승인해 주세요")
-        integrity.record(run_id, "reviews")
-        guard.approve(conn, run["port_id"], reviews, channel="desktop-app", approved_by=getpass.getuser())
-        inbox.log(self.settings, run_id, "approved", items=[r["item_id"] for r in reviews])
-        return {"approved": len(reviews)}
+        from beom_workbench.core import approvals
+        return approvals.approve_reviews(self.settings, run_id, shown_sig, channel="desktop-app")
 
     @Slot(str, str, result=str)
     @safe
     def ackLicense(self, run_id, shown_warning):
         """레퍼런스: 원본 라이선스 경고를 사람이 보고 '옮겨도 됨'으로 확인 — 본 경고 문구 그대로일 때만."""
-        run = inbox.load_run(self.settings, run_id)
-        conn, _ = project.load(self.settings, run["project_id"])
-        st = port.status_(conn, run["port_id"], brief=True)
-        if ((st.get("license") or {}).get("warning") or "") != shown_warning:
-            raise ToolError("conflict", "확인하는 사이에 라이선스 경고가 바뀌었습니다. 새 내용을 보고 다시 확인해 주세요")
-        integrity.record(run_id, "reviews")
-        out = port.ack_license(conn, run["port_id"], channel="desktop-app", approved_by=getpass.getuser())
-        inbox.log(self.settings, run_id, "license_ack", warning=shown_warning[:500])
-        return out
+        from beom_workbench.core import approvals
+        return approvals.ack_license(self.settings, run_id, shown_warning, channel="desktop-app")
 
     @Slot(str, str, result=str)
     @safe
@@ -988,43 +973,14 @@ class Api(QObject):
         return self._approve_plan(run_id, shown_sig, json.loads(changes or "{}"))
 
     def _approve_plan(self, run_id, shown_sig, changes: dict):
-        changed = []
-
-        def ok(r):
-            plan = r.get("plan") or {}
-            if not plan.get("steps"):
-                raise ToolError("invalid_request", "승인할 계획이 없습니다")
-            if view.sig(view.plan_core(plan)) != shown_sig:
-                raise ToolError("conflict", "확인하는 사이에 계획이 바뀌었습니다. 새 계획을 보고 다시 승인해 주세요")
-            for d in plan.get("decisions") or []:
-                pick = changes.get(d["topic"])
-                if pick and pick != d["choice"] and pick in (d.get("options") or []):
-                    changed.append(f"{d['topic']}: {d['choice']} → {pick}")
-                    d["options"] = [d["choice"]] + [o for o in d["options"] if o != pick]
-                    d["choice"], d["changed_by_user"] = pick, True
-            if changed:
-                r.setdefault("messages", []).append({
-                    "text": "계획을 승인하면서 사전 설계 결정을 바꿨다 — 요구사항·합격 케이스·계획·구현을 이 결정에 맞춘다. "
-                            "이번 라운드에 고치는 요구사항·케이스는 사용자 결정의 결과라 툴킷이 자동 승인한다 (다시 확인을 기다리지 않는다):\n"
-                            + "\n".join(f"- {c}" for c in changed), "at": view.now(), "delivered": False})
-                r["auto_approve_round"] = int(r.get("round") or 0) + 1
-            plan["approved"] = True
-            plan["approved_by"] = getpass.getuser()
-            plan["approved_at"] = view.now()
-
-        integrity.record(run_id, "plan")
-        inbox.update_run(self.settings, run_id, ok)
-        inbox.log(self.settings, run_id, "plan_approved", **({"changed": changed} if changed else {}))
-        return {"approved": True, "changed": changed}
+        from beom_workbench.core import approvals
+        return approvals.approve_plan(self.settings, run_id, shown_sig, changes, channel="desktop-app")
 
     @Slot(str, str, str, result=str)
     @safe
     def answer(self, run_id, request_id, payload):
-        data = json.loads(payload)
-        if data.get("always") and data.get("allow"):
-            integrity.record(run_id, "policy")  # '항상 허용' — 도구 서버가 규칙을 허용으로 바꾼다
-        inbox.answer(self.settings, run_id, request_id, data)
-        return {"answered": True}
+        from beom_workbench.core import approvals
+        return approvals.answer(self.settings, run_id, request_id, json.loads(payload))
 
     @Slot(str, str, str, result=str)
     @safe
@@ -1094,10 +1050,8 @@ class Api(QObject):
     @Slot(str, result=str)
     @safe
     def accept(self, run_id):
-        integrity.record(run_id, "accept")
-        inbox.update_run(self.settings, run_id, lambda r: r.update(accepted=True, accepted_at=view.now()))
-        inbox.log(self.settings, run_id, "accepted")
-        return {"accepted": True}
+        from beom_workbench.core import approvals
+        return approvals.accept(self.settings, run_id)
 
     @Slot(str, str, result=str)
     @safe
@@ -1125,6 +1079,9 @@ class Api(QObject):
         root = Path(run["target_root"])
         if not inbox._inside(path, root) or (root / path).resolve() == root.resolve():
             raise ToolError("invalid_request", "대상 폴더 밖 경로")
+        from beom_workbench.core.checkpoints import hidden
+        if hidden(path):  # 툴킷 작업 파일(합격 케이스 등)은 되돌리지 않는다 — 원장과 어긋나게 된다
+            raise ToolError("invalid_request", "툴킷 작업 파일은 되돌리지 않습니다")
         target = (root / path).resolve()
         exists = _git(cp.shadow, root, "cat-file", "-e", f"{base}:{path}", check=False).returncode == 0
         if exists:
