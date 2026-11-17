@@ -595,7 +595,7 @@ In the app: **Storage** at the bottom of the sidebar, and **Move to trash** in a
   under a restricted token, which is why Claude uses PowerShell there. Checked end to end on Windows: inside writes work, outside writes
   and writes to `~/.beom-workbench` are denied (also when the path is built at run time so the permission rules cannot see it),
   `npm install`, `node`, `python`, `pip` and `git` work, and no window appears. On macOS and Linux, retrying outside the sandbox is
-  disabled and network access (when web is allowed) is limited to package registries. Global installs (`npm -g`, `pip --user`) are
+  disabled, network access is limited to package registries (so installs work in the default mode; closed when web is refused) and servers on 127.0.0.1 are allowed for tests and previews. Global installs (`npm -g`, `pip --user`) are
   refused by design. Turn it off per run in the run options.
 - **Permission rules** classify every agent tool call and command: edits inside the target, build/test commands, other commands,
   web, outside the folder, publish (push, package publish, PR creation), delete outside the folder, system changes (registry,

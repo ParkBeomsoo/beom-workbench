@@ -179,15 +179,19 @@ _REGISTRIES = ["registry.npmjs.org", "*.npmjs.org", "registry.yarnpkg.com", "pyp
 
 def claude_settings(run: dict) -> dict:
     """macOS·Linux: Claude Code 자체 샌드박스 설정 (--settings). 샌드박스 밖 재시도는 막고, 명령 허용은 우리 권한 규칙이 정한다."""
+    import tempfile
     home = Path.home()
     caches = [home / ".npm", home / ".cache", home / ".cargo", home / ".gradle", home / ".m2", home / "go",
-              home / ".nuget", home / "Library" / "Caches", home / ".yarn", home / ".pnpm-store"]
-    web = (run.get("policy") or {}).get("web") == "allow"
+              home / ".nuget", home / "Library" / "Caches", home / ".yarn", home / ".pnpm-store", Path(tempfile.gettempdir())]
+    # 패키지 저장소는 설치(빌드)에 필요하다 — '웹 접속'을 물어보기로 둔 기본 모드에서도 npm·pip install 이 되게.
+    # 사용자가 웹을 거절로 둔 때만 막는다. (에이전트의 웹 도구는 샌드박스 밖이라 따로 '웹 접속' 규칙으로 묻는다)
+    web_refused = (run.get("policy") or {}).get("web") == "refuse"
     return {"sandbox": {"enabled": True, "failIfUnavailable": True, "autoAllowBashIfSandboxed": False,
                         "allowUnsandboxedCommands": False,
                         "filesystem": {"allowWrite": [c.as_posix() for c in caches],
                                        "denyWrite": [(home / ".beom-workbench").as_posix()]},
-                        "network": {"allowedDomains": _REGISTRIES if web else []}}}
+                        # allowLocalBinding: 테스트·미리보기가 127.0.0.1 에 서버를 띄울 수 있게 (기본은 막혀 있다)
+                        "network": {"allowedDomains": [] if web_refused else _REGISTRIES, "allowLocalBinding": True}}}
 
 
 def cache_roots() -> list[str]:
@@ -244,7 +248,7 @@ def _ps_quote(s: str) -> str:
 
 
 RULE_POSIX = ("[격리 실행] 셸 명령은 운영체제 샌드박스 안에서 돈다 — 대상 폴더·임시 폴더·도구 캐시(npm·pip·cargo 등)에만 쓸 수 있고, "
-              "전역 설치·대상 폴더 밖 쓰기는 실패한다. 웹 허용일 때도 패키지 저장소 같은 정해 둔 곳만 접속된다. 샌드박스 밖으로 다시 "
+              "전역 설치·대상 폴더 밖 쓰기는 실패한다. 네트워크는 패키지 저장소 같은 정해 둔 곳만 접속되고, 127.0.0.1 에 서버는 띄울 수 있다. 샌드박스 밖으로 다시 "
               "실행해 달라고 하지 않는다 — 막히면 그 사실을 보고한다.")
 
 
