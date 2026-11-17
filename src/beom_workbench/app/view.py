@@ -67,12 +67,14 @@ def _holds_for_plan(run: dict, reviews: int) -> bool:
     """기준은 정리됐지만 계획까지 세우는 중 — 화면이 기준을 계획과 한 장으로 띄우려고 아직 보여 주지 않는 때.
     이때는 사용자 차례가 아니다 (상태·알림이 '내 차례'를 먼저 내지 않게)."""
     return bool(reviews) and run.get("status") == "running" and run.get("mode") in ("request", "reference") \
-        and run.get("plan_approval", True) and not (run.get("plan") or {}).get("steps")
+        and run.get("plan_approval", True) and run.get("confirm_at", "start") != "end" and not (run.get("plan") or {}).get("steps")
 
 
 def _status(run: dict, asks: int, reviews: int, alive: bool = True) -> tuple[str, str]:
     s = run.get("status")
-    if _holds_for_plan(run, reviews):
+    if s == "running":
+        # 라운드 도중 에이전트가 올린 확인 항목은 에이전트를 멈추지 않는다 — 라운드가 끝나 실행기가 승인을 기다릴 때
+        # (waiting_approval) 비로소 사용자 차례다. '내 차례'는 사용자 없이는 더 진행할 수 없을 때만 (질문·권한·승인 대기·수락).
         reviews = 0
     if s in ("running", "waiting_answer") and not alive and not (asks or reviews):
         return "중단됨", "idle"  # 진행하던 실행기가 사라짐 (앱을 닫았거나 비정상 종료) — 이어서 진행으로 재개
@@ -641,6 +643,8 @@ def _activity(run: dict, asks: list, reviews: int = 0, license_open: bool = Fals
     s = run.get("status")
     if s == "done":  # 끝난 작업에 '…하는 중'(마지막 활동)을 남겨 두지 않는다
         return None if run.get("accepted") else {"text": "끝났습니다 — 인수인계를 보고 수락하거나, 고칠 점을 보내 주세요"}
+    if s == "stopped" and not asks:  # 멈춘 작업에 마지막 '검증하는 중' 같은 한 줄이 남으면 아직 도는 것처럼 보인다
+        return {"text": "멈췄습니다 — '이어서'를 누르거나 메시지를 보내면 이어서 진행합니다"}
     if s == "waiting_approval" and license_open and not reviews:
         return {"text": "원본 라이선스 확인을 기다리는 중 — 아래 카드를 보고 옮겨도 되는지 확인해 주세요"}
     plan_open = bool((run.get("plan") or {}).get("steps")) and not (run.get("plan") or {}).get("approved") \
@@ -648,9 +652,15 @@ def _activity(run: dict, asks: list, reviews: int = 0, license_open: bool = Fals
     if s == "waiting_approval" and not reviews and not license_open and not plan_open and not asks:
         return {"text": "확인할 것을 모두 처리했습니다 — 곧 이어서 진행합니다 (멈춰 있으면 '이어서'를 누르세요)"}
     if s in ("waiting_approval", "waiting_plan"):
+        if run.get("confirm_at") == "end":  # 다 만든 뒤 한 번 받는 확인
+            return {"text": "마지막 확인을 기다리는 중 — 아래 카드를 보고 승인하거나 고칠 점을 보내 주세요"}
+        if (run.get("plan") or {}).get("approved"):  # 시작한 뒤의 확인 (추가 요청으로 바뀐 기준 등) — '시작 전 확인' 카드가 아니다
+            return {"text": "확인을 기다리는 중 — 아래 카드를 보고 승인하거나 고칠 점을 보내 주세요"}
         return {"text": "확인을 기다리는 중 — 아래 '시작 전 확인'을 보고 승인하거나 고칠 점을 보내 주세요"}
     if s == "waiting_answer" or asks:
         return {"text": "답을 기다리는 중 — 아래 카드에 답해 주세요"}
     if _holds_for_plan(run, reviews):  # 화면도 이 두 모드에서만 기준을 계획과 함께 띄운다
         return {"text": "기준을 정리했습니다 — 계획까지 세우면 한 번에 확인하도록 보여 드립니다"}
+    if s == "running" and reviews and run.get("confirm_at") == "end" and not run.get("activity"):
+        return {"text": "기준을 정리했습니다 — 멈추지 않고 만든 뒤 마지막에 한 번에 확인을 요청합니다"}
     return run.get("activity")

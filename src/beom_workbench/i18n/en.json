@@ -1493,5 +1493,12 @@
 "결론 검토": "Review conclusions",
 "결론 기록": "Record conclusion",
 "도구 작업": "Tool work",
-"대상 폴더 안 수정·빌드·테스트·자기 스크립트 실행은 바로, 그 밖의 명령·웹은 확인합니다": "Edits, builds, tests and running the project's own scripts inside the target folder go straight through; other commands and the web are confirmed"
+"내 차례 — 아래 카드를 확인해 주세요": "Your turn — check the card below",
+"기준을 정리했습니다 — 멈추지 않고 만든 뒤 마지막에 한 번에 확인을 요청합니다": "Criteria are ready — building through without stopping, then asking you once at the end",
+"요구사항을 고쳤습니다 — 합격 기준을 맞추는 중": "Requirements updated — adjusting the acceptance criteria",
+"합격 기준을 저장했습니다": "Acceptance criteria saved",
+"확인을 기다리는 중 — 아래 카드를 보고 승인하거나 고칠 점을 보내 주세요": "Waiting for you — check the card below and approve, or send what to change",
+"마지막 확인": "Final check",
+"마지막 확인을 기다리는 중 — 아래 카드를 보고 승인하거나 고칠 점을 보내 주세요": "Waiting for the final check — review the card below and approve, or send what to change",
+"멈췄습니다 — '이어서'를 누르거나 메시지를 보내면 이어서 진행합니다": "Stopped — press Continue or send a message to go on"
 }

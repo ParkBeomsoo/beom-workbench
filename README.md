@@ -240,7 +240,7 @@ Any other model name can be typed in. Model and effort can be changed during a r
 | Mode | Behaviour |
 |---|---|
 | Ask everything | every edit and command is confirmed |
-| Allow edits (default) | edits inside the target folder, build/test commands, read-only commands and running the project's own scripts there run directly; other commands (e.g. `python -c`, network, paths outside the folder) and the web are confirmed |
+| Allow edits (default) | edits inside the target folder, build/test commands and read-only commands run directly; other commands (running the project's own scripts, `python -c`, network, paths outside the folder …) and the web are confirmed |
 | Auto | commands and web research run without asking; only files outside the folder are confirmed — use for trusted work. CLI: `beom-workbench run --permission auto` |
 
 Push, publish, deleting outside the folder and system changes are always refused. Commands the agent passes to verification tools

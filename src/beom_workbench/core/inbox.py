@@ -48,7 +48,7 @@ _NEVER = {"publish": "refuse", "branch": "refuse", "delete": "refuse", "system":
 PERMISSION_MODES = {
     "ask": {"label": "모두 물어보기", "desc": "파일 수정·명령 실행마다 확인합니다",
             "policy": {"edit": "ask", "build": "ask", "commands": "ask", "web": "ask", "outside": "ask", "other": "ask", **_NEVER}},
-    "edits": {"label": "편집 자동 허용", "desc": "대상 폴더 안 수정·빌드·테스트·자기 스크립트 실행은 바로, 그 밖의 명령·웹은 확인합니다",
+    "edits": {"label": "편집 자동 허용", "desc": "대상 폴더 안 수정과 빌드·테스트는 바로, 그 밖의 명령·웹은 확인합니다",
               "policy": dict(DEFAULT_POLICY)},
     "auto": {"label": "자동", "desc": "명령·웹 조사까지 묻지 않고 진행합니다 (폴더 밖 파일·배포·시스템 변경만 확인). 믿을 수 있는 작업에만",
              "policy": {"edit": "allow", "build": "allow", "commands": "allow", "web": "allow", "outside": "ask", "other": "ask",
@@ -71,10 +71,12 @@ BUILD_COMMANDS = re.compile(
     r"cargo (build|test|check|fmt|clippy)|go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
     r"\./gradlew (test|build)|pip install -e \.|dotnet (build|test)|"
     # pytest 는 실행기를 바꾸지 않는 인자만 (출력·멈춤·고르기·테스트 파일) — -p(플러그인)·-c·--rootdir 같은 것은 묻는다
-    r"(?:(?:python3?|py) -m coverage run (?:--include=[\w./\\*,-]+ |--source=[\w./\\,-]+ |--omit=[\w./\\*,-]+ |--branch )*-m (?:pytest|unittest)|"
+    r"(?:(?:python3?|py) -m coverage run (?:--include=[\w./\\*,-]+ |--source=[\w./\\,-]+ |--omit=[\w./\\*,-]+ |--branch |--rcfile=(?:NUL|/dev/null) )*"
+    r"-m (?:pytest|unittest)|"
     r"pytest|(?:python3?|py) -m pytest|uv run pytest|(?:python3?|py) -m unittest)"
     r"(?: (?:-q|-qq|-v|-vv|-x|-s|-rA|-ra|-b|-f|--no-header|--tb=\w+|--maxfail=\d+|-k [\w.]+|discover|-s [\w./\\-]+|-p no:[\w.-]+"
-    r"|[\w./\\-]+\.py(?:::[\w:\[\]-]+)?|[\w.\\-]+[/\\]))*|"
+    # 테스트 파일·폴더 (pricing · tests/unit · test_a.py::test_b) — '-' 로 시작하지 않는 경로 낱말만, .. 는 아니다
+    r"|[\w./\\-]+\.py(?:::[\w:\[\]-]+)?|(?!\.\.)(?![\w.\\/-]*[\\/]\.\.)[\w][\w.\\/-]*))*|"
     r"(?:python3?|py) -m coverage (?:report|json|html|xml)(?: -m| --include=[\w./\\*,-]+| --show-missing| -o (?!\S*\.\.)[\w./\\-]+)*|"
     # Node 내장 테스트 실행기 — 결과·커버리지 출력만 고르는 인자 (--import·--require 처럼 다른 코드를 불러오는 것은 묻는다)
     r"node --test(?: (?:--test-isolation=none|--experimental-test-coverage|--test-reporter=[\w-]+|--test-reporter-destination=(?!\S*\.\.)[\w./\\-]+"
@@ -358,8 +360,6 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
         parts = [x.strip() for x in re.split(r"\s*(?:;|&&)\s*", cmd) if x.strip()]
         if len(parts) > 1 and all(_safe_piece(x, target_root) for x in parts) and not _read_only_shell(cmd, target_root):
             return "build"  # 빌드·실행이 섞인 줄 — 읽기만 하는 줄은 아래에서 읽기(edit)로
-        if _own_script(core, target_root):
-            return "build"
         # 버전·설치 여부만 보는 명령(node --version; Test-Path …)은 아무것도 바꾸지 않는다 — 묻지 않고 빌드와 같이 둔다
         if _inspect_only(core):
             return "build"
@@ -383,15 +383,6 @@ INSPECT_COMMANDS = re.compile(
 # 에이전트가 PowerShell 로 한 번 더 감싸 보내는 명령 — 안쪽 명령으로 판단한다 (안에 다른 따옴표가 없을 때만)
 SHELL_WRAP = re.compile(r'^(?:powershell|pwsh)(?:\.exe)?(?:\s+-(?:NoProfile|NonInteractive|NoLogo|ExecutionPolicy\s+Bypass))*'
                         r'\s+-(?:Command|c)\s+"([^"`]*)"\s*$', re.I)
-# 대상 폴더 안의 자기 스크립트 실행 — 테스트 실행(pytest 가 프로젝트 코드를 돌리는 것)과 같은 정도로 본다.
-# 앞에는 출력 관련 옵션만 (-c·-m·-e 처럼 다른 코드를 돌리는 것은 아니다), 인자에는 셸 기호가 없어야 한다.
-OWN_SCRIPT = re.compile(r"""^(?:python3?|py|node)(?:\.exe)?(?: -(?:u|B|I|X utf8))* (["']?)((?:[A-Za-z]:[\\/])?(?:[\w.-]+[\\/])*[\w.-]+\.(?:py|js|mjs|cjs))\1"""
-                        r"""((?: (?:[^\s;|&<>`$()"'{}]+|"[^"$`]*"|'[^']*'))*)\s*$""")
-
-
-OWN_MODULE = re.compile(r"""^(?:python3?|py)(?:\.exe)?(?: -(?:u|B|I|X utf8))* -m ([A-Za-z_][\w.]*)"""
-                        r"""((?: (?:[^\s;|&<>`$()"'{}]+|"[^"$`]*"|'[^']*'))*)\s*$""")
-BARE_INTERP = re.compile(r"^(?:python3?|py|node)(?:\.exe)?(?: -(?:u|B|X utf8))*\s*$")
 
 
 def _unwrap_shell(cmd: str) -> str:
@@ -399,40 +390,15 @@ def _unwrap_shell(cmd: str) -> str:
     return m.group(1).strip() if m else cmd
 
 
-def _own_script(cmd: str, root: Path) -> bool:
-    """'python receipts.py summary data.csv'·'python -m receipts' 처럼 대상 폴더 안의 스크립트·모듈을 돌리는가 (밖의 경로·.. 는 아니다).
-    인자 없는 인터프리터('python -X utf8')는 검증 도구가 함수 호출 케이스를 표준 입력으로 넘길 때 쓴다 — 그 자체로는 아무것도 하지 않는다."""
-    if BARE_INTERP.match(cmd):
-        return True
-    m = OWN_SCRIPT.match(cmd)
-    if m:
-        script = m.group(2)
-        full = script if os.path.isabs(script) else str(Path(root) / script)
-        if ".." in re.split(r"[\\/]", script) or not (_inside(full, root) or _scratch(full)):  # 대상 폴더나 에이전트 임시 폴더의 스크립트
-            return False
-        args = m.group(3)
-    else:
-        m = OWN_MODULE.match(cmd)
-        top = m.group(1).split(".")[0] if m else ""
-        # 대상 폴더(또는 src/)에 그 이름의 패키지·모듈이 있어야 한다 — 표준·외부 모듈(pip·http.server 등)은 아니다
-        if not top or not any((Path(root) / d / n).exists() for d in ("", "src") for n in (top, top + ".py")):
-            return False
-        args = m.group(2)
-    for arg in re.findall(r"""[^\s"']+|"[^"]*"|'[^']*'""", args or ""):
-        a = arg.strip("\"'")
-        if ".." in re.split(r"[\\/]", a) or (os.path.isabs(a) and not (_inside(a, root) or _scratch(a))):
-            return False
-    return True
-
-
 def _safe_piece(piece: str, root: Path) -> bool:
-    """; · && 로 이은 조각 하나 — 끝의 출력 거르기를 떼고 빌드·확인·자기 스크립트·읽기만 하는 명령인가."""
+    """; · && 로 이은 조각 하나 — 끝의 출력 거르기를 떼고 빌드·확인·읽기만 하는 명령인가.
+    (프로젝트 코드를 직접 돌리는 명령은 여기 들지 않는다 — 편집 자동 허용에서는 그 밖의 명령으로 묻는다)"""
     core = OUTPUT_FILTER.sub("", piece).strip()
     if not core:
         return False
     if BUILD_COMMANDS.match(core) and not CHAINING.search(core):
         return True
-    return _inspect_only(core) or _own_script(core, root) or _read_only_shell(piece, root)
+    return _inspect_only(core) or _read_only_shell(piece, root)
 
 
 def _strip_cd(cmd: str, target_root: Path) -> str:

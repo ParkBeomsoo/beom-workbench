@@ -749,7 +749,12 @@ function renderRun() {
   $("#meter").replaceChildren(h("div", { class: "stepper" }, ...D.stages.map((s, i) => h("div", { class: "st " + (i < D.stage ? "done" : i === D.stage ? "now" : "") },
     h("i", {}, i < D.stage ? ico("check") : String(i + 1)), h("span", { text: s })))));
   const act = $("#activity"); act.replaceChildren();
-  if (D.running) {
+  if (D.running && D.tone === "turn") {
+    // 실행기는 살아 있지만 사용자를 기다린다 — '진행 중'·작업 시간이 아니라 무엇을 기다리는지 (내 차례와 진행 중이 함께 보이지 않게)
+    S.startedAt = null;
+    act.append(h("div", { class: "activity waiting" }, ico("chat", "wi"),
+      (D.activity && D.activity.text) || "내 차례 — 아래 카드를 확인해 주세요"));
+  } else if (D.running) {
     if (!S.startedAt) S.startedAt = Date.now();
     const sec = Math.floor((Date.now() - S.startedAt) / 1000);
     // 에이전트가 긴 글·파일을 쓰는 중이면 얼마나 썼는지 (조각 출력을 주는 에이전트만)
@@ -985,12 +990,15 @@ function cards() {
   const planOpen = plan && plan.steps && plan.steps.length && !plan.approved && D.run.status !== "done";  // 끝난 작업에 승인할 계획은 없다
   // 처음 한 번 확인: 기준과 계획이 함께 떠 있으면 한 장으로 — 사용자가 무엇을 승인하는지 위에서부터 읽히게
   // 계획까지 세우는 중이면 기준만 먼저 띄우지 않는다 — 기준과 계획은 한 장으로 한 번에 확인한다
-  const waitPlan = D.running && ["request", "reference"].includes(D.run.mode) && D.plan_approval !== false && !(plan && plan.steps && plan.steps.length);
-  if (D.reviews && D.reviews.count && planOpen && !S.edit && D.reviews.requirements.length) out.push(startCard(D.reviews, plan, asking));
-  else {
-    if (D.reviews && D.reviews.count && !(waitPlan && !S.edit)) out.push(reviewCard(D.reviews, asking));
-    // 기준과 계획은 함께 승인하므로 둘 다 보여 준다 — 보지 않은 계획(디자인 방향 포함)이 승인되지 않게
-    if (planOpen) out.push(planCard(plan, asking));
+  // 승인 카드는 사용자 차례일 때만 — 라운드가 끝나 실행기가 승인을 기다리거나 멈춰 있을 때. 라운드 도중에 띄우면
+  // '승인함'이 에이전트의 '올렸습니다, 확인해 주세요' 보고보다 먼저 쌓여 순서가 거꾸로 읽히고, 상태는 '실행 중'인데 카드가 뜬다
+  if (gateOpen()) {
+    if (D.reviews && D.reviews.count && planOpen && !S.edit && D.reviews.requirements.length) out.push(startCard(D.reviews, plan, asking));
+    else {
+      if (D.reviews && D.reviews.count) out.push(reviewCard(D.reviews, asking));
+      // 기준과 계획은 함께 승인하므로 둘 다 보여 준다 — 보지 않은 계획(디자인 방향 포함)이 승인되지 않게
+      if (planOpen) out.push(planCard(plan, asking));
+    }
   }
   // 레퍼런스: 원본 라이선스 경고 — 사람이 보고 옮겨도 된다고 확인해야 완료할 수 있다 (에이전트는 대신 못 한다)
   if (D.license && !D.license.acked && !D.run.accepted) out.push(licenseCard(D.license));
@@ -1204,8 +1212,10 @@ function caseFold(R) {  // 합격 기준 — 무엇을 확인하는지만 (입�
 }
 function startCard(R, plan, asking) {
   const sec = (title, note, ...kids) => h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: title }), note ? h("span", { text: note }) : null), ...kids);
+  // '마지막에 한 번 확인' — 이미 다 만든 뒤라 '시작 전'이 아니다
+  const atEnd = S.detail && S.detail.run && S.detail.run.confirm_at === "end";
   return h("div", { class: "card start" },
-    h("div", { class: "ch" }, ico("list", "chi"), h("h3", { text: "시작 전 확인" }), h("span", { class: "tag", text: "확인 필요" })),
+    h("div", { class: "ch" }, ico("list", "chi"), h("h3", { text: atEnd ? "마지막 확인" : "시작 전 확인" }), h("span", { class: "tag", text: "확인 필요" })),
     plan.summary ? h("p", { class: "slead" }, ...inlineMd(plan.summary)) : null,
     asking ? h("div", { class: "callout" }, ico("chat"), h("span", { text: "아래 질문에 먼저 답하면 에이전트가 답을 반영한 뒤 다시 확인을 요청합니다. 지금 승인해도 됩니다." })) : null,
     sec("만들 것", `${R.requirements.length}개 — 다 되면 완료`, reqList(R)),
@@ -1215,7 +1225,7 @@ function startCard(R, plan, asking) {
     h("div", { class: "cf" }, h("span", { class: "hint", text: "고칠 점은 입력창으로 보내면 반영해 다시 보여 줍니다" }),
       h("button", { class: "btn quiet", onclick: () => startEdit("spec") }, "기준 고치기"),
       h("button", { class: "btn quiet", onclick: () => startEdit("plan") }, "계획 고치기"),
-      h("button", { class: "btn primary", onclick: () => approveShown("both") }, "승인하고 시작", h("span", { class: "k", text: "Ctrl Enter" }))));
+      h("button", { class: "btn primary", onclick: () => approveShown("both") }, atEnd ? "승인" : "승인하고 시작", h("span", { class: "k", text: "Ctrl Enter" }))));
 }
 function planCard(plan, asking) {
   if (S.edit && S.edit.kind === "plan") return planEditCard();
@@ -1815,6 +1825,7 @@ async function approveShown(what) {
     + (changed.length ? ` · 결정 ${changed.length}개를 바꿔 전달했습니다` : ""));
   refresh();
 }
+function gateOpen() { const D = S.detail; return !!D && (!D.running || ["waiting_approval", "waiting_plan"].includes(D.run.status) || !!S.edit); }
 function bothPending() { const D = S.detail; return !!(D && D.reviews && D.reviews.count && D.plan && D.plan.steps && D.plan.steps.length && !D.plan.approved); }
 async function refresh() {
   const lr = await call("listRuns"); if (lr.ok) S.runs = lr.data;
@@ -1839,7 +1850,7 @@ document.addEventListener("keydown", (e) => {
   if (tag === "input" || tag === "textarea" || !S.detail) return;  // 입력 중의 Ctrl+Enter 는 보내기 — 승인이 아님, Esc 도 멈춤이 아님
   if (e.key === "Escape" && S.detail.running) { call("stop", S.current).then(refresh); return; }
   if (e.ctrlKey && e.key === "Enter") {
-    if (S.edit) return;
+    if (S.edit || !gateOpen()) return;  // 보이지 않는 카드를 단축키로 승인하지 않게
     if (bothPending()) approveShown("both");
     else if (S.detail.reviews && S.detail.reviews.count) approveShown("reviews");
     else if (S.detail.plan && S.detail.plan.steps && !S.detail.plan.approved) approveShown("plan");
