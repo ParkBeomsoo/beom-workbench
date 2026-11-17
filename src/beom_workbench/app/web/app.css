@@ -132,6 +132,18 @@ kbd { font-family: var(--sans); font-size: 10.5px; font-weight: 500; color: var(
 .databtn svg { width: 15px; height: 15px; }
 .sidefoot { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .sidefoot #langbtn { margin-left: auto; }
+.sidefoot .databtn { white-space: nowrap; }
+.ustats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0 6px; }
+.ustat { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; background: var(--sunk); border-radius: 10px; }
+.ustat > span:first-child { font-size: 11.5px; color: var(--muted); }
+.ustat b { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.urow { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; align-items: baseline; width: 100%; padding: 6px 4px; border: none;
+  background: transparent; color: var(--text); font: inherit; font-size: 12.5px; text-align: left; border-radius: 6px; }
+.urow .pd { grid-column: 1 / -1; font-size: 11px; color: var(--faint); }
+.urow .un { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.urow .uv { font-variant-numeric: tabular-nums; color: var(--muted); }
+.urow.link { cursor: pointer; }
+.urow.link:hover { background: var(--hover); }
 .databtn:hover { color: var(--text); background: var(--side-hover); }
 
 /* ---------------------------------------------------------------- 가운데 */

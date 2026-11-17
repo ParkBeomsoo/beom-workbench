@@ -68,6 +68,11 @@ def catalog(lang: str) -> dict[str, str]:
     return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str) and v.strip()}
 
 
+# 자리표시자 하나가 맞을 수 있는 글 — 줄·문장 끝('. ' '? ' '! ')·' — ' 구분을 넘지 않는다.
+# 짧고 일반적인 항목("{0} 는 {1}")이 여러 문장을 통째로 삼켜 나눠 번역할 기회를 없애지 않게.
+_SLOT = r"((?:(?![.?!]\s| — )[^\n])*?)"
+
+
 @lru_cache(maxsize=None)
 def _patterns(lang: str) -> list[tuple[re.Pattern, str]]:
     out = []
@@ -77,7 +82,7 @@ def _patterns(lang: str) -> list[tuple[re.Pattern, str]]:
                 continue  # 자리표시자뿐인 항목은 아무 글에나 맞으므로 쓰지 않는다
             rx = re.escape(k)
             for i in range(10):
-                rx = rx.replace(re.escape("{%d}" % i), r"(.*?)")  # 빈 값도 맞게
+                rx = rx.replace(re.escape("{%d}" % i), _SLOT)  # 빈 값도 맞게
             out.append((re.compile("^" + rx + "$"), v))  # 자리표시자는 줄을 넘지 않는다 (여러 줄 글은 줄마다 따로)
     out.sort(key=lambda p: -len(p[0].pattern))  # 긴(구체적인) 것부터
     return out

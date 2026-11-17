@@ -306,6 +306,9 @@ class Api(QObject):
         try:
             # 첨부는 에이전트가 실제로 일할 폴더에 — 바탕 화면 같은 공용 폴더면 그 안의 작업 폴더 (create 와 같은 규칙)
             v = {**v, "target_root": runner.work_folder(v["target_root"], v.get("name"), v["mode"])}
+            # 처음 입력 그대로 — '같은 요청으로 새 작업'(다른 에이전트로 다시)이 첨부 안내가 붙기 전 요청과 첨부 목록을 되살릴 수 있게
+            origin = {"request": (v.get("request") or "").strip(), "attachments": list(v.get("attachments") or []) + list(v.get("urls") or []),
+                      "context_dir": v.get("context_dir") or ""}
             request, notes = self._attach(v)
             v["request"] = request
             context = None
@@ -328,6 +331,7 @@ class Api(QObject):
                                 agent=v.get("agent", "claude"), plan_approval=bool(v.get("plan_approval", True)),
                                 effort=v.get("effort") or None, confirm_at=v.get("confirm_at") or "start",
                                 new_branch=v.get("new_branch", True) is not False, sandbox=v.get("sandbox", True) is not False)
+            inbox.update_run(self.settings, run["id"], lambda r: r.update(origin=origin))
             for note in notes:
                 inbox.log(self.settings, run["id"], "note", text=note, tone="warn")
             self.created.emit(json.dumps({"run_id": run["id"], "start": bool(v.get("start", True))}))
@@ -336,6 +340,36 @@ class Api(QObject):
             if getattr(e, "recovery", None):
                 msg += f" — {e.recovery}"
             self.created.emit(json.dumps({"error": msg}, ensure_ascii=False))
+
+    @Slot(str, result=str)
+    @safe
+    def retryDraft(self, run_id):
+        """'같은 요청으로 새 작업' — 이 실행의 처음 입력으로 새 작업 화면을 채운다 (에이전트·모델을 바꿔 다시 해 보고 비교).
+
+        저장소면 같은 폴더 그대로 (새 작업 브랜치라 앞의 결과와 나란히 남는다), 저장소가 아니면 폴더를 비워
+        새 폴더에 만든다 — 앞의 실행이 만든 파일 위에서 시작하지 않게.
+        """
+        run = inbox.load_run(self.settings, run_id)
+        if not run:
+            raise ToolError("not_found", "실행을 찾을 수 없습니다")
+        o = run.get("origin")
+        if o is None:  # 이 기능 전에 만든 실행 — 저장된 요청에서 첨부 안내를 떼고, 대상 폴더에 남은 첨부를 다시 쓴다
+            text = run.get("request") or ""
+            head, _, tail = text.partition("\n\n[첨부 문서 — ")
+            atts = []
+            for line in tail.splitlines():
+                m = re.match(r"- (\.beom/brief/.+?)(?: \((?:원본|출처|로그인해) .*\))?$", line.strip())
+                if m:
+                    atts.append(str(Path(run["target_root"]) / m.group(1)))
+            o = {"request": "" if head.strip() == "첨부한 기획서대로 만든다." else head.strip(), "attachments": atts, "context_dir": ""}
+        atts = [a for a in o.get("attachments") or [] if re.match(r"https?://", str(a)) or Path(a).is_file()]
+        missing = len(o.get("attachments") or []) - len(atts)
+        keep_folder = bool(run.get("work_branch"))
+        return {"mode": run["mode"], "request": o.get("request") or "", "attachments": atts, "missing": missing,
+                "target_root": run["target_root"] if keep_folder else "", "kept_folder": keep_folder,
+                "context_dir": o.get("context_dir") or "", "source": run.get("source") or "", "feature": run.get("feature") or "",
+                **{k: run.get(k) for k in ("agent", "model", "effort", "policy", "max_rounds", "confirm_at", "auth", "plan_approval")
+                   if run.get(k) is not None}}
 
     def _attach(self, v: dict, *, follow_up: bool = False) -> tuple[str, list[str]]:
         """첨부한 기획서·문서·링크를 대상 폴더의 .beom/brief/ 에 두고 요청에 '먼저 읽으라'고 적는다 (에이전트 샌드박스 안).
@@ -800,6 +834,13 @@ class Api(QObject):
             self._data_busy = True
             threading.Thread(target=work, daemon=True).start()
         return storage.report(self.settings, sizes=False)
+
+    @Slot(result=str)
+    @safe
+    def usageSummary(self):
+        """작업 전체 사용량 — 이번 달·전체, 에이전트별, 많이 쓴 작업."""
+        from beom_workbench.core import usage
+        return usage.summary(self.settings)
 
     @Slot(str, result=str)
     @safe
