@@ -71,7 +71,8 @@ def mode_of(policy: dict) -> str:
 # 그 밖의 줄은 '그 밖의 명령'으로 규칙에 따라 묻는다.
 # node 테스트 실행기가 받는 출력·고르기 옵션 (다른 코드를 불러오지 않는 것만)
 _NODE_TEST_OPT = (r"(?:--test-isolation=none|--experimental-test-coverage|--test-reporter=[\w-]+"
-                  r"|--test-reporter-destination=(?!\S*\.\.)[\w./\-]+|--test-name-pattern=[\w.-]+|--test-concurrency=\d+)")
+                  r"|--test-reporter-destination=(?!\S*\.\.)[\w./\-]+|--test-name-pattern=[\w.-]+|--test-concurrency=\d+"
+                  r"|--test-coverage-(?:include|exclude)=(?!\S*\.\.)[\w./*\-]+|--test-coverage-(?:lines|branches|functions)=\d+)")
 BUILD_COMMANDS = re.compile(
     # npm·pnpm·yarn: 출력만 줄이거나 보고·설치 스크립트를 끄는 옵션은 같은 명령이다 (실행하는 것을 바꾸지 않는다)
     r"^((?:npm (ci|install|test|run (build|test|lint))|pnpm (install|test|build)|yarn (install|test|build))"
@@ -686,6 +687,10 @@ def gate_commands(settings: Settings, commands: dict[str, str | None]) -> None:
             continue
         kind = classify("Bash", {"command": cmd}, Path(run["target_root"]), [settings.home])
         decision = decide(run, kind)
+        if decision == "ask" and kind == "commands" and matches_rule(run, cmd, run["target_root"]):
+            # '이 명령은 항상'으로 기억한 꼴 — 에이전트가 셸로 돌릴 때와 같은 규칙
+            log(settings, run_id, "permission", tool=f"mcp:{field}", permission_kind=kind, decision="allow", why="cmd_rule")
+            continue
         if decision == "ask" and planned_command(run, cmd):
             decision = "allow"  # 승인한 계획에 있던 명령
             log(settings, run_id, "permission", tool=f"mcp:{field}", permission_kind=kind, decision="allow", why="approved_plan")
@@ -698,10 +703,11 @@ def gate_commands(settings: Settings, commands: dict[str, str | None]) -> None:
     asks = [t for t in todo if t[3] == "ask"]
     if asks:  # 한 번의 도구 호출에 들어 있는 명령은 카드 하나로 묻는다
         cmds = [c for _, c, _, _ in asks]
+        rule = command_rule(cmds[0], run["target_root"]) if len(cmds) == 1 and asks[0][2] == "commands" else None
         ans = ask(settings, run_id, "permission", {
             "summary": "검증 도구가 실행할 명령: " + " / ".join(f"{f}: {c[:200]}" for f, c, _, _ in asks),
             "tool": "mcp:" + ",".join(f for f, _, _, _ in asks), "input": {"command": cmds[0], "commands": cmds},
-            "permission_kind": asks[0][2]})
+            "permission_kind": asks[0][2], **({"rule": rule} if rule else {})})
         if not ans.get("allow"):
             raise ToolError("denied", "사용자가 명령 실행을 거절함: " + " / ".join(c[:120] for c in cmds),
                             recovery="다른 방법을 쓰거나 wb_person_ask 로 사용자에게 이유와 함께 묻는다")

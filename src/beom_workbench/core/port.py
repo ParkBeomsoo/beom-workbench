@@ -1234,6 +1234,9 @@ class _Server:
     """
 
     def __init__(self, side: _Side, cmd: str, url: str, wait: float = 60) -> None:
+        if not url or not str(url).startswith(("http://", "https://")):
+            # 주소 없이 띄우면 응답을 기다릴 수 없다 — 띄우기 전에 거절 (예전에는 띄운 뒤 오류로 빠져나가 서버가 남았다)
+            raise ToolError("invalid_request", f"서버 명령(target_cmd)에는 그 서버의 주소(target_url, 예: http://127.0.0.1:8000)가 필요함: {cmd}")
         self.side, self.cmd, self.url, self.wait = side, cmd, url, wait
         self.restarts = 0
         self.log = tempfile.TemporaryFile()
@@ -1260,6 +1263,13 @@ class _Server:
             self.proc = subprocess.Popen(args, shell=shell, cwd=side.cwd, env=side.env(), stdout=self.log,
                                          stderr=subprocess.STDOUT, **kw)
         self.graceful: bool | None = None
+        try:
+            self._wait_up(cmd, url, wait)
+        except BaseException:
+            self.close()  # 어떤 이유로든 기다리다 빠져나가면 띄운 서버를 끈다 — 남은 서버가 포트를 쥐고 다음 검증을 막는다
+            raise
+
+    def _wait_up(self, cmd: str, url: str, wait: float) -> None:
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
@@ -1279,7 +1289,6 @@ class _Server:
                                     data={"output_tail": self.tail()})
                 return
             time.sleep(0.5)
-        self.close()
         raise ToolError("timeout", f"{wait}초 안에 {url} 가 응답하지 않음: {cmd}", data={"output_tail": self.tail()})
 
     def alive(self) -> bool:
@@ -2064,7 +2073,8 @@ def _drop_new(root: Path, before: set[str] | None, keep: set[str]) -> list[str]:
         return []
     after = _files(root) or set()
     keep_n = {str(Path(k)) for k in keep if k}
-    new = sorted(after - before, key=lambda x: -x.count(os.sep))  # 깊은 것부터 — 파일을 지운 뒤 빈 폴더를 지운다
+    # 깊은 것부터, 같은 깊이면 파일 먼저 — 폴더 'a/b/'(끝 구분자)와 그 안의 'a/b/x' 를 같은 깊이로 세면 폴더를 먼저 지우려다 실패한다
+    new = sorted(after - before, key=lambda x: (-x.rstrip(os.sep).count(os.sep), x.endswith(os.sep)))
     gone: list[str] = []
     for rel in new:
         p = root / rel.rstrip(os.sep)
