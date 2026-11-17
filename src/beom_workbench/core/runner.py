@@ -142,6 +142,8 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   네이티브 데스크톱 앱(Qt·WinForms·WPF 등, Windows)은 "screen": {"app": "dist/App.exe" 또는 ["python", "main.py"],
   "actions": [{"set": "Edit:수량", "value": "10"}, {"click": "Button:계산"}]} — selectors 는 "종류:이름"(예: "Button:계산"),
   visible 은 창 안 글자. 앱은 접근성 이름이 있게 만든다 (버튼·입력에 보이는 이름 또는 AutomationId).
+  tkinter 는 창 안 글자·컨트롤 이름을 읽어 주지 않는다 — 모습은 wb_screen_shot(app=["python", "main.py"]) 그림으로 보고,
+  동작은 로직을 따로 둔 함수 케이스로 확인한다. 데스크톱 앱 모습을 스스로 볼 때도 wb_screen_shot 의 app 을 쓴다.
 - 화면 디자인 — 목표는 '디자이너가 다듬은 것 같은' 화면이다. 개발자가 기본값으로 만든 느낌(회색 카드 나열, 기본 폼, 글자 벽)이 나면 실패다.
   1) 조사: 사용자가 준 브랜드·참고·첨부를 먼저 따른다. 없으면 같은 분야에서 디자인으로 좋은 평을 받는 서비스 2~3개를 골라
      (웹 검색이 허용되면 실제로 찾아보고 출처를 남긴다, 아니면 아는 범위에서) 무엇이 좋은지 적는다 — 정보 배치, 핵심 숫자를 보여 주는 방식, 입력 흐름,
@@ -166,7 +168,8 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   target_coverage_cmd·target_coverage_report 로 넘겨 툴킷이 돌리게 한다 — 파이썬: `python -m coverage run --include=<파일> -m pytest -q`
   다음 `python -m coverage json -o .beom/tmp/cov.json` / Node: `node --test --test-isolation=none --experimental-test-coverage
   --test-reporter=lcov --test-reporter-destination=.beom/tmp/lcov.info` (설치 없음. 격리 실행 안에서는 테스트 파일마다 하위 프로세스를
-  띄우지 못해 --test-isolation=none 을 쓴다). 브라우저에서만 도는 화면 코드는 로직을 따로 .js 파일로 두어 Node
+  띄우지 못해 --test-isolation=none 을 쓴다 — 이것은 이 실행 환경 때문의 우회라 명령을 돌릴 때만 붙이고, package.json 의
+  test 스크립트·README·CI 같은 결과물에는 넣지 않는다: 사용자는 평소 명령(`node --test`, `npm test`)으로 돌린다). 브라우저에서만 도는 화면 코드는 로직을 따로 .js 파일로 두어 Node
   테스트로 부를 수 있게 만든다 (HTML 안 스크립트를 계측하려고 jsdom·c8 등을 새로 깔지 않는다).
   화면 확인은 브라우저 자동화 스크립트를 새로 짜지 말고 툴킷의 화면 케이스·wb_screen_shot 을 쓴다. 같은 명령이 같은 이유로
   두 번 실패하면 세 번째로 되풀이하지 말고 원인을 바꿔 보거나 막힌 점을 남기고 넘어간다.
@@ -194,6 +197,16 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   기능으로), how_to_run(실행 단계 목록, 명령은 `백틱`), checked(어떻게 확인했는지 2~4개), risks·follow_ups(한 줄씩 최대 5개).
   사용자가 처음 보는 사람이라 생각하고 쓴다 — 개발 과정 이야기(무엇을 고쳤다가 다시 고쳤는지)는 넣지 않는다.
   인수인계를 쓰기 직전에 wb_port_status 로 지금 상태를 다시 보고 쓴다 — 이미 승인된 것을 '승인이 필요할 수 있다'처럼 지난 상태로 적지 않는다.
+  사용자 확인(승인)이 남아 있으면 인수인계를 쓰지 말고 무엇을 확인받는지만 말하고 라운드를 끝낸다 — 승인 뒤 다음 라운드에서
+  인수인계를 쓴다 (먼저 써 두면 승인한 뒤에도 '승인이 남았다'는 지난 내용이 남는다).
+- 합격 케이스를 돌리려고 만드는 보조 함수(JSON 입력을 객체로 바꿔 호출하는 어댑터 등)는 .beom/helpers/ 아래에 둔다 —
+  call 대상은 '.beom/helpers/cases.py:함수' 처럼 (사용자 tests/ 에 두면 프로그램이 아닌 검증 도구가 저장소에 커밋된다).
+  보조 파일은 대상 폴더를 import 경로로 쓰므로 프로젝트 모듈을 평소처럼 import 한다. 사용자가 쓸 테스트(pytest 등)는 tests/ 에 둔다.
+- 결과물(코드·테스트·README·package.json 같은 설정)은 이 툴킷 없이도 쓰이는 사용자 프로젝트다: .beom/ 아래 파일을 참조하지 않는다
+  (.beom 은 커밋되지 않는 작업 폴더 — 예시·테스트에 첨부 샘플이 필요하면 프로젝트 안(예: examples/)에 복사해 쓴다), 툴킷 절차 용어
+  (합격 케이스·원장·라운드·인수인계)를 README 에 쓰지 않는다, 이 실행 환경 때문의 우회 옵션을 스크립트에 넣지 않는다.
+  이 실행 환경의 제약(격리·네트워크 차단) 때문에 생긴 사정을 README 에 쓰지 않는다 — 사용자 PC 는 다르다 (예: '네트워크 없이 설치하려면…').
+  요청하지 않은 배포 산출물(dist/·wheel·sdist·설치 프로그램·실행 파일 묶음)은 만들지 않는다 — 설치 확인이 필요하면 pip install -e . 정도로.
 - 이번 라운드에서 할 수 있는 만큼 진행하고, 마지막에 한두 문장으로 한 일과 남은 일을 말한다."""
 
 
@@ -208,6 +221,7 @@ EDIT_TOOLS_RULE = """[파일 쓰기]
 # 에이전트가 헤매며 라운드를 쓰지 않게 처음부터 알려 준다.
 CODEX_WIN_RULE = """[Windows 격리 실행 — Node 자식 프로세스]
 - 이 격리에서는 Node 가 다른 프로세스를 띄우지 못한다 (spawn EPERM). `node --test` 는 `node --test --test-isolation=none` 으로 돌린다.
+  이 우회 옵션은 명령을 돌릴 때만 쓰고 package.json 스크립트·README 같은 결과물에는 넣지 않는다 (사용자 PC 에서는 필요 없다).
 - npm 스크립트·테스트 러너·빌드 도구가 같은 이유로 실패하면 격리 탓이다 — 코드를 고치려 하지 말고 node 로 직접 돌리거나,
   검증 도구가 있으면(wb_port_verify·target_cmd 등 — 격리 밖에서 돈다) 그것으로 확인한다. 사용자에게는 격리 안에서 못 돌린 명령을 끝에 알린다."""
 
@@ -451,7 +465,9 @@ def lang_line(run: dict, text: str | None, what: str) -> str | None:
 
 MODE_REF = ("레퍼런스 기반 — 원본 저장소의 기능·동작을 참고해 대상 프로젝트에 맞게 옮기거나(포팅) 새로 만든다. 사용자 요청이 "
             "'참고해 새로·우리 것 기준으로'면 원본과 똑같이 맞추기보다 요청과 대상 프로젝트(기존 엔진·API·규칙·화면 톤)를 따르고, "
-            "원본에서는 설계·동작 방식을 가져온다 — 합격 기준도 요청에서 정한다")
+            "원본에서는 설계·동작 방식을 가져온다 — 합격 기준도 요청에서 정한다. 다른 언어로 옮길 때 동작(입력→출력)은 원본과 같게 하되 "
+            "인터페이스는 대상 언어의 관례를 따른다 (예: JS 의 옵션 객체 {lower: false} → 파이썬 키워드 인자 lower=False, "
+            "camelCase → snake_case) — 원본 모양을 그대로 흉내 내지 않는다")
 
 
 def _brief(run: dict, st: dict | None) -> str:
@@ -772,6 +788,11 @@ AUTO_ACTIVITY = {"wb_make_requirements": "요구사항을 정리했습니다 —
                  "wb_brief_screens": "화면 설계 스크린샷 찍는 중"}
 
 
+# 추가 요청 라운드에서 '손대기 시작했다'로 보는 도구 — 기준·계획을 고치거나 코드를 고치거나 검증을 돌림
+REVISION_WORK = {"wb_make_requirements", "wb_port_capture", "wb_plan_set", "wb_plan_progress", "wb_port_map", "wb_port_verify",
+                 "Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"}
+
+
 def auto_activity(tool: str, run: dict) -> str:
     """도구에 맞는 한 줄 — 계획을 이미 승인한 뒤(추가 요청·수정)라면 '계획을 세우는 중'처럼 처음 순서를 말하지 않는다."""
     if (run.get("plan") or {}).get("approved"):
@@ -1069,6 +1090,8 @@ class Runner:
                     inbox.log(self.settings, self.run_id, "agent",
                               items=[{"tool": e.get("tool"), "input": mask_command(json.dumps(e.get("input"), ensure_ascii=False)[:300])}])
                     short = str(e.get("tool") or "").split("__")[-1]
+                    if short in REVISION_WORK and run.get("revision_round") == run.get("round") and not run.get("revision_touched"):
+                        run = self._set(revision_touched=True)
                     if short in AUTO_ACTIVITY:
                         self._set(activity={"text": auto_activity(short, inbox.load_run(self.settings, self.run_id)), "at": inbox._now()})
                     if short in ("wb_make_requirements", "wb_port_capture") and run.get("auto_approve_round") == run.get("round"):
@@ -1274,6 +1297,8 @@ class Runner:
             elif self._new_messages() and st and st["complete"]:
                 # 끝난(완료 조건을 다 채운) 작업에 추가 요청이 왔다 — '인수인계만, 코드는 바꾸지 않는다' 지시와 부딪히지 않게 먼저 본다
                 prompt += FOLLOW_UP
+                # 화면의 진행 단계는 새 한 바퀴로 — 손대기 전에는 '기준'부터 (이전 결과의 '검증'에서 뒤로 튀지 않게)
+                run = self._set(revision_round=run["round"], revision_touched=False)
             elif run["round"] == 1 and run["mode"] == "request" and end_mode:
                 prompt += ("\n\n이번 라운드: 요청을 요구사항(wb_make_requirements)으로 나누고, 요구사항마다 합격 케이스 파일을 "
                            "대상 폴더의 .beom/cases.json 에 써서 wb_port_capture 로 저장한 뒤, 승인을 기다리지 말고 계획(wb_plan_set)·"

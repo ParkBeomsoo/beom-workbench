@@ -129,6 +129,9 @@ def _stage(run: dict, st: dict | None) -> int:
         return last
     if st is None:
         return 0
+    if run.get("revision_round") and run.get("revision_round") == run.get("round") and not run.get("revision_touched") \
+            and run.get("status") == "running":
+        return 0  # 추가 요청을 받은 새 한 바퀴 — 손대기 전에는 처음 단계부터 (기준을 고치면 0→1→…, 바로 고치면 0→3 으로 앞으로만)
     g, plan = st["gates"], run.get("plan") or {}
     if mode == "request":  # 기준·계획(함께 세움) → 확인(한 번에) → 구현 → 검증 → 인수인계
         req = st.get("requirements") or {}

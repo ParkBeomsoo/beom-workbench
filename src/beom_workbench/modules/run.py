@@ -86,6 +86,26 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
                                                       "wb_person_ask 로 사용자에게 이유와 함께 물어본다."}, ensure_ascii=False)
 
 
+def _native_shot(run: dict, app, width, height) -> dict:
+    """데스크톱 앱 창 찍기 — 검증 도구의 앱 화면 케이스와 같은 방식 (같은 권한 규칙)."""
+    from beom_workbench.core import native
+
+    if not native.available():
+        return {"ok": False, "error": "데스크톱 앱 화면 찍기는 지금 Windows 에서만 됩니다"}
+    root = Path(run["target_root"]).resolve()
+    spec = {"app": app, "wait_ms": 1200, **({"width": int(width), "height": int(height)} if width and height else {})}
+    inbox.gate_commands(settings, {"screen_app": native.command_text(spec)})
+    out_dir = root / ".beom" / "shots"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    name = "app-" + str(len(list(out_dir.glob("app-*.png"))) + 1)
+    r = native.capture(spec, root, str(out_dir / f"{name}.png"))
+    shot = r.get("out") if r.get("ok") else None
+    if shot:
+        inbox.log(settings, run["id"], "screen_shots", shots=[shot])
+    return {"ok": bool(r.get("ok")), "shots": [{"app": native.command_text(spec), "ok": bool(r.get("ok")), "shot": shot,
+                                                 "title": r.get("title"), "errors": (r.get("errors") or [])[:3]}]}
+
+
 @mcp.tool()
 def wb_person_ask(question: str, choices: list[str] | None = None) -> dict:
     """사용자에게 묻고 답을 기다린다(앱의 질문 카드). 요구사항이 애매하거나 결정이 필요할 때. 답이 없으면 timeout."""
@@ -258,15 +278,21 @@ def wb_brief_screens(files: list[str] | None = None, mobile: bool = False) -> di
 
 
 @mcp.tool()
-def wb_screen_shot(files: list[str], mobile: bool = False, width: int | None = None, height: int | None = None) -> dict:
-    """대상 폴더 안의 HTML 화면을 브라우저 엔진으로 열어 스크린샷을 .beom/shots/ 에 남긴다 — 디자인을 스스로 검토할 때.
-    권한을 묻지 않는다 (대상 폴더만 127.0.0.1 로 내보내 연다). files: ["index.html", "demo.html"], mobile=true 면 390×844.
-    결과의 shot 경로를 직접 열어 보고 정렬·간격·위계·잘림을 고친다. 스크립트 오류는 errors 에 나온다."""
+def wb_screen_shot(files: list[str] | None = None, mobile: bool = False, width: int | None = None, height: int | None = None,
+                   app: list[str] | str | None = None) -> dict:
+    """화면을 찍어 .beom/shots/ 에 남긴다 — 디자인을 스스로 검토할 때. 결과의 shot 경로를 직접 열어 보고 정렬·간격·위계·잘림을 고친다.
+    HTML: files=["index.html"] — 브라우저 엔진으로 연다 (권한을 묻지 않는다, 대상 폴더만 127.0.0.1 로). mobile=true 면 390×844.
+    데스크톱 앱(Windows, tkinter·Qt·WinForms·WPF 등): app=["python", "main.py"] 또는 "dist/App.exe" — 앱을 띄워 창을 찍고 닫는다.
+    앱 실행은 내 코드를 돌리는 명령이라 권한 규칙을 거친다. tkinter 는 창 안 글자를 읽어 주지 않으니 모습은 그림으로 확인한다."""
     from beom_workbench.core import screens
 
     run = _run()
     if run is None:
         return {"ok": False, "error": "자동 실행 밖"}
+    if app:
+        return _native_shot(run, app, width, height)
+    if not files:
+        return {"ok": False, "error": "files(HTML) 또는 app(데스크톱 앱 실행 명령)이 필요함"}
     if not screens.available():
         return {"ok": False, "error": "이 설치에는 화면 엔진(PySide6)이 없음"}
     root = Path(run["target_root"]).resolve()

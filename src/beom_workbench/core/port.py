@@ -786,7 +786,13 @@ def enc(o):
 
 
 try:
-    target = importlib.import_module(mod)
+    if mod.startswith("file:"):  # .beom/ 아래 케이스용 보조 파일 — 패키지 이름이 될 수 없어 경로로 불러온다 (프로젝트 모듈은 root 로 import)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("beom_case_helper", __import__("os").path.join(root, mod[5:]))
+        target = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(target)
+    else:
+        target = importlib.import_module(mod)
     for part in fn.split("."):
         target = getattr(target, part)
     out = {"ok": True, "return": target(*req.get("args", []), **req.get("kwargs", {}))}
@@ -983,6 +989,8 @@ def _call(side: _Side, case: dict, timeout: float) -> dict:
         ext = PurePosixPath(file).suffix
         if ext == ".py":
             mod = file[:-3].strip("/").replace("/", ".").removesuffix(".__init__")
+            if file.lstrip("/").startswith(".beom/"):  # 케이스용 보조 함수 — 커밋되지 않는 작업 폴더에 둔 것
+                mod = "file:" + file.lstrip("/")
             exe = rt or ("python" if side.image else side.quote(sys.executable))
             cmd = f"{exe} {side.quote(side.harness_path('harness.py'))} {side.quote(side.root)} {side.quote(mod)} {side.quote(fn)}"
         elif ext in (".js", ".cjs", ".mjs"):
