@@ -69,6 +69,9 @@ def mode_of(policy: dict) -> str:
 
 # 정확히 이 줄만 '빌드'로 바로 허용 — 덧붙인 인자는 실행기를 바꿀 수 있다 (go test -exec, yarn dlx, pytest -p 등).
 # 그 밖의 줄은 '그 밖의 명령'으로 규칙에 따라 묻는다.
+# node 테스트 실행기가 받는 출력·고르기 옵션 (다른 코드를 불러오지 않는 것만)
+_NODE_TEST_OPT = (r"(?:--test-isolation=none|--experimental-test-coverage|--test-reporter=[\w-]+"
+                  r"|--test-reporter-destination=(?!\S*\.\.)[\w./\-]+|--test-name-pattern=[\w.-]+|--test-concurrency=\d+)")
 BUILD_COMMANDS = re.compile(
     # npm·pnpm·yarn: 출력만 줄이거나 보고·설치 스크립트를 끄는 옵션은 같은 명령이다 (실행하는 것을 바꾸지 않는다)
     r"^((?:npm (ci|install|test|run (build|test|lint))|pnpm (install|test|build)|yarn (install|test|build))"
@@ -83,9 +86,10 @@ BUILD_COMMANDS = re.compile(
     # 테스트 파일·폴더 (pricing · tests/unit · test_a.py::test_b) — '-' 로 시작하지 않는 경로 낱말만, .. 는 아니다
     r"|[\w./\\-]+\.py(?:::[\w:\[\]-]+)?|(?!\.\.)(?![\w.\\/-]*[\\/]\.\.)[\w][\w.\\/-]*))*|"
     r"(?:python3?|py) -m coverage (?:report|json|html|xml)(?: -m| --include=[\w./\\*,-]+| --show-missing| -o (?!\S*\.\.)[\w./\\-]+)*|"
-    # Node 내장 테스트 실행기 — 결과·커버리지 출력만 고르는 인자 (--import·--require 처럼 다른 코드를 불러오는 것은 묻는다)
-    r"node --test(?: (?:--test-isolation=none|--experimental-test-coverage|--test-reporter=[\w-]+|--test-reporter-destination=(?!\S*\.\.)[\w./\\-]+"
-    r"|--test-name-pattern=[\w.-]+|[\w./\\-]+\.(?:test\.)?[cm]?js))*)\s*$")
+    # Node 내장 테스트 실행기 — 결과·커버리지 출력만 고르는 인자 (--import·--require 처럼 다른 코드를 불러오는 것은 묻는다).
+    # 옵션은 --test 앞뒤 어디에 와도 되고, 대상은 테스트 폴더·파일. --test 없이 테스트 파일(*.test.js)을 바로 돌리는 것도 같다
+    r"node(?: " + _NODE_TEST_OPT + r")*(?: --test(?: (?:" + _NODE_TEST_OPT + r"|(?!\.\.)(?![\w.\\/-]*[\\/]\.\.)[\w.][\w./\\-]*))*"
+    r"|(?: [\w./\\-]+\.test\.[cm]?js)+(?: " + _NODE_TEST_OPT + r")*))\s*$")
 # 끝에 붙여 출력만 줄이는 것 — 무엇을 실행하는지는 바꾸지 않는다 (따옴표·다른 연결 기호가 들어가면 떼지 않는다)
 OUTPUT_FILTER = re.compile(r"(?:\s*2>&1)?(?:\s*\|\s*(?:Select-Object|select|Select-String|sls|Out-String|head|tail|more)\b"
                            r"[^|;&<>`$()\"'{}@=%]*)+$|\s*2>&1\s*$", re.I)  # 스크립트 블록({ }·@{ })·대입은 떼지 않는다
@@ -412,8 +416,12 @@ NODE_TOOLS = re.compile(r"(?:^|[;&|(]\s*)(?:npm|npx|pnpm|yarn|bun|node|vite|next
 
 
 def needs_unsandboxed(cmd: str) -> bool:
-    """Windows 격리 안에서는 돌지 않는 Node 도구를 쓰는 명령인가."""
-    return bool(NODE_TOOLS.search(cmd or ""))
+    """Windows 격리 안에서는 돌지 않는 Node 도구를 쓰는 명령인가. 버전만 보는 것(node --version)은 자식 프로세스가 없어 해당 없다."""
+    for seg in re.split(r"[;&|\n]+", cmd or ""):
+        seg = seg.strip().lstrip("(").strip()
+        if NODE_TOOLS.search(seg) and not re.fullmatch(r"[\w.-]+(?:\.cmd|\.exe)?\s+(?:--version|-v|-V|version)\)?", seg, re.I):
+            return True
+    return False
 
 
 def foreground_server(tool_input: dict) -> bool:

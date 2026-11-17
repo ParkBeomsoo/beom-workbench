@@ -326,7 +326,7 @@ read through UI Automation (text and controls), driven (type values, click butto
 
 **Where data lives** — everything stays on your computer. See [Data and storage](#data-and-storage).
 
-Without the app: `beom-workbench run --mode request --target-root <folder> --request "<request>"` (`--agent codex`, `--resume <run>`); answer in the app.
+Without the app: `beom-workbench run --mode request --target-root <folder> --request "<request>"` (`--agent codex`, `--resume <run>`). Run from a terminal, it shows progress and asks permissions, questions, the approval card and the handoff right there (the app works in parallel); `--answer app` leaves everything to the app. Approvals in the terminal need a real terminal, so an agent piping the CLI cannot answer as you.
 
 Install Claude Code by the [official guide](https://code.claude.com/docs) and run `claude auth login`; Codex with `npm i -g @openai/codex`
 and `codex login` (check with `beom-workbench agent-status`). Use a subscription login for your own use on your own computer; use an API key

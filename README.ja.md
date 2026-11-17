@@ -217,7 +217,7 @@ push・公開・フォルダ外の削除・システム変更は常に拒否し�
 
 **データの保存場所** — すべて手元のコンピュータに残ります。[データと保存場所](#データと保存場所)を参照してください。
 
-アプリなし: `beom-workbench run --mode request --target-root <フォルダ> --request "<要望>"` (`--agent codex`、`--resume <実行>`)、回答はアプリで行います。
+アプリなし: `beom-workbench run --mode request --target-root <フォルダ> --request "<要望>"` (`--agent codex`、`--resume <実行>`)。ターミナルから実行すると進捗を表示し、権限・質問・開始前の確認・引き継ぎをその場で尋ねます (アプリからでも答えられます)。`--answer app` ならすべてアプリで答えます。ターミナルでの承認は実際のターミナルでのみ可能なので、エージェントがパイプで CLI を呼んで代わりに答えることはできません。
 
 Claude Code は[公式ガイド](https://code.claude.com/docs)どおりにインストールして `claude auth login`、Codex は `npm i -g @openai/codex` の後 `codex login`
 (確認: `beom-workbench agent-status`)。自分のコンピュータで本人が使うならサブスクリプションのログイン、他の人にサービスするなら API キーを使います

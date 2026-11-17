@@ -357,7 +357,7 @@ beom-workbench rounds --reset                           # 모두 기본값으로
 
 **데이터 저장 위치** — 모두 내 컴퓨터에 남습니다. [데이터와 저장 위치](#데이터와-저장-위치)를 보세요.
 
-앱 없이: `beom-workbench run --mode request --target-root <폴더> --request "<요청>"` (`--agent codex`, `--resume <실행>`), 답은 앱에서 합니다.
+앱 없이: `beom-workbench run --mode request --target-root <폴더> --request "<요청>"` (`--agent codex`, `--resume <실행>`). 터미널에서 돌리면 진행 상황을 보여 주고 권한·질문·시작 전 확인·인수인계를 그 자리에서 묻습니다(앱에서 답해도 됩니다). `--answer app` 이면 모두 앱에서 답합니다. 터미널 승인은 실제 터미널에서만 되므로 에이전트가 파이프로 CLI 를 불러 대신 답할 수는 없습니다.
 
 Claude Code 는 [공식 안내](https://code.claude.com/docs)대로 설치하고 `claude auth login`, Codex 는 `npm i -g @openai/codex` 후 `codex login`
 (확인: `beom-workbench agent-status`). 내 컴퓨터에서 본인이 쓰면 구독 로그인, 다른 사람에게 서비스하려면 API 키를 씁니다

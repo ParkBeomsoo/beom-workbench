@@ -215,7 +215,7 @@ push、发布、文件夹外删除和系统更改始终拒绝。在前台启动�
 
 **数据存放位置** — 全部留在本机。见[数据与存储位置](#数据与存储位置)。
 
-不用应用: `beom-workbench run --mode request --target-root <文件夹> --request "<需求>"` (`--agent codex`、`--resume <运行>`)，在应用中回答。
+不用应用: `beom-workbench run --mode request --target-root <文件夹> --request "<需求>"` (`--agent codex`、`--resume <运行>`)。在终端运行时会显示进度，并当场询问权限、问题、开始前确认和交接 (也可以在应用中回答)；`--answer app` 则全部在应用中回答。终端批准只能在真实终端中进行，因此代理无法通过管道调用 CLI 代你回答。
 
 按[官方指南](https://code.claude.com/docs)安装 Claude Code 并执行 `claude auth login`；Codex 用 `npm i -g @openai/codex` 后执行 `codex login`
 (检查: `beom-workbench agent-status`)。自己在自己的电脑上使用时用订阅登录，为他人提供服务时用 API 密钥
