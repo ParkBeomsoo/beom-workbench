@@ -7,9 +7,9 @@
 **コーディングエージェントの作業台 — 企画し、要望や参考リポジトリから作り、承認した合格基準どおりかを検証します**
 
 
-> アプリの画面は現在韓国語のみです (英語の画面は予定しています)。エージェントは依頼と同じ言語で作業・報告します。
+> アプリの画面は韓国語・英語・日本語・中国語 (簡体字) に対応しています。初回はシステムの言語に合わせ (それ以外の言語なら韓国語)、サイドバーの言語ボタンで変更できます。エージェントは依頼と同じ言語で作業・報告します。
 
-![version](https://img.shields.io/badge/version-0.1.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.2.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 他人が作った機能を「ざっと読んで真似して作る」のではなく、コード全体を根拠(ファイル:行)付きで分析し、
 移植した結果がオリジナルと同じ動作をするかをプログラムで確認します。Claude Code のような AI エージェントが手順どおりに使えるよう

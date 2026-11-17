@@ -84,7 +84,7 @@ def load_prefs(settings: Settings) -> dict:
 
 
 def save_prefs(settings: Settings, patch: dict) -> dict:
-    allowed = {"trash_days", "cleanup_days", "shortcut_dismissed", "defaults", "loop", "renamed"}  # defaults: 새 작업에 쓸 지난 선택, loop: 라운드 규칙
+    allowed = {"trash_days", "cleanup_days", "shortcut_dismissed", "defaults", "loop", "renamed", "lang"}  # defaults: 새 작업에 쓸 지난 선택, loop: 라운드 규칙
     bad = set(patch) - allowed
     if bad:
         raise ToolError("invalid_request", f"모르는 설정: {sorted(bad)}")
