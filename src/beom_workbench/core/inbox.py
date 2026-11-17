@@ -39,20 +39,23 @@ KINDS = {
     "delete": "대상 폴더 밖 삭제",
     "system": "시스템·설정 변경 (툴킷 원장·질문함 포함)",
     "other": "그 밖의 도구",
+    "unsandboxed": "격리 없이 실행 (Node 빌드 도구는 Windows 격리 안에서 돌지 않음)",
 }
 DEFAULT_POLICY = {"edit": "allow", "build": "allow", "commands": "ask", "web": "ask", "outside": "ask",
-                  "publish": "refuse", "branch": "refuse", "delete": "refuse", "system": "refuse", "other": "ask"}
+                  "publish": "refuse", "branch": "refuse", "delete": "refuse", "system": "refuse", "other": "ask",
+                  "unsandboxed": "ask"}
 STRICTNESS = {"allow": 0, "ask": 1, "refuse": 2}
 # 권한 모드 — 대부분은 셋 중 하나로 충분하다. 세부(종류별) 규칙은 "직접 설정"으로.
 _NEVER = {"publish": "refuse", "branch": "refuse", "delete": "refuse", "system": "refuse"}
 PERMISSION_MODES = {
     "ask": {"label": "모두 물어보기", "desc": "파일 수정·명령 실행마다 확인합니다",
-            "policy": {"edit": "ask", "build": "ask", "commands": "ask", "web": "ask", "outside": "ask", "other": "ask", **_NEVER}},
+            "policy": {"edit": "ask", "build": "ask", "commands": "ask", "web": "ask", "outside": "ask", "other": "ask",
+                       "unsandboxed": "ask", **_NEVER}},
     "edits": {"label": "편집 자동 허용", "desc": "대상 폴더 안 수정과 빌드·테스트는 바로, 그 밖의 명령·웹은 확인합니다",
               "policy": dict(DEFAULT_POLICY)},
     "auto": {"label": "자동", "desc": "명령·웹 조사까지 묻지 않고 진행합니다 (폴더 밖 파일·배포·시스템 변경만 확인). 믿을 수 있는 작업에만",
              "policy": {"edit": "allow", "build": "allow", "commands": "allow", "web": "allow", "outside": "ask", "other": "ask",
-                        **_NEVER}},
+                        "unsandboxed": "allow", **_NEVER}},
 }
 
 
@@ -66,19 +69,27 @@ def mode_of(policy: dict) -> str:
 
 # 정확히 이 줄만 '빌드'로 바로 허용 — 덧붙인 인자는 실행기를 바꿀 수 있다 (go test -exec, yarn dlx, pytest -p 등).
 # 그 밖의 줄은 '그 밖의 명령'으로 규칙에 따라 묻는다.
+# node 테스트 실행기가 받는 출력·고르기 옵션 (다른 코드를 불러오지 않는 것만)
+_NODE_TEST_OPT = (r"(?:--test-isolation=none|--experimental-test-coverage|--test-reporter=[\w-]+"
+                  r"|--test-reporter-destination=(?!\S*\.\.)[\w./\-]+|--test-name-pattern=[\w.-]+|--test-concurrency=\d+)")
 BUILD_COMMANDS = re.compile(
-    r"^(npm (ci|install|test|run (build|test|lint))|pnpm (install|test|build)|yarn (install|test|build)|"
+    # npm·pnpm·yarn: 출력만 줄이거나 보고·설치 스크립트를 끄는 옵션은 같은 명령이다 (실행하는 것을 바꾸지 않는다)
+    r"^((?:npm (ci|install|test|run (build|test|lint))|pnpm (install|test|build)|yarn (install|test|build))"
+    r"(?: --(?:no-audit|no-fund|silent|prefer-offline|no-progress|ignore-scripts|loglevel=(?:error|warn|silent)))*|"
     r"cargo (build|test|check|fmt|clippy)|go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
     r"\./gradlew (test|build)|pip install -e \.|dotnet (build|test)|"
     # pytest 는 실행기를 바꾸지 않는 인자만 (출력·멈춤·고르기·테스트 파일) — -p(플러그인)·-c·--rootdir 같은 것은 묻는다
-    r"(?:(?:python3?|py) -m coverage run (?:--include=[\w./\\*,-]+ |--source=[\w./\\,-]+ |--omit=[\w./\\*,-]+ |--branch )*-m (?:pytest|unittest)|"
+    r"(?:(?:python3?|py) -m coverage run (?:--include=[\w./\\*,-]+ |--source=[\w./\\,-]+ |--omit=[\w./\\*,-]+ |--branch |--rcfile=(?:NUL|/dev/null) )*"
+    r"-m (?:pytest|unittest)|"
     r"pytest|(?:python3?|py) -m pytest|uv run pytest|(?:python3?|py) -m unittest)"
-    r"(?: (?:-q|-qq|-v|-vv|-x|-s|-rA|-ra|-b|-f|--no-header|--tb=\w+|--maxfail=\d+|-k [\w.]+|discover|-s [\w./\\-]+"
-    r"|[\w./\\-]+\.py(?:::[\w:\[\]-]+)?|[\w.\\-]+[/\\]))*|"
+    r"(?: (?:-q|-qq|-v|-vv|-x|-s|-rA|-ra|-b|-f|--no-header|--tb=\w+|--maxfail=\d+|-k [\w.]+|discover|-s [\w./\\-]+|-p no:[\w.-]+"
+    # 테스트 파일·폴더 (pricing · tests/unit · test_a.py::test_b) — '-' 로 시작하지 않는 경로 낱말만, .. 는 아니다
+    r"|[\w./\\-]+\.py(?:::[\w:\[\]-]+)?|(?!\.\.)(?![\w.\\/-]*[\\/]\.\.)[\w][\w.\\/-]*))*|"
     r"(?:python3?|py) -m coverage (?:report|json|html|xml)(?: -m| --include=[\w./\\*,-]+| --show-missing| -o (?!\S*\.\.)[\w./\\-]+)*|"
-    # Node 내장 테스트 실행기 — 결과·커버리지 출력만 고르는 인자 (--import·--require 처럼 다른 코드를 불러오는 것은 묻는다)
-    r"node --test(?: (?:--test-isolation=none|--experimental-test-coverage|--test-reporter=[\w-]+|--test-reporter-destination=(?!\S*\.\.)[\w./\\-]+"
-    r"|--test-name-pattern=[\w.-]+|[\w./\\-]+\.(?:test\.)?[cm]?js))*)\s*$")
+    # Node 내장 테스트 실행기 — 결과·커버리지 출력만 고르는 인자 (--import·--require 처럼 다른 코드를 불러오는 것은 묻는다).
+    # 옵션은 --test 앞뒤 어디에 와도 되고, 대상은 테스트 폴더·파일. --test 없이 테스트 파일(*.test.js)을 바로 돌리는 것도 같다
+    r"node(?: " + _NODE_TEST_OPT + r")*(?: --test(?: (?:" + _NODE_TEST_OPT + r"|(?!\.\.)(?![\w.\\/-]*[\\/]\.\.)[\w.][\w./\\-]*))*"
+    r"|(?: [\w./\\-]+\.test\.[cm]?js)+(?: " + _NODE_TEST_OPT + r")*))\s*$")
 # 끝에 붙여 출력만 줄이는 것 — 무엇을 실행하는지는 바꾸지 않는다 (따옴표·다른 연결 기호가 들어가면 떼지 않는다)
 OUTPUT_FILTER = re.compile(r"(?:\s*2>&1)?(?:\s*\|\s*(?:Select-Object|select|Select-String|sls|Out-String|head|tail|more)\b"
                            r"[^|;&<>`$()\"'{}@=%]*)+$|\s*2>&1\s*$", re.I)  # 스크립트 블록({ }·@{ })·대입은 떼지 않는다
@@ -344,7 +355,7 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
             return "system"
         if PUBLISH.search(cmd):
             return "publish"
-        cmd = _strip_cd(cmd, target_root)
+        cmd = _strip_cd(_unwrap_shell(_strip_cd(cmd, target_root)), target_root)
         if workbranch.moves_branch(cmd):
             return "branch"
         if DELETE_CMD.search(cmd) and not _deletes_inside(cmd, target_root):
@@ -355,9 +366,9 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
         core = OUTPUT_FILTER.sub("", cmd).strip()
         if BUILD_COMMANDS.match(core) and not CHAINING.search(core):
             return "build"
-        parts = [x.strip() for x in re.split(r"\s*(?:;|&&)\s*", core) if x.strip()]
-        if len(parts) > 1 and all((BUILD_COMMANDS.match(x) and not CHAINING.search(x)) or _inspect_only(x) for x in parts):
-            return "build"
+        parts = [x.strip() for x in re.split(r"\s*(?:;|&&)\s*", cmd) if x.strip()]
+        if len(parts) > 1 and all(_safe_piece(x, target_root) for x in parts) and not _read_only_shell(cmd, target_root):
+            return "build"  # 빌드·실행이 섞인 줄 — 읽기만 하는 줄은 아래에서 읽기(edit)로
         # 버전·설치 여부만 보는 명령(node --version; Test-Path …)은 아무것도 바꾸지 않는다 — 묻지 않고 빌드와 같이 둔다
         if _inspect_only(core):
             return "build"
@@ -376,6 +387,66 @@ INSPECT_COMMANDS = re.compile(
     r"|\(?Get-Command [\w.\-]+(?: -ErrorAction (?:SilentlyContinue|Ignore))?\)?(?:\.(?:Source|Path|Version))?"
     r"|Test-Path (?:-LiteralPath |-Path )?(?:\"[^\"$`;|&<>]*\"|'[^'$`;|&<>]*'|[^\s\"'$`;|&<>]+)"
     r"|\$PSVersionTable(?:\.PSVersion)?|uname(?: -[a-z]+)?|echo \$env:[A-Z_]+)$", re.I)
+
+
+# 에이전트가 PowerShell 로 한 번 더 감싸 보내는 명령 — 안쪽 명령으로 판단한다 (안에 다른 따옴표가 없을 때만)
+SHELL_WRAP = re.compile(r'^(?:powershell|pwsh)(?:\.exe)?(?:\s+-(?:NoProfile|NonInteractive|NoLogo|ExecutionPolicy\s+Bypass))*'
+                        r'\s+-(?:Command|c)\s+"([^"`]*)"\s*$', re.I)
+
+
+# 끝나지 않는 개발 서버·감시 명령 — 앞에서(포그라운드) 돌리면 명령이 돌아오지 않아 라운드가 멈춘다
+DEV_SERVER = re.compile(
+    r"(?:^|[;&|]\s*)(?:"
+    r"(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+(?:dev|start|serve|preview|watch)\b"
+    r"|npx\s+(?:vite(?!\s+build)|next\s+dev|serve|http-server|live-server|nodemon|webpack\s+serve)\b"
+    r"|vite(?:\.cmd)?(?:\s+(?:dev|serve|preview))?\s*(?:$|[;&|]|--)"
+    r"|next\s+dev\b|ng\s+serve\b|webpack(?:-dev-server|\s+serve)\b|nodemon\b|live-server\b|http-server\b"
+    r"|(?:python3?|py)\s+-m\s+http\.server\b|uvicorn\s|flask\s+run\b|php\s+-S\b|rails\s+s(?:erver)?\b"
+    r"|(?:python3?|py)\s+manage\.py\s+runserver\b|dotnet\s+(?:watch|run)\b(?!.*--no-launch)"
+    r")", re.I)
+SERVER_HINT = ("개발 서버처럼 끝나지 않는 명령은 앞에서 돌리면 돌아오지 않아 라운드가 멈춥니다. "
+               "띄워 둘 거면 백그라운드로(run_in_background) 실행하고, 화면·동작 확인은 검증 도구(target_cmd·target_url·화면 케이스)로 하세요 — "
+               "검증 도구는 서버를 띄우고 확인한 뒤 끝냅니다.")
+
+
+# Windows 격리(쓰기 제한 토큰)에서는 Node 가 파이프로 자식 프로세스를 띄우지 못한다 (spawn EPERM) — 이름 있는 파이프의
+# 기본 권한이 쓰기를 Everyone 에게 주지 않아서다. npm 설치 스크립트·vite·esbuild·node --test 같은 Node 도구가 모두 여기에 걸린다.
+NODE_TOOLS = re.compile(r"(?:^|[;&|(]\s*)(?:npm|npx|pnpm|yarn|bun|node|vite|next|nuxt|astro|webpack|esbuild|rollup|vitest|jest|"
+                        r"playwright|ng|turbo|tsx|ts-node)(?:\.cmd|\.exe)?(?=$|[\s;&|)])", re.I)
+
+
+def needs_unsandboxed(cmd: str) -> bool:
+    """Windows 격리 안에서는 돌지 않는 Node 도구를 쓰는 명령인가. 버전만 보는 것(node --version)은 자식 프로세스가 없어 해당 없다."""
+    for seg in re.split(r"[;&|\n]+", cmd or ""):
+        seg = seg.strip().lstrip("(").strip()
+        if NODE_TOOLS.search(seg) and not re.fullmatch(r"[\w.-]+(?:\.cmd|\.exe)?\s+(?:--version|-v|-V|version)\)?", seg, re.I):
+            return True
+    return False
+
+
+def foreground_server(tool_input: dict) -> bool:
+    """개발 서버를 백그라운드가 아니라 앞에서 돌리려 하는가 (빌드·테스트 명령의 'build'·'test' 는 해당 없음)."""
+    if tool_input.get("run_in_background"):
+        return False
+    cmd = str(tool_input.get("command") or "")
+    return bool(cmd) and bool(DEV_SERVER.search(cmd)) and not re.search(r"(?:^|\s)(?:--help|-h|--version)\b", cmd) \
+        and not re.search(r"\bStart-Process\b|\bstart\s+/b\b|&\s*$|\bnohup\b", cmd, re.I)  # 따로 띄우는 것은 돌아온다
+
+
+def _unwrap_shell(cmd: str) -> str:
+    m = SHELL_WRAP.match(cmd)
+    return m.group(1).strip() if m else cmd
+
+
+def _safe_piece(piece: str, root: Path) -> bool:
+    """; · && 로 이은 조각 하나 — 끝의 출력 거르기를 떼고 빌드·확인·읽기만 하는 명령인가.
+    (프로젝트 코드를 직접 돌리는 명령은 여기 들지 않는다 — 편집 자동 허용에서는 그 밖의 명령으로 묻는다)"""
+    core = OUTPUT_FILTER.sub("", piece).strip()
+    if not core:
+        return False
+    if BUILD_COMMANDS.match(core) and not CHAINING.search(core):
+        return True
+    return _inspect_only(core) or _read_only_shell(piece, root)
 
 
 def _strip_cd(cmd: str, target_root: Path) -> str:
@@ -434,7 +505,8 @@ def _read_only_shell(cmd: str, root: Path) -> bool:
     목록에 없는 명령)이 하나라도 있으면 아니다. 절대 경로는 모두 대상 폴더(또는 에이전트 임시 폴더) 안이어야 한다."""
     if not cmd or len(cmd) > 4000 or _RO_BAD.search(cmd):
         return False
-    for seg in _RO_SPLIT.split(cmd):
+    bare = re.sub(r"'[^']*'|\"[^\"$`]*\"", "''", cmd)  # 따옴표 안의 | ; ( 는 명령 구분이 아니다 (-Pattern '^(a|b)')
+    for seg in _RO_SPLIT.split(bare):
         seg = seg.strip()
         if not seg or seg.startswith(("$", "'", '"', "-", "#")) or re.fullmatch(r"[\d.,\s]+", seg):
             continue  # 변수·문자열·인자 조각·숫자 — 명령이 아니다 ($x = 'a' 의 오른쪽도 여기서 다시 본다)

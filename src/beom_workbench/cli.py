@@ -263,6 +263,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--effort", help="에이전트 생각 깊이 (low·medium·high·xhigh — 에이전트마다 다름)")
     p.add_argument("--create-only", action="store_true", help="실행 준비만 (앱에서 시작)")
     p.add_argument("--resume", metavar="RUN_ID", help="멈춘 실행 이어서")
+    p.add_argument("--answer", choices=["terminal", "app"], default=None,
+                   help="질문·승인을 어디서 답할지 — terminal: 이 터미널에서(앱에서도 됨) / app: 앱에서만. 기본은 터미널에서 돌리면 terminal")
     sub.add_parser("runs", help="실행 목록")
     p = sub.add_parser("merge", help="작업 브랜치 합치기 — develop: 시험 (develop 에 합침), main: 적용 (main 에 합침). 작업 폴더는 그대로")
     p.add_argument("run_id")
@@ -443,8 +445,24 @@ def _run(args: argparse.Namespace) -> Any:
                     pass
             if args.create_only:
                 return {"run_id": run_id}
-        sys.stderr.write(_t("실행 {0} — 승인·질문은 데스크톱 앱(beom-workbench)에서 답한다", _lang()).replace("{0}", run_id) + "\n")
-        return runner.Runner(settings, run_id).run()
+        from beom_workbench.core import terminal
+        lang = _lang()
+        here = terminal.interactive() and args.answer != "app"
+        if args.answer == "terminal" and not terminal.interactive():
+            raise ToolError("human_required", "터미널에서 답하려면 사람이 직접 터미널에서 실행해야 합니다 (지금 입력이 터미널이 아님)",
+                            recovery="--answer app 으로 앱에서 답하거나, 터미널에서 직접 실행")
+        if not here:
+            sys.stderr.write(_t("실행 {0} — 승인·질문은 데스크톱 앱(beom-workbench)에서 답한다", lang).replace("{0}", run_id) + "\n")
+            return runner.Runner(settings, run_id).run()
+        sys.stderr.write(_t("실행 {0} — 승인·질문은 이 터미널에서 답합니다 (앱에서 답해도 됩니다)", lang).replace("{0}", run_id) + "\n")
+        att = terminal.Attendant(settings, run_id, tr=lambda s: _t(s, lang))
+        att.start()
+        try:
+            result = runner.Runner(settings, run_id).run()
+        finally:
+            att.stop.set()
+        att.finish()
+        return result
     if args.cmd == "make-create":
         from beom_workbench.core import make
 

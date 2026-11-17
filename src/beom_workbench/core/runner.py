@@ -193,7 +193,23 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
 - 완료 조건을 모두 채우면 wb_handoff 로 인수인계를 남긴다 — summary 는 결과 한두 문장, changes(사용자가 체감하는 변화 3~6개,
   기능으로), how_to_run(실행 단계 목록, 명령은 `백틱`), checked(어떻게 확인했는지 2~4개), risks·follow_ups(한 줄씩 최대 5개).
   사용자가 처음 보는 사람이라 생각하고 쓴다 — 개발 과정 이야기(무엇을 고쳤다가 다시 고쳤는지)는 넣지 않는다.
+  인수인계를 쓰기 직전에 wb_port_status 로 지금 상태를 다시 보고 쓴다 — 이미 승인된 것을 '승인이 필요할 수 있다'처럼 지난 상태로 적지 않는다.
 - 이번 라운드에서 할 수 있는 만큼 진행하고, 마지막에 한두 문장으로 한 일과 남은 일을 말한다."""
+
+
+# 편집 자동 허용은 에이전트의 편집 도구로 고친 파일만 묻지 않는다 — 셸로 파일을 쓰면(Set-Content·here-string·echo >)
+# '그 밖의 명령'이라 매번 묻는다. 사용자를 쓸데없이 부르지 않게 편집 도구를 쓰라고 알려 준다.
+EDIT_TOOLS_RULE = """[파일 쓰기]
+- 파일을 만들거나 고칠 때(.beom/cases.json 포함)는 셸 명령(Set-Content·Out-File·here-string·echo > 등) 대신 편집 도구(Write·Edit)를 쓴다.
+  편집 도구로 대상 폴더 안을 고치는 것은 묻지 않고 바로 되지만, 셸로 쓰는 것은 매번 사용자에게 묻는다."""
+
+
+# Codex 의 Windows 격리(제한된 토큰)에서는 Node 가 자식 프로세스를 만들지 못한다 (spawn EPERM) — Python 은 된다.
+# 에이전트가 헤매며 라운드를 쓰지 않게 처음부터 알려 준다.
+CODEX_WIN_RULE = """[Windows 격리 실행 — Node 자식 프로세스]
+- 이 격리에서는 Node 가 다른 프로세스를 띄우지 못한다 (spawn EPERM). `node --test` 는 `node --test --test-isolation=none` 으로 돌린다.
+- npm 스크립트·테스트 러너·빌드 도구가 같은 이유로 실패하면 격리 탓이다 — 코드를 고치려 하지 말고 node 로 직접 돌리거나,
+  검증 도구가 있으면(wb_port_verify·target_cmd 등 — 격리 밖에서 돈다) 그것으로 확인한다. 사용자에게는 격리 안에서 못 돌린 명령을 끝에 알린다."""
 
 
 FREE_RULES = """너는 사용자의 개발 에이전트다. 사용자가 보낸 요청을 그대로 수행한다 (툴킷의 절차·승인 단계는 쓰지 않는다).
@@ -644,7 +660,9 @@ def _mtime(p: Path) -> int:
 # 끝난 작업에 사용자가 추가 요청을 보낸 첫 라운드 — 처음부터 다시 분석·기획하지 않고, 정해 둔 기준 위에서 고친 뒤 다시 검증한다
 FOLLOW_UP = ("\n\n이번 라운드: 끝난 작업에 사용자가 위 [사용자 추가 요청]을 보냈다 — 요청대로 고친다. 처음부터 다시 분석·기획하지 않는다. "
              "승인된 요구사항 안의 수정이면 바뀐 동작을 확인하는 합격 케이스를 고치거나 더하고(wb_port_capture) 다시 검증한다(wb_port_verify). "
-             "요청이 요구사항·범위를 바꾸면 요구사항·합격 케이스를 먼저 고쳐 사용자 확인을 받은 뒤 구현한다. 끝나면 인수인계(wb_handoff)를 새로 남긴다.")
+             "요청이 요구사항·범위를 바꾸면 요구사항·합격 케이스를 먼저 고쳐 사용자 확인을 받은 뒤 구현한다. "
+             "사용자 확인은 한 번에 받는다 — 바뀌는 요구사항·케이스를 구현 전에 모두 정해 함께 올리고, 검증하다 케이스를 더 고쳐야 하면 "
+             "하나씩 올리지 말고 모아서 한 번에 올린다 (확인 카드가 여러 번 뜨지 않게). 끝나면 인수인계(wb_handoff)를 새로 남긴다.")
 
 # 인계까지 끝난 기획에 고칠 점이 왔다 — 반영할 것이 없으면(이미 들어 있으면) 되묻지 말고 그렇다고 인계를 다시 남긴다
 PLAN_FOLLOW_UP = ("\n\n[이번 라운드] 인계까지 끝난 기획에 사용자가 위 내용을 보냈다. 보낸 것만 관련 문서 모두에 맞춰 반영하고 다시 점검한 뒤 "
@@ -653,6 +671,7 @@ PLAN_FOLLOW_UP = ("\n\n[이번 라운드] 인계까지 끝난 기획에 사용�
 
 LOCK_FILE = "runner.lock"
 WATCHDOG_SEC = 15
+RESULT_GRACE_SEC = 10  # 결과를 보낸 에이전트가 스스로 끝나기를 기다리는 시간
 LOCK_BEAT_SEC = 10
 LOCK_STALE_SEC = 45
 # 아래 기본값은 사용자가 라운드 규칙(core/rounds.py, 앱의 실행 옵션)으로 바꿀 수 있다 — 러너는 rounds.get() 을 읽는다
@@ -753,6 +772,16 @@ AUTO_ACTIVITY = {"wb_make_requirements": "요구사항을 정리했습니다 —
                  "wb_brief_screens": "화면 설계 스크린샷 찍는 중"}
 
 
+def auto_activity(tool: str, run: dict) -> str:
+    """도구에 맞는 한 줄 — 계획을 이미 승인한 뒤(추가 요청·수정)라면 '계획을 세우는 중'처럼 처음 순서를 말하지 않는다."""
+    if (run.get("plan") or {}).get("approved"):
+        if tool == "wb_make_requirements":
+            return "요구사항을 고쳤습니다 — 합격 기준을 맞추는 중"
+        if tool == "wb_port_capture":
+            return "합격 기준을 저장했습니다"
+    return AUTO_ACTIVITY[tool]
+
+
 def kill_tree(proc: subprocess.Popen) -> None:
     """에이전트 프로세스와 그 자식까지 끝낸다 — Windows 의 .cmd 실행 파일은 terminate 로 껍데기만 죽고 node 가 남는다."""
     if proc.poll() is not None:
@@ -847,6 +876,10 @@ class Runner:
         from beom_workbench.core import sandbox
         if run.get("agent", "claude") == "claude" and sandbox.active(run):
             rules += "\n\n" + sandbox.rule(run)
+        if run.get("agent", "claude") == "claude" and run.get("mode") != "free":
+            rules += "\n\n" + EDIT_TOOLS_RULE
+        if run.get("agent") == "codex" and sys.platform == "win32":
+            rules += "\n\n" + CODEX_WIN_RULE
         wb = run.get("work_branch")
         if wb:
             where = (f"여러 저장소 작업 공간 — 고친 저장소마다 라운드가 끝나면 앱이 같은 이름의 브랜치({wb['branch']})를 지금 커밋에서 "
@@ -859,6 +892,20 @@ class Runner:
                       "develop 에 합쳐 시험하고, 적용은 작업 브랜치를 main 에 합친다. develop 은 main·작업 브랜치에 합치지 않는다) — "
                       "끝낼 때 작업 브랜치 이름과 합치기 전에 볼 점만 알린다.")
         return rules
+
+    def _close_after_result(self, proc: subprocess.Popen) -> None:
+        """에이전트가 이번 차례를 끝냈다(결과를 보냈다) — 그런데도 프로세스가 남아 있으면 라운드를 닫는다.
+        백그라운드로 띄운 미리보기·개발 서버가 남아 있으면 에이전트가 그것이 끝날 때까지(수 분) 살아 있어서, 할 일을 다 하고
+        승인만 남았는데도 '진행 중'으로 보였다. 남은 일이 있으면 다음 라운드가 이어 간다."""
+        deadline = time.monotonic() + RESULT_GRACE_SEC
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return
+            time.sleep(0.5)
+        if proc.poll() is None and not self._stop.is_set():
+            inbox.log(self.settings, self.run_id, "note", tone="",
+                      text="에이전트가 일을 마쳤지만 백그라운드 작업이 남아 있어 라운드를 닫았습니다 (남은 서버도 함께 껐습니다)")
+            kill_tree(proc)
 
     def _keep_branch(self, run: dict) -> None:
         """작업 브랜치를 벗어났으면 되돌린다 (규칙을 거치지 않는 에이전트·스크립트가 바꿨을 때). 못 되돌리면 실행을 멈춘다."""
@@ -1023,11 +1070,13 @@ class Runner:
                               items=[{"tool": e.get("tool"), "input": mask_command(json.dumps(e.get("input"), ensure_ascii=False)[:300])}])
                     short = str(e.get("tool") or "").split("__")[-1]
                     if short in AUTO_ACTIVITY:
-                        self._set(activity={"text": AUTO_ACTIVITY[short], "at": inbox._now()})
+                        self._set(activity={"text": auto_activity(short, inbox.load_run(self.settings, self.run_id)), "at": inbox._now()})
                     if short in ("wb_make_requirements", "wb_port_capture") and run.get("auto_approve_round") == run.get("round"):
                         self._auto_approve()
                 elif kind == "result":
                     result = {"is_error": not e.get("ok", True), **e}
+                    if e.get("ok", True):
+                        threading.Thread(target=self._close_after_result, args=(proc,), daemon=True).start()
                     inbox.log(self.settings, self.run_id, "agent_result", subtype=e.get("subtype"), is_error=not e.get("ok", True),
                               cost_usd=e.get("cost_usd"), turns=e.get("turns"), usage=e.get("usage"), result=e.get("text"))
                     u = e.get("usage")

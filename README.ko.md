@@ -7,7 +7,7 @@
 
 > 앱 화면은 한국어·영어·일본어·중국어(간체)를 지원합니다. 처음에는 시스템 언어를 따르고(그 밖의 언어면 한국어), 사이드바의 언어 단추로 바꿀 수 있습니다. 에이전트가 쓰는 언어는 에이전트 자체 규칙을 따릅니다 — 요청 언어가 분명하면 그 언어로 쓰라고 알려 주고, 알 수 없거나(첨부·링크뿐) 에이전트 설정에 응답 언어를 정해 두었으면(Claude Code `language`) 그 설정을 따릅니다. 명령줄 도움말(`--help`)과 설치 스크립트 안내도 같은 언어를 따릅니다.
 
-![version](https://img.shields.io/badge/version-0.3.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.3.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 에이전트가 "다 됐다"고 할 때까지 맡기는 대신, 요구사항과 합격 케이스를 먼저 정하고, 에이전트는 자기 브랜치에서만 일하게 하고,
 결과가 그 기준을 채우는지(옮겨 오는 경우 원본과 같은 동작인지) 프로그램으로 확인합니다. 분석 결론에는 모두 근거(파일:줄)가 붙습니다. Claude Code 같은 AI 에이전트가 절차를 따라 쓰도록
@@ -245,12 +245,12 @@ Claude Code·Codex CLI 를 그 폴더에서 그대로 쓰는 것과 같습니다
 | 모드 | 동작 |
 |---|---|
 | 모두 물어보기 | 수정·명령마다 확인 |
-| 편집 자동 허용 (기본) | 대상 폴더 안 수정과 빌드·테스트는 바로, 그 밖의 명령과 웹은 확인 |
+| 편집 자동 허용 (기본) | 대상 폴더 안 수정, 빌드·테스트, 읽기만 하는 명령은 바로, 그 밖의 명령(자기 스크립트 실행·`python -c`·네트워크·폴더 밖 경로 등)과 웹은 확인 |
 | 자동 | 명령·웹 조사도 묻지 않고 진행, 폴더 밖 파일만 확인 — 믿을 수 있는 작업에만. CLI 는 `beom-workbench run --permission auto` |
 
 에이전트 자신의 임시 폴더(`%TEMP%/claude`)는 대상 폴더처럼 다룹니다 — 메모·임시 스크립트마다 묻지 않게.
 
-push·배포·폴더 밖 삭제·시스템 변경은 언제나 거절합니다. 에이전트가 검증 도구에 넘기는 명령(케이스 파일 안의 명령 포함)도 같은 규칙을 거칩니다.
+push·배포·폴더 밖 삭제·시스템 변경은 언제나 거절합니다. 개발 서버(`npm run dev`·`python -m http.server` 등)를 앞에서 돌리면 돌아오지 않아 라운드가 멈추므로 방법과 함께 돌려보냅니다 — 백그라운드로는 띄울 수 있고, 검증 도구는 서버를 직접 띄우고 끝냅니다. Windows 내장 격리 실행 안에서는 Node 빌드 도구(npm·vite·esbuild 등)가 자식 프로세스를 띄우지 못해 돌지 않으므로, 이런 명령은 *격리 없이 실행*할지 묻습니다 — 자동 모드는 허용하고, *이 프로젝트에서 항상*을 고르면 더 묻지 않습니다. 에이전트가 검증 도구에 넘기는 명령(케이스 파일 안의 명령 포함)도 같은 규칙을 거칩니다.
 인증: *내 로그인*(구독) 또는 *API 키*(환경 변수의 키로 종량 과금) — 할 수 있는 일은 같습니다.
 
 **기존 자산 기반** — 대상 폴더에 이미 코드·문서가 있거나(작업을 만들 때 스택·문서·화면 파일을 기록), 넣을 저장소·원본 저장소가 있으면
@@ -357,7 +357,7 @@ beom-workbench rounds --reset                           # 모두 기본값으로
 
 **데이터 저장 위치** — 모두 내 컴퓨터에 남습니다. [데이터와 저장 위치](#데이터와-저장-위치)를 보세요.
 
-앱 없이: `beom-workbench run --mode request --target-root <폴더> --request "<요청>"` (`--agent codex`, `--resume <실행>`), 답은 앱에서 합니다.
+앱 없이: `beom-workbench run --mode request --target-root <폴더> --request "<요청>"` (`--agent codex`, `--resume <실행>`). 터미널에서 돌리면 진행 상황을 보여 주고 권한·질문·시작 전 확인·인수인계를 그 자리에서 묻습니다(앱에서 답해도 됩니다). `--answer app` 이면 모두 앱에서 답합니다. 터미널 승인은 실제 터미널에서만 되므로 에이전트가 파이프로 CLI 를 불러 대신 답할 수는 없습니다.
 
 Claude Code 는 [공식 안내](https://code.claude.com/docs)대로 설치하고 `claude auth login`, Codex 는 `npm i -g @openai/codex` 후 `codex login`
 (확인: `beom-workbench agent-status`). 내 컴퓨터에서 본인이 쓰면 구독 로그인, 다른 사람에게 서비스하려면 API 키를 씁니다
@@ -620,7 +620,7 @@ beom-workbench data --revoke-sandbox       # Windows: 격리 실행에 준 폴�
   앱이 대상 폴더·임시 폴더·쓰는 도구 캐시에만 그 신원의 *수정* 권한을 줍니다 (그 폴더에 남고, `%LOCALAPPDATA%\beom-workbench-sandbox\granted.txt` 에
   기록). 읽기는 그대로라 빌드·테스트는 평소처럼 됩니다. Windows 에서는 이 방식으로 네트워크를 막을 수 없어 *웹* 권한 규칙이 정합니다.
   Git Bash 는 제한 토큰에서 시작하지 못해 Claude 는 PowerShell 을 씁니다. 직접 확인: 안쪽 쓰기 성공, 바깥·`~/.beom-workbench` 쓰기 거부
-  (권한 규칙이 못 보게 실행 중에 경로를 만들어도 거부), `npm install`·`node`·`python`·`pip`·`git` 동작, 창이 뜨지 않음. macOS·Linux 는 샌드박스 밖 재실행을 막고, 웹 허용일 때도 패키지 저장소에만 접속합니다. 전역 설치(`npm -g`·`pip --user`)는
+  (권한 규칙이 못 보게 실행 중에 경로를 만들어도 거부), `npm install`·`node`·`python`·`pip`·`git` 동작, 창이 뜨지 않음. macOS·Linux 는 샌드박스 밖 재실행을 막고, 네트워크는 패키지 저장소에만 접속합니다(기본 모드에서도 설치가 되게 — 웹을 거절로 두면 막힘). 테스트·미리보기용 127.0.0.1 서버는 띄울 수 있습니다. 전역 설치(`npm -g`·`pip --user`)는
   일부러 막힙니다. 실행 옵션에서 작업마다 끌 수 있습니다.
 - **권한 규칙** 이 에이전트의 모든 도구·명령을 나눕니다 — 대상 폴더 안 수정, 빌드·테스트, 그 밖의 명령, 웹, 폴더 밖, 게시(push·패키지
   게시·PR 생성), 폴더 밖 삭제, 시스템 변경(레지스트리·예약 작업·git 설정·에이전트 자신의 `.claude/`·`.git/` 설정), 작업 브랜치 밖으로.

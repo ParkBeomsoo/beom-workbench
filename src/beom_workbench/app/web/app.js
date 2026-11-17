@@ -378,7 +378,7 @@ async function retryRun(id) {
   const v = x.data;
   goHome();
   S.mode = v.mode; S.agentPicked = true;
-  Object.assign(S.draft, { request: v.request, attachments: v.attachments, target_root: v.target_root, context_dir: v.context_dir,
+  Object.assign(S.draft, { name: v.name || "", request: v.request, attachments: v.attachments, target_root: v.target_root, context_dir: v.context_dir,
     source: v.source, feature: v.feature, agent: v.agent || S.draft.agent, model: v.model || "", effort: v.effort || "",
     policy: v.policy || S.draft.policy, max_rounds: v.max_rounds || 0, confirm_at: v.confirm_at || "start", auth: v.auth || S.draft.auth,
     plan_approval: v.plan_approval !== false });
@@ -709,7 +709,7 @@ async function create() {
     feature: d.feature, agent: d.agent, model: d.model, effort: d.effort, confirm_at: d.confirm_at, attachments: d.attachments || [], max_rounds: d.max_rounds, auth: d.auth,
     plan_approval: d.plan_approval === true || d.plan_approval === "true", policy: d.policy || S.policy, new_branch: d.new_branch !== false,
     sandbox: d.sandbox !== false,
-    name: (d.request || d.feature || "새 프로젝트").split(/[.\n]/)[0].slice(0, 28) };
+    name: d.name || (d.request || d.feature || "새 프로젝트").split(/[.\n]/)[0].slice(0, 28) };  // 같은 요청으로 새 작업이면 원래 이름
   S.preparing = true; renderHome();
   const r = await call("createRun", JSON.stringify(payload));
   if (!r.ok) { S.preparing = false; renderHome(); }
@@ -749,7 +749,8 @@ function renderRun() {
   $("#meter").replaceChildren(h("div", { class: "stepper" }, ...D.stages.map((s, i) => h("div", { class: "st " + (i < D.stage ? "done" : i === D.stage ? "now" : "") },
     h("i", {}, i < D.stage ? ico("check") : String(i + 1)), h("span", { text: s })))));
   const act = $("#activity"); act.replaceChildren();
-  if (D.running) {
+  // 내 차례면 할 일을 다 하고 사용자를 기다리는 것 — 도는 것이 없으니 '진행 중'·작업 시간·멈추기를 보이지 않는다 (카드가 할 일을 말한다)
+  if (isBusy()) {
     if (!S.startedAt) S.startedAt = Date.now();
     const sec = Math.floor((Date.now() - S.startedAt) / 1000);
     // 에이전트가 긴 글·파일을 쓰는 중이면 얼마나 썼는지 (조각 출력을 주는 에이전트만)
@@ -760,7 +761,7 @@ function renderRun() {
       writing ? h("span", { class: "wr", text: writing }) : null,
       h("span", { class: "el", text: `${agentName(run.agent)} · ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}` })));
   } else S.startedAt = null;
-  const cbarSig = JSON.stringify([run.agent, run.model, run.effort, run.round, run.max_rounds, run.cost_usd, run.tokens, D.policy, D.running, run.status, run.accepted]);
+  const cbarSig = JSON.stringify([run.agent, run.model, run.effort, run.round, run.max_rounds, run.cost_usd, run.tokens, D.policy, D.running, D.tone, run.status, run.accepted]);
   if (cbarSig !== S.sig.cbar) {  // 메뉴가 열린 채로 1.5초마다 다시 그려지지 않게
     S.sig.cbar = cbarSig;
     const opt = (patch) => call("setRunOptions", run.id, JSON.stringify(patch)).then((r) => r.ok && (toast("바꿨습니다 — 다음 라운드부터 적용"), refresh()));
@@ -779,10 +780,10 @@ function renderRun() {
         pill("agent", "모델 · 노력 (다음 라운드부터)", brainLabel(run.agent, run.model, run.effort), (b) => brainPop(b, () => cur,
           (patch) => { Object.assign(cur, patch); opt(patch); }, false), "brain"),
         // Claude 데스크톱처럼: 진행 중이고 입력이 비었으면 멈춤, 아니면 보내기
-        h("button", { class: "send" + (D.running ? " stopmode" : ""), title: D.running ? "멈추기 (Esc) — 입력하면 보내기로 바뀝니다" : (run.round ? "보내기 — 보내면 바로 이어서 진행" : "시작"),
-          disabled: !D.running && !run.round ? false : false,
-          onclick: () => { if (hasMsg()) sendMsg(); else if (D.running) call("stop", run.id).then(refresh); else startRun(); } },
-          ico(D.running ? "stop" : "up"))));
+        h("button", { class: "send" + (isBusy() ? " stopmode" : ""),
+          title: isBusy() ? "멈추기 (Esc) — 입력하면 보내기로 바뀝니다" : D.running ? "고칠 점을 보내기 — 반영해 다시 확인을 요청합니다" : (run.round ? "보내기 — 보내면 바로 이어서 진행" : "시작"),
+          onclick: () => { if (hasMsg()) sendMsg(); else if (isBusy()) call("stop", run.id).then(refresh); else if (!D.running) startRun(); } },
+          ico(isBusy() ? "stop" : "up"))));
     updateSendMode();
   }
   drawProcs();
@@ -795,7 +796,8 @@ function drawProcs() {
   const list = (S.procs && S.procs.run === S.current ? S.procs.rows : []) || [];
   const extra = list.filter((p) => p.kind !== "agent");
   box.replaceChildren();
-  if (!list.length) return;
+  // 내 차례면 에이전트는 멈춰 기다린다 — '에이전트 실행 중'을 띄우지 않는다 (남은 개발 서버 같은 백그라운드는 그대로 보인다)
+  if (!extra.length && (!list.length || !isBusy())) return;
   const agent = list.find((p) => p.kind === "agent");
   box.append(h("button", { class: "procchip" + (extra.length ? " has" : ""), title: "이 작업이 띄운 프로세스 — 눌러서 보고 끄기",
     onclick: (e) => { e.stopPropagation(); procPop(e.currentTarget); } },
@@ -820,11 +822,12 @@ function procPop(anchor) {
 }
 function updateSendMode() {
   const b = document.querySelector(".composer .send"); if (!b || !S.detail) return;
-  const typed = hasMsg(), running = S.detail.running;
-  b.classList.toggle("stopmode", running && !typed);
-  b.replaceChildren(ico(running && !typed ? "stop" : "up"));
+  const typed = hasMsg(), busy = isBusy();
+  b.classList.toggle("stopmode", busy && !typed);
+  b.replaceChildren(ico(busy && !typed ? "stop" : "up"));
   const r = S.detail.run;
-  b.disabled = !typed && !running && (r.status === "done" && r.accepted);
+  // 내 차례(승인·답 대기)에 빈 입력은 보낼 것도 멈출 것도 없다 — 카드로 답한다
+  b.disabled = !typed && ((S.detail.running && !busy) || (!S.detail.running && r.status === "done" && r.accepted));
 }
 // 쓰던 에이전트가 연결돼 있지 않으면 연결된 것으로 (Claude 고정이 아니라)
 function pickReadyAgent() {
@@ -985,12 +988,15 @@ function cards() {
   const planOpen = plan && plan.steps && plan.steps.length && !plan.approved && D.run.status !== "done";  // 끝난 작업에 승인할 계획은 없다
   // 처음 한 번 확인: 기준과 계획이 함께 떠 있으면 한 장으로 — 사용자가 무엇을 승인하는지 위에서부터 읽히게
   // 계획까지 세우는 중이면 기준만 먼저 띄우지 않는다 — 기준과 계획은 한 장으로 한 번에 확인한다
-  const waitPlan = D.running && D.run.mode === "request" && D.plan_approval !== false && !(plan && plan.steps && plan.steps.length);
-  if (D.reviews && D.reviews.count && planOpen && !S.edit && D.reviews.requirements.length) out.push(startCard(D.reviews, plan, asking));
-  else {
-    if (D.reviews && D.reviews.count && !(waitPlan && !S.edit)) out.push(reviewCard(D.reviews, asking));
-    // 기준과 계획은 함께 승인하므로 둘 다 보여 준다 — 보지 않은 계획(디자인 방향 포함)이 승인되지 않게
-    if (planOpen) out.push(planCard(plan, asking));
+  // 승인 카드는 사용자 차례일 때만 — 라운드가 끝나 실행기가 승인을 기다리거나 멈춰 있을 때. 라운드 도중에 띄우면
+  // '승인함'이 에이전트의 '올렸습니다, 확인해 주세요' 보고보다 먼저 쌓여 순서가 거꾸로 읽히고, 상태는 '실행 중'인데 카드가 뜬다
+  if (gateOpen()) {
+    if (D.reviews && D.reviews.count && planOpen && !S.edit && D.reviews.requirements.length) out.push(startCard(D.reviews, plan, asking));
+    else {
+      if (D.reviews && D.reviews.count) out.push(reviewCard(D.reviews, asking));
+      // 기준과 계획은 함께 승인하므로 둘 다 보여 준다 — 보지 않은 계획(디자인 방향 포함)이 승인되지 않게
+      if (planOpen) out.push(planCard(plan, asking));
+    }
   }
   // 레퍼런스: 원본 라이선스 경고 — 사람이 보고 옮겨도 된다고 확인해야 완료할 수 있다 (에이전트는 대신 못 한다)
   if (D.license && !D.license.acked && !D.run.accepted) out.push(licenseCard(D.license));
@@ -1204,8 +1210,10 @@ function caseFold(R) {  // 합격 기준 — 무엇을 확인하는지만 (입�
 }
 function startCard(R, plan, asking) {
   const sec = (title, note, ...kids) => h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: title }), note ? h("span", { text: note }) : null), ...kids);
+  // '마지막에 한 번 확인' — 이미 다 만든 뒤라 '시작 전'이 아니다
+  const atEnd = S.detail && S.detail.run && S.detail.run.confirm_at === "end";
   return h("div", { class: "card start" },
-    h("div", { class: "ch" }, ico("list", "chi"), h("h3", { text: "시작 전 확인" }), h("span", { class: "tag", text: "확인 필요" })),
+    h("div", { class: "ch" }, ico("list", "chi"), h("h3", { text: atEnd ? "마지막 확인" : "시작 전 확인" }), h("span", { class: "tag", text: "확인 필요" })),
     plan.summary ? h("p", { class: "slead" }, ...inlineMd(plan.summary)) : null,
     asking ? h("div", { class: "callout" }, ico("chat"), h("span", { text: "아래 질문에 먼저 답하면 에이전트가 답을 반영한 뒤 다시 확인을 요청합니다. 지금 승인해도 됩니다." })) : null,
     sec("만들 것", `${R.requirements.length}개 — 다 되면 완료`, reqList(R)),
@@ -1215,7 +1223,7 @@ function startCard(R, plan, asking) {
     h("div", { class: "cf" }, h("span", { class: "hint", text: "고칠 점은 입력창으로 보내면 반영해 다시 보여 줍니다" }),
       h("button", { class: "btn quiet", onclick: () => startEdit("spec") }, "기준 고치기"),
       h("button", { class: "btn quiet", onclick: () => startEdit("plan") }, "계획 고치기"),
-      h("button", { class: "btn primary", onclick: () => approveShown("both") }, "승인하고 시작", h("span", { class: "k", text: "Ctrl Enter" }))));
+      h("button", { class: "btn primary", onclick: () => approveShown("both") }, atEnd ? "승인" : "승인하고 시작", h("span", { class: "k", text: "Ctrl Enter" }))));
 }
 function planCard(plan, asking) {
   if (S.edit && S.edit.kind === "plan") return planEditCard();
@@ -1815,6 +1823,9 @@ async function approveShown(what) {
     + (changed.length ? ` · 결정 ${changed.length}개를 바꿔 전달했습니다` : ""));
   refresh();
 }
+// 에이전트가 실제로 일하는 중인가 — 실행기가 살아 있어도 사용자를 기다리면(내 차례) 일하는 중이 아니다
+function isBusy() { const D = S.detail; return !!D && !!D.running && D.tone !== "turn"; }
+function gateOpen() { const D = S.detail; return !!D && (!D.running || ["waiting_approval", "waiting_plan"].includes(D.run.status) || !!S.edit); }
 function bothPending() { const D = S.detail; return !!(D && D.reviews && D.reviews.count && D.plan && D.plan.steps && D.plan.steps.length && !D.plan.approved); }
 async function refresh() {
   const lr = await call("listRuns"); if (lr.ok) S.runs = lr.data;
@@ -1839,7 +1850,7 @@ document.addEventListener("keydown", (e) => {
   if (tag === "input" || tag === "textarea" || !S.detail) return;  // 입력 중의 Ctrl+Enter 는 보내기 — 승인이 아님, Esc 도 멈춤이 아님
   if (e.key === "Escape" && S.detail.running) { call("stop", S.current).then(refresh); return; }
   if (e.ctrlKey && e.key === "Enter") {
-    if (S.edit) return;
+    if (S.edit || !gateOpen()) return;  // 보이지 않는 카드를 단축키로 승인하지 않게
     if (bothPending()) approveShown("both");
     else if (S.detail.reviews && S.detail.reviews.count) approveShown("reviews");
     else if (S.detail.plan && S.detail.plan.steps && !S.detail.plan.approved) approveShown("plan");
@@ -1852,7 +1863,7 @@ document.addEventListener("keydown", (e) => {
     call("answer", S.current, perm.id, JSON.stringify(data)).then(refresh);
   }
 });
-function goHome() { closePop(); S.edit = null; S.current = null; S.detail = null; S.sig = { feed: "", right: "", side: "", cbar: "" }; S.preparing = false; renderSide(); renderHome(); }
+function goHome() { closePop(); delete S.draft.name; S.edit = null; S.current = null; S.detail = null; S.sig = { feed: "", right: "", side: "", cbar: "" }; S.preparing = false; renderSide(); renderHome(); }
 $("#newbtn").addEventListener("click", goHome);
 $("#runq").addEventListener("input", (e) => { S.runQ = e.target.value; renderSide(); });
 $("#runq").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.target.value = ""; S.runQ = ""; renderSide(); e.target.blur(); } });
@@ -1862,7 +1873,7 @@ new QWebChannel(qt.webChannelTransport, async (ch) => {
   api.created.connect((raw) => {
     const r = JSON.parse(raw); S.preparing = false;
     if (r.error) { toast(r.error); renderHome(); return; }
-    S.draft.request = ""; S.draft.attachments = []; delete S.draft.new_branch; openRun(r.run_id).then(() => r.start && startRun());
+    S.draft.request = ""; S.draft.attachments = []; delete S.draft.name; delete S.draft.new_branch; openRun(r.run_id).then(() => r.start && startRun());
   });
   const b = await call("bootstrap");
   if (b.ok) applyLang(b.data.i18n);

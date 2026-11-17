@@ -25,8 +25,11 @@ MCP_TOOL_SEC = 24 * 3600  # wb_person_ask·wb_action_approve 는 사람이 답�
 
 
 def _mcp_server(settings, run: dict) -> dict:
-    return {"command": sys.executable, "args": ["-m", "beom_workbench.main"],
-            "env": {"BEOM_WORKBENCH_RUN": run["id"], "BEOM_WORKBENCH_HOME": str(settings.home)}}
+    # 사용자가 정한 툴킷 설정(BEOM_WORKBENCH_* — 엔진 경로·격리 기록 위치·시간 제한 등)을 도구 서버에 그대로 넘긴다.
+    # Codex 는 도구 서버를 여기 적은 환경 변수로만 띄워서, 넘기지 않으면 설정이 무시된다 (예: 격리 기록이 기본 위치로 감)
+    env = {k: v for k, v in os.environ.items() if k.startswith("BEOM_WORKBENCH_") and k != "BEOM_WORKBENCH_RUN"}
+    env.update({"BEOM_WORKBENCH_RUN": run["id"], "BEOM_WORKBENCH_HOME": str(settings.home)})
+    return {"command": sys.executable, "args": ["-m", "beom_workbench.main"], "env": env}
 
 
 def _mtime(p: Path) -> float:

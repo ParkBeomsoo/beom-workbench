@@ -7,7 +7,7 @@
 
 > The app's interface is available in Korean, English, Japanese and Simplified Chinese. It follows your system language on first start (Korean when the system language is not one of these) and can be changed from the language button in the sidebar. Agents follow their own rules for the language they write in: when the language of your request is clear they are told to use it; when it is not (only an attachment or a link), or when you set a response language in the agent's own settings (Claude Code `language`), the agent's setting applies. Command-line help (`--help`) and the installers' messages follow the same language.
 
-![version](https://img.shields.io/badge/version-0.3.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.3.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 Instead of letting an agent build until it says "done", the workbench fixes the requirements and acceptance cases first, has the
 agent work on its own branch, and checks by program that the result meets them — or, when porting, that it behaves like the
@@ -240,10 +240,10 @@ Any other model name can be typed in. Model and effort can be changed during a r
 | Mode | Behaviour |
 |---|---|
 | Ask everything | every edit and command is confirmed |
-| Allow edits (default) | edits inside the target folder and build/test commands run directly; other commands and the web are confirmed |
+| Allow edits (default) | edits inside the target folder, build/test commands and read-only commands run directly; other commands (running the project's own scripts, `python -c`, network, paths outside the folder …) and the web are confirmed |
 | Auto | commands and web research run without asking; only files outside the folder are confirmed — use for trusted work. CLI: `beom-workbench run --permission auto` |
 
-Push, publish, deleting outside the folder and system changes are always refused. Commands the agent passes to verification tools
+Push, publish, deleting outside the folder and system changes are always refused. A dev server started in the foreground (`npm run dev`, `python -m http.server` …) is sent back with a hint — it never returns and would stall the round; it can run in the background, and verification starts and stops servers itself. On Windows the built-in isolation cannot run Node build tools (npm, vite, esbuild … cannot start child processes there), so such commands ask to *run outside isolation* — auto mode allows it, and *Always for this project* stops asking. Commands the agent passes to verification tools
 (including commands inside case files) go through the same rules. Auth: *my login* (subscription) or *API key* (reads the key from an
 environment variable, billed per use) — both can do the same things.
 
@@ -326,7 +326,7 @@ read through UI Automation (text and controls), driven (type values, click butto
 
 **Where data lives** — everything stays on your computer. See [Data and storage](#data-and-storage).
 
-Without the app: `beom-workbench run --mode request --target-root <folder> --request "<request>"` (`--agent codex`, `--resume <run>`); answer in the app.
+Without the app: `beom-workbench run --mode request --target-root <folder> --request "<request>"` (`--agent codex`, `--resume <run>`). Run from a terminal, it shows progress and asks permissions, questions, the approval card and the handoff right there (the app works in parallel); `--answer app` leaves everything to the app. Approvals in the terminal need a real terminal, so an agent piping the CLI cannot answer as you.
 
 Install Claude Code by the [official guide](https://code.claude.com/docs) and run `claude auth login`; Codex with `npm i -g @openai/codex`
 and `codex login` (check with `beom-workbench agent-status`). Use a subscription login for your own use on your own computer; use an API key
@@ -595,7 +595,7 @@ In the app: **Storage** at the bottom of the sidebar, and **Move to trash** in a
   under a restricted token, which is why Claude uses PowerShell there. Checked end to end on Windows: inside writes work, outside writes
   and writes to `~/.beom-workbench` are denied (also when the path is built at run time so the permission rules cannot see it),
   `npm install`, `node`, `python`, `pip` and `git` work, and no window appears. On macOS and Linux, retrying outside the sandbox is
-  disabled and network access (when web is allowed) is limited to package registries. Global installs (`npm -g`, `pip --user`) are
+  disabled, network access is limited to package registries (so installs work in the default mode; closed when web is refused) and servers on 127.0.0.1 are allowed for tests and previews. Global installs (`npm -g`, `pip --user`) are
   refused by design. Turn it off per run in the run options.
 - **Permission rules** classify every agent tool call and command: edits inside the target, build/test commands, other commands,
   web, outside the folder, publish (push, package publish, PR creation), delete outside the folder, system changes (registry,
