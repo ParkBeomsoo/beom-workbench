@@ -10,7 +10,7 @@
       "name": "beom-workbench",
       "description": "Workbench for coding agents: plan, build from a request or a reference repository, and verify against approved acceptance criteria (skill + MCP). Requires the toolkit to be installed separately.",
       "source": "./",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "category": "development"
     }
   ]

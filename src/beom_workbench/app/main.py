@@ -226,7 +226,9 @@ class Window(QMainWindow):
         import time
         busy = [rid for rid, t in list(self.api.threads.items()) if t.is_alive()]
         if busy:
-            ans = QMessageBox.question(self, APP_NAME, f"진행 중인 작업이 {len(busy)}개 있습니다.\n닫으면 멈춥니다 — 나중에 '이어서'로 계속할 수 있습니다. 닫을까요?")
+            from beom_workbench import i18n
+            ans = QMessageBox.question(self, APP_NAME, i18n.tr(
+                f"진행 중인 작업이 {len(busy)}개 있습니다.\n닫으면 멈춥니다 — 나중에 '이어서'로 계속할 수 있습니다. 닫을까요?", self.api.lang()))
             if ans != QMessageBox.StandardButton.Yes:
                 e.ignore()
                 return

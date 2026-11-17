@@ -5,9 +5,9 @@
 **A desktop workbench for coding agents: plan a feature, build it from a request or from a reference repository, and verify it against acceptance criteria you approved.**
 
 
-> The app's interface is in Korean for now (an English interface is planned). Agents work and report in the language of your request.
+> The app's interface is available in Korean, English, Japanese and Simplified Chinese. It follows your system language on first start (Korean when the system language is not one of these) and can be changed from the language button in the sidebar. Agents work and report in the language of your request.
 
-![version](https://img.shields.io/badge/version-0.1.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.2.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 Instead of letting an agent build until it says "done", the workbench fixes the requirements and acceptance cases first, has the
 agent work on its own branch, and checks by program that the result meets them — or, when porting, that it behaves like the

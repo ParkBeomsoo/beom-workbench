@@ -7,16 +7,61 @@ const S = { runs: [], agents: [], kinds: {}, policy: {}, current: null, detail: 
   changes: null, file: null, sig: { feed: "", right: "", side: "" }, startedAt: null };
 
 const $ = (s) => document.querySelector(s);
+// 화면 언어 — 한국어가 원문이고, 다른 언어는 번역표(원문 → 번역)로 바꿔 보여 준다. 번역표에 없는 글(에이전트·사용자가 쓴 글)은 그대로.
+// 표의 {0}·{1} 은 바뀌는 부분(숫자·이름) — 그런 항목은 패턴으로 맞춘다.
+const I18N = { lang: "ko", map: new Map(), pats: [], cache: new Map() };
+const HANGUL = /[가-힣]/;
+function setI18n(info) {
+  I18N.lang = (info && info.lang) || "ko"; I18N.map = new Map(); I18N.pats = []; I18N.cache = new Map(); I18N.info = info || {};
+  document.documentElement.lang = I18N.lang;
+  for (const [k, v] of Object.entries((info && info.catalog) || {})) {
+    if (!/\{\d\}/.test(k)) { I18N.map.set(k, v); continue; }
+    if (!HANGUL.test(k.replace(/\{\d\}/g, ""))) continue;  // 자리표시자뿐인 항목은 아무 글에나 맞으므로 쓰지 않는다
+    const rx = k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\{(\d)\\\}/g, "([^\\n]*?)");  // 빈 값도 맞게, 줄은 넘지 않게 (여러 줄 글은 줄마다 따로)
+    I18N.pats.push([new RegExp("^" + rx + "$"), v, k.length]);
+  }
+  I18N.pats.sort((a, b) => b[2] - a[2]);  // 긴(구체적인) 것부터
+}
+function t(s) {
+  if (I18N.lang === "ko" || typeof s !== "string" || !HANGUL.test(s) || s.length > 700) return s;
+  if (I18N.cache.has(s)) return I18N.cache.get(s);
+  const core = s.trim();
+  let out = s;
+  const hit = I18N.map.get(core);
+  if (hit != null) out = s.replace(core, hit);
+  else {
+    let found = false;
+    for (const [rx, v] of I18N.pats) {
+      const m = core.match(rx);
+      if (m) { let r = v; m.slice(1).forEach((g, i) => { r = r.split(`{${i}}`).join(t(g)); }); out = s.replace(core, r); found = true; break; }
+    }
+    // 번역된 조각을 이어 붙인 글('기획 · 실행 중', 문장 두 개, 설명 두 줄) — 줄 → 문장 → ' — ' → ' · ' 순으로 나눠 조각마다
+    // (조각 하나하나는 다시 통째로 먼저 찾으므로, 구분자가 든 항목이 쪼개지지 않는다)
+    if (!found) {
+      for (const sep of [/(\n)/, /(?<=[.?!)])(\s+)(?=\S)/, /( — )/, /( · )/]) {
+        const parts = core.split(sep);
+        if (parts.length < 3) continue;
+        const joined = parts.map((p, i) => (i % 2 ? p : t(p))).join("");
+        if (joined !== core) { out = s.replace(core, joined); break; }
+      }
+    }
+  }
+  if (I18N.cache.size > 5000) I18N.cache.clear();
+  I18N.cache.set(s, out);
+  return out;
+}
+window.__t = t;  // 화면 설계 보기(proto.js)도 같은 번역을 쓴다
+const T_ATTRS = new Set(["title", "placeholder", "aria-label", "alt"]);
 function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v == null || v === false) continue;
     if (k === "class") el.className = v;
     else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (k === "text") el.textContent = v;
-    else el.setAttribute(k, v === true ? "" : v);
+    else if (k === "text") el.textContent = t(v);
+    else el.setAttribute(k, v === true ? "" : T_ATTRS.has(k) ? t(v) : v);
   }
-  for (const k of kids.flat()) if (k != null && k !== false) el.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  for (const k of kids.flat()) if (k != null && k !== false) el.append(k instanceof Node ? k : document.createTextNode(t(String(k))));
   return el;
 }
 function call(name, ...args) {
@@ -28,8 +73,8 @@ function call(name, ...args) {
 }
 let toastTimer;
 function toast(text, ms) {
-  const t = $("#toast"); t.textContent = text; t.classList.add("show");
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), ms || 3200);
+  const el = $("#toast"); el.textContent = t(text); el.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("show"), ms || 3200);
 }
 const fmtMoney = (v) => v == null ? "—" : "$" + Number(v).toFixed(2);
 // 비용을 알려 주지 않는 에이전트(Codex 등)는 토큰 수로 — 사용량이 비어 보이지 않게
@@ -74,6 +119,23 @@ function ico(name, cls) {
   return s;
 }
 let openPop = null;
+// 화면 언어 적용 — 번역표를 받고, 화면 틀(index.html)의 고정 글자도 바꾼다
+function applyLang(info) {
+  setI18n(info);
+  for (const el of document.querySelectorAll("[data-t]")) { el.dataset.src = el.dataset.src || el.textContent; el.textContent = t(el.dataset.src); }
+  const names = (info && info.languages) || {};
+  const lab = $("#langlabel"); if (lab) lab.textContent = names[I18N.lang] || I18N.lang;
+}
+function langPop(anchor) {
+  const info = I18N.info || {}, names = info.languages || { ko: "한국어" };
+  const sys = info.system && names[info.system] ? names[info.system] : null;
+  const items = [{ id: "auto", label: t("시스템 언어 따르기"), desc: sys ? sys : t("지원하지 않는 언어면 한국어"), on: (info.choice || "auto") === "auto" },
+    ...Object.entries(names).map(([id, label]) => ({ id, label, on: info.choice === id }))];
+  popover(anchor, { title: t("화면 언어"), items, width: 240, onPick: async (it) => {
+    const r = await call("setLanguage", it.id);
+    if (r.ok) { applyLang(r.data); S.sig = { feed: "", right: "", side: "", cbar: "" }; renderSide(); if (S.current) await openRun(S.current); else renderHome(); }
+  } });
+}
 function closePop() { if (openPop) { openPop.remove(); openPop = null; } }
 document.addEventListener("mousedown", (e) => { if (openPop && !openPop.contains(e.target) && !e.target.closest(".pill.open")) closePop(); });
 // 앵커 위(공간이 없으면 아래)에 뜨는 메뉴. items: [{id, label, desc, note, on}] 또는 content(요소)
@@ -1712,6 +1774,7 @@ new QWebChannel(qt.webChannelTransport, async (ch) => {
     S.draft.request = ""; S.draft.attachments = []; delete S.draft.new_branch; openRun(r.run_id).then(() => r.start && startRun());
   });
   const b = await call("bootstrap");
+  if (b.ok) applyLang(b.data.i18n);
   if (b.ok) { S.agents = b.data.agents; S.runs = b.data.runs; S.kinds = b.data.kinds; S.policy = b.data.default_policy; S.permModes = b.data.permission_modes || []; S.sandbox = b.data.sandbox || { ready: false }; $("#ver").textContent = "v" + b.data.version;
     const def = b.data.defaults || {};  // 지난번 새 작업의 선택
     S.defaults = def;
@@ -1721,6 +1784,7 @@ new QWebChannel(qt.webChannelTransport, async (ch) => {
   const sc = await call("shortcutStatus"); if (sc.ok) S.shortcut = sc.data;
   renderSide(); renderHome();
   api.dataReady.connect((raw) => { const r = JSON.parse(raw); if (r.ok && openPop && openPop.querySelector(".datapop")) { S.data = r.data; drawData($("#databtn")); } });
+  $("#langbtn").addEventListener("click", (e) => { e.stopPropagation(); if (openPop && openPop.querySelector(".pt") && openPop.querySelector(".pt").textContent === t("화면 언어")) { closePop(); return; } langPop(e.currentTarget); });
   $("#databtn").addEventListener("click", (e) => { e.stopPropagation(); if (openPop && openPop.querySelector(".datapop")) { closePop(); return; } dataPop(e.currentTarget); });
   if (api.exportDone) api.exportDone.connect((raw) => { const r = JSON.parse(raw); toast(r.ok ? "PDF 를 만들었습니다 — " + r.path : "PDF 를 만들지 못했습니다", 5000); if (r.ok) call("openFolder", r.folder); });
   api.linkChecked.connect((raw) => { const r = JSON.parse(raw); S.links = S.links || {};

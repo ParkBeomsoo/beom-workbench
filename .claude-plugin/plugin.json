@@ -1,6 +1,6 @@
 {
   "name": "beom-workbench",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Workbench for coding agents: plan a feature, build it from a request or a reference repository, and verify it against approved acceptance criteria; repository analysis with file:line evidence (skill + MCP)",
   "author": {
     "name": "ParkBeomsoo",
@@ -13,7 +13,7 @@
   "mcpServers": {
     "beom-workbench": {
       "command": "python",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/plugin/launch_mcp.py", "0.1.1"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/plugin/launch_mcp.py", "0.2.0"]
     }
   }
 }

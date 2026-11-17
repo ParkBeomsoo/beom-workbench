@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "beom-workbench"
-version = "0.1.1"
+version = "0.2.0"
 description = "Toolkit and desktop app for coding agents: analyze repositories, build or port features against approved acceptance criteria, and verify them (CLI, agent skill, MCP server)"
 license = "LicenseRef-beom-workbench-use-only"
 license-files = ["LICENSE", "NOTICE"]
@@ -34,6 +34,7 @@ where = ["src"]
 "beom_workbench.core" = ["*.ps1"]
 "beom_workbench" = ["skills/*/*.md"]
 "beom_workbench.app" = ["web/*", "web/fonts/*"]
+"beom_workbench.i18n" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
