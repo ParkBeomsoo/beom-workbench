@@ -670,8 +670,22 @@ function optionsPop(anchor, focusPerm, run) {
       segmented([["subscription", "구독 로그인"], ["api_key", "API 키 (사용량 청구)"]], d.auth || "subscription", (v) => save({ auth: v }))),
     h("div", { class: "pt sub2", text: "권한 — 작업 종류별" }),
     agent && agent.note ? h("div", { class: "pnote", text: agent.note }) : null,
-    policyRows(d.policy, (p) => save({ policy: p }))) });
+    policyRows(d.policy, (p) => save({ policy: p })),
+    ...ruleRows(run, (rules) => optionsPop(document.querySelector("#cbar .iconbtn") || anchor, focusPerm, { ...run, cmd_rules: rules }))) });
   if (focusPerm) pop.querySelector(".prow-list").scrollIntoView({ block: "nearest" });
+}
+// '이 명령은 항상'으로 기억한 명령 — 이 작업에서만 쓰이고, 지우면 다음부터 다시 묻는다
+function ruleRows(run, rerender) {
+  const rules = (run && run.cmd_rules) || [];
+  if (!rules.length) return [];
+  return [h("div", { class: "pt sub2", text: "이 작업에서 기억한 명령" }),
+    h("div", { class: "pnote", text: "이 꼴로 시작하는 한 줄 명령은 묻지 않고 허용합니다. 지우면 다음부터 다시 묻습니다" }),
+    ...rules.map((rule) => h("div", { class: "orow" }, h("code", { class: "rulecode", text: rule + " …" }),
+      h("button", { class: "btn sm", onclick: async (e) => {
+        e.stopPropagation();
+        const r = await call("forgetRule", run.id, rule);
+        if (r.ok) { await refresh(); rerender(r.data.cmd_rules); }
+      } }, "지우기")))];
 }
 // 라운드 규칙 — 모든 작업에 쓰이고, 도는 중인 작업도 다음 판단부터 따른다 (core/rounds.py)
 function roundRows(rerender) {
@@ -1286,6 +1300,7 @@ function permCard(a) {
     h("div", { class: "cmd", text: what }),
     h("div", { class: "cf" }, h("span", { class: "hint", text: "Y 허용 · N 거절" }),
       h("button", { class: "btn quiet", onclick: () => ans({ allow: false }) }, "거절"),
+      a.rule ? h("button", { class: "btn", title: `'${a.rule} …' 꼴의 명령은 이 작업에서 다시 묻지 않습니다`, onclick: () => ans({ allow: true, remember: true }) }, "이 명령은 항상") : null,
       h("button", { class: "btn", onclick: () => ans({ allow: true, always: true }) }, "이 프로젝트에서 항상"),
       h("button", { class: "btn primary", onclick: () => ans({ allow: true }) }, "허용")));
 }

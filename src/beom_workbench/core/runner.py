@@ -202,11 +202,14 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
 - 합격 케이스를 돌리려고 만드는 보조 함수(JSON 입력을 객체로 바꿔 호출하는 어댑터 등)는 .beom/helpers/ 아래에 둔다 —
   call 대상은 '.beom/helpers/cases.py:함수' 처럼 (사용자 tests/ 에 두면 프로그램이 아닌 검증 도구가 저장소에 커밋된다).
   보조 파일은 대상 폴더를 import 경로로 쓰므로 프로젝트 모듈을 평소처럼 import 한다. 사용자가 쓸 테스트(pytest 등)는 tests/ 에 둔다.
+  케이스를 통과시키려고 제품 코드에 검증 전용 함수를 만들지 않는다 — 프로그램이 쓰지 않는 함수, 값을 그대로 적어 돌려주는 함수(예: 화면 배치를 ['entry', 'list'] 목록으로 돌려주기)는 실제 동작을 확인하지 않는 빈 검사다. 케이스는 프로그램이 실제로 쓰는 함수·명령을 부르고, 화면 배치처럼 그렇게 잴 수 없는 것은 helpers 에서 실제 창을 만들어 위젯을 조사하거나 wb_screen_shot 으로 본다.
+  창 안의 동작(버튼 누르기·두 번 누르기·키 입력)도 helpers 에서 창을 띄우고 위젯을 눌러(tkinter 의 invoke()·event_generate() 등) 바뀐 상태를 돌려주면 케이스로 확인된다 — '클릭은 확인 못 함'으로 남기기 전에 이렇게 해 본다.
 - 결과물(코드·테스트·README·package.json 같은 설정)은 이 툴킷 없이도 쓰이는 사용자 프로젝트다: .beom/ 아래 파일을 참조하지 않는다
   (.beom 은 커밋되지 않는 작업 폴더 — 예시·테스트에 첨부 샘플이 필요하면 프로젝트 안(예: examples/)에 복사해 쓴다), 툴킷 절차 용어
   (합격 케이스·원장·라운드·인수인계)를 README 에 쓰지 않는다, 이 실행 환경 때문의 우회 옵션을 스크립트에 넣지 않는다.
   이 실행 환경의 제약(격리·네트워크 차단) 때문에 생긴 사정을 README 에 쓰지 않는다 — 사용자 PC 는 다르다 (예: '네트워크 없이 설치하려면…').
   요청하지 않은 배포 산출물(dist/·wheel·sdist·설치 프로그램·실행 파일 묶음)은 만들지 않는다 — 설치 확인이 필요하면 pip install -e . 정도로.
+  동작을 바꾸거나 더하면 그 동작을 설명하는 곳을 모두 맞춘다 — README, 도움말·사용법 문구, 패키지 설명(pyproject·package.json 의 description), 독스트링. 예전 범위만 말하는 설명(예: 온도를 더했는데 '길이·무게 변환')을 남기지 않는다.
 - 이번 라운드에서 할 수 있는 만큼 진행하고, 마지막에 한두 문장으로 한 일과 남은 일을 말한다."""
 
 
@@ -467,7 +470,11 @@ MODE_REF = ("레퍼런스 기반 — 원본 저장소의 기능·동작을 참�
             "'참고해 새로·우리 것 기준으로'면 원본과 똑같이 맞추기보다 요청과 대상 프로젝트(기존 엔진·API·규칙·화면 톤)를 따르고, "
             "원본에서는 설계·동작 방식을 가져온다 — 합격 기준도 요청에서 정한다. 다른 언어로 옮길 때 동작(입력→출력)은 원본과 같게 하되 "
             "인터페이스는 대상 언어의 관례를 따른다 (예: JS 의 옵션 객체 {lower: false} → 파이썬 키워드 인자 lower=False, "
-            "camelCase → snake_case) — 원본 모양을 그대로 흉내 내지 않는다")
+            "camelCase → snake_case) — 원본 모양을 그대로 흉내 내지 않는다. 원본 언어 런타임이 만든 결과도 흉내 내지 않는다: "
+            "문자열이 아닌 값의 암묵 변환(JS 의 'undefined'·'null'·'[object Object]'·배열의 쉼표 연결), 원본 언어식 숫자 표기, "
+            "UTF-16 길이 세기, 옵션 값을 원본 정규식 문법으로 해석하기 같은 것은 대상 언어에서 자연스러운 동작으로 한다 "
+            "(예: 문자열이 아니면 TypeError, 인자가 없으면 TypeError, 구분자는 글자 그대로). 그런 입력의 케이스에는 대상 언어 "
+            "동작을 `expect` 로 적어 사용자 승인을 받는다 — 원본 런타임을 재현하는 코드를 만들지 않는다")
 
 
 def _brief(run: dict, st: dict | None) -> str:
@@ -1008,8 +1015,8 @@ class Runner:
     def _turn_agent(self, run: dict, prompt: str) -> dict:
         rules = self._rules(run)
         argv, env = self.agent.command(self.settings, run, prompt, rules)
-        from beom_workbench.core import prereqs
-        env = {**env, **prereqs.agent_env()}  # 설치된 OpenSSL 을 Rust 빌드가 찾게 (Windows)
+        from beom_workbench.core import prereqs, runtime
+        env = {**env, **prereqs.agent_env(), **runtime.coverage_env(run["target_root"])}  # 설치된 OpenSSL 을 Rust 빌드가 찾게 (Windows)
         inbox.log(self.settings, self.run_id, "round_start", round=run["round"], agent=self.agent.id, prompt=prompt[:3000])
         self._set(activity=None)  # 지난 라운드의 '승인 대기' 같은 한 줄이 새 라운드에 남지 않게 — 에이전트가 새로 알릴 때까지는 '라운드 N 진행 중'
         feed_stdin = getattr(self.agent, "stdin_prompt", False)

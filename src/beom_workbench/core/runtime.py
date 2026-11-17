@@ -264,6 +264,13 @@ def safe_env(extra: dict | None = None) -> dict:
     return env
 
 
+def coverage_env(root) -> dict:
+    """커버리지 기록(.coverage)을 대상 폴더의 .beom/ 안에 — 툴킷·에이전트가 잰 기록이 사용자 저장소에 남지 않게.
+    .beom/ 이 있는 작업 폴더에서만 (원본 프로젝트처럼 우리 폴더가 아닌 곳은 건드리지 않는다)."""
+    beom = Path(root) / ".beom"
+    return {"COVERAGE_FILE": str(beom / ".coverage")} if beom.is_dir() else {}
+
+
 def docker_available() -> bool:
     return container.detect() is not None
 

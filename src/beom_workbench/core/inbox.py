@@ -433,6 +433,33 @@ def foreground_server(tool_input: dict) -> bool:
         and not re.search(r"\bStart-Process\b|\bstart\s+/b\b|&\s*$|\bnohup\b", cmd, re.I)  # 따로 띄우는 것은 돌아온다
 
 
+# '이 명령은 항상' — 사람이 한 번 허락한 명령의 앞부분(실행기 + 첫 대상)을 기억해 같은 꼴은 다시 묻지 않는다 (Claude Code 의
+# 'npm run test:*' 규칙처럼). 한 줄짜리 명령만: 이어 붙이기·치환·리다이렉트가 있거나 인라인 코드(-c·-e)면 기억하지 않는다.
+_INLINE = {"-c", "-e", "--eval", "-p", "--print", "-Command", "-EncodedCommand", "/c"}
+
+
+def command_rule(cmd: str, root: Path) -> str | None:
+    core = OUTPUT_FILTER.sub("", _strip_cd(_unwrap_shell(_strip_cd(str(cmd or "").strip(), root)), root)).strip()
+    if not core or CHAINING.search(core) or re.search(r"[$`{}()]", core):  # 치환·스크립트 블록이 있으면 기억하지 않는다
+        return None
+    words = core.split()
+    out = [words[0]]
+    for w in words[1:]:
+        if w in _INLINE or w.lower() in {x.lower() for x in _INLINE}:
+            return None
+        out.append(w)
+        if w == "-m" or w.startswith("-"):
+            continue  # python -m pkg · node --test 처럼 실행기 옵션 다음의 첫 대상까지
+        break
+    rule = " ".join(out)
+    return rule if len(out) >= 2 else None  # 실행기 이름 하나만(python·node)으로는 기억하지 않는다
+
+
+def matches_rule(run: dict, cmd: str, root: Path) -> bool:
+    rule = command_rule(cmd, root)
+    return bool(rule) and rule in (run.get("cmd_rules") or [])
+
+
 def _unwrap_shell(cmd: str) -> str:
     m = SHELL_WRAP.match(cmd)
     return m.group(1).strip() if m else cmd

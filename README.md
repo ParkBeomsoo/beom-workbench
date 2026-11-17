@@ -258,7 +258,7 @@ environment variable, billed per use) — both can do the same things.
   once and the run goes on until every completion condition is met. Per card: *Approve*, *Edit* (change requirements, cases or plan steps yourself, then
   *Save and approve* — recorded in the ledger as written by you and passed on to the agent), or type a correction in the message box
   (the agent revises without approval).
-- The agent's **questions** and **permission requests** (`Y` allow · `N` refuse).
+- The agent's **questions** and **permission requests** (`Y` allow · `N` refuse). *This command, always* remembers the command's start (e.g. `python notes.py …`) so the same form is not asked again in this task — one-line commands only, never inline code (`python -c`) or chained commands. Remembered commands are listed under the task's run options, where you can remove them. *Always for this project* allows the whole kind.
 - The **handoff** at the end: accept, or keep going by sending a message — sending a message to a stopped or finished run continues it.
   A follow-up builds on the agreed criteria (fix, then re-verify the affected cases; criteria change only if the request changes the scope),
   and an accepted run asks to be accepted again once the follow-up is done. To start over from planning or analysis, start a new task.

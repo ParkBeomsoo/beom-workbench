@@ -982,6 +982,12 @@ class Api(QObject):
         from beom_workbench.core import approvals
         return approvals.answer(self.settings, run_id, request_id, json.loads(payload))
 
+    @Slot(str, str, result=str)
+    @safe
+    def forgetRule(self, run_id, rule):
+        from beom_workbench.core import approvals
+        return approvals.forget_rule(self.settings, run_id, rule)
+
     @Slot(str, str, str, result=str)
     @safe
     def sendMessage(self, run_id, text, atts=""):

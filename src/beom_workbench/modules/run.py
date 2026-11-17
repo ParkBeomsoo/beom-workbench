@@ -49,6 +49,10 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
     decision = inbox.decide(run, kind)
     if decision == "ask" and tool_name == "Bash" and inbox.planned_command(run, (input or {}).get("command", "")):
         decision = "allow"  # 사람이 승인한 계획에 그대로 있던 명령 — 다시 묻지 않는다
+    shell_cmd = str((input or {}).get("command") or "") if tool_name in ("Bash", "PowerShell") else ""
+    rule = inbox.command_rule(shell_cmd, root) if shell_cmd and kind == "commands" else None
+    if decision == "ask" and rule and inbox.matches_rule(run, shell_cmd, root):
+        decision = "allow"  # 사람이 '이 명령은 항상'으로 허락한 꼴
     from beom_workbench.core import sandbox
     wrap = tool_name == "PowerShell" and run.get("agent", "claude") == "claude" and sandbox.wraps_powershell(run) \
         and bool((input or {}).get("command"))
@@ -62,7 +66,7 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
     if decision == "ask":
         note = " — 격리 없이 실행됩니다 (Node 빌드 도구는 격리 안에서 돌지 않음)" if node and not outside_ok else ""
         ans = inbox.ask(settings, run["id"], "permission", {"summary": summary + note, "tool": tool_name, "input": input,
-                                                            "permission_kind": kind})
+                                                            "permission_kind": kind, **({"rule": rule} if rule else {})})
         if ans.get("always") and ans.get("allow"):
             inbox.update_run(settings, run["id"], lambda r: r["policy"].__setitem__(kind, "allow"))
         decision = "allow" if ans.get("allow") else "refuse"

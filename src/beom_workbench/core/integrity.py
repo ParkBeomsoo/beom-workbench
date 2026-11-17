@@ -53,7 +53,7 @@ def _approvals(settings, run: dict) -> int | None:
 def snapshot(settings, run: dict) -> dict:
     plan = run.get("plan") or {}
     return {"at": time.time(), "plan_approved": bool(plan.get("approved")), "plan_approved_at": plan.get("approved_at"),
-            "policy": dict(run.get("policy") or {}), "accepted": bool(run.get("accepted")),
+            "policy": dict(run.get("policy") or {}), "accepted": bool(run.get("accepted")), "cmd_rules": list(run.get("cmd_rules") or []),
             "port_id": run.get("port_id"), "approvals": _approvals(settings, run)}
 
 
@@ -69,6 +69,9 @@ def changes(settings, run_id: str, snap: dict) -> list[str]:
                 if strict.get(v, 1) < strict.get(snap["policy"].get(k, "ask"), 1)]
     if loosened and not _done_since(run_id, "policy", since):
         out.append(f"권한 규칙이 앱 밖에서 느슨해졌습니다 ({', '.join(inbox.KINDS.get(k, k) for k in loosened)})")
+    added = [x for x in (run.get("cmd_rules") or []) if x not in (snap.get("cmd_rules") or [])]
+    if added and not _done_since(run_id, "policy", since):
+        out.append(f"명령 허락('이 명령은 항상')이 앱 밖에서 추가됐습니다 ({', '.join(added[:3])})")
     if run.get("accepted") and not snap["accepted"] and not _done_since(run_id, "accept", since):
         out.append("인수인계가 앱 밖에서 '수락'으로 바뀌었습니다")
     if snap["approvals"] is not None and run.get("port_id") == snap["port_id"]:
@@ -94,6 +97,8 @@ def restore(settings, run_id: str, snap: dict, found: list[str]) -> None:
                 old = snap["policy"].get(k, "ask")
                 if strict.get(v, 1) < strict.get(old, 1):  # 느슨해진 것만 — 더 엄격해진 것은 그대로
                     r["policy"][k] = old
+        if hit("명령 허락"):
+            r["cmd_rules"] = [x for x in (r.get("cmd_rules") or []) if x in (snap.get("cmd_rules") or [])]
         if hit("인수인계") and not snap["accepted"]:
             r["accepted"] = False
             r.pop("accepted_at", None)

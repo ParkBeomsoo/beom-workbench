@@ -100,8 +100,11 @@ class Attendant:
         rid = a["id"]
         if a.get("kind") == "permission":
             self.write("\n" + self.t("권한 요청") + " — " + self.t(str(a.get("summary") or "")))
+            if a.get("rule"):
+                self.write("  " + self.t("[c] 이 명령은 항상") + f": {a['rule']} …")
             raw = self.read(self.t("허용할까요? [y] 허용  [a] 이 프로젝트에서 항상  [n] 거절 > ")).strip().lower()
-            data = {"allow": raw in ("y", "yes", "a", "ㅛ", "ㅁ"), "always": raw in ("a", "ㅁ")}
+            data = {"allow": raw in ("y", "yes", "a", "ㅛ", "ㅁ", "c", "ㅊ"), "always": raw in ("a", "ㅁ"),
+                    **({"remember": True} if raw in ("c", "ㅊ") and a.get("rule") else {})}
         else:
             self.write("\n" + self.t("질문") + " — " + self.t(str(a.get("question") or "")))
             choices = a.get("choices") or []

@@ -86,8 +86,32 @@ def approve_plan(settings: Settings, run_id: str, shown_sig: str, changes: dict 
 def answer(settings: Settings, run_id: str, request_id: str, data: dict) -> dict:
     if data.get("always") and data.get("allow"):
         integrity.record(run_id, "policy")  # '항상 허용' — 도구 서버가 규칙을 허용으로 바꾼다
+    if data.get("remember") and data.get("allow"):
+        # '이 명령은 항상' — 카드에 보여 준 규칙(도구 서버가 명령에서 만든 앞부분)을 앱이 기록한다
+        try:
+            req = json.loads((inbox.run_dir(settings, run_id) / "inbox" / f"{request_id}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            req = {}
+        rule = req.get("rule")
+        if rule:
+            integrity.record(run_id, "policy")
+            inbox.update_run(settings, run_id, lambda r: r.update(cmd_rules=list(dict.fromkeys((r.get("cmd_rules") or []) + [rule]))))
+            inbox.log(settings, run_id, "cmd_rule", rule=rule)
     inbox.answer(settings, run_id, request_id, data)
     return {"answered": True}
+
+
+def forget_rule(settings: Settings, run_id: str, rule: str) -> dict:
+    """기억한 명령 지우기 — 다음부터 그 명령은 다시 묻는다."""
+    left: list[str] = []
+
+    def drop(r):
+        left[:] = [x for x in (r.get("cmd_rules") or []) if x != rule]
+        r["cmd_rules"] = left
+
+    inbox.update_run(settings, run_id, drop)
+    inbox.log(settings, run_id, "cmd_rule_forgotten", rule=rule)
+    return {"forgotten": rule, "cmd_rules": left}
 
 
 def accept(settings: Settings, run_id: str) -> dict:

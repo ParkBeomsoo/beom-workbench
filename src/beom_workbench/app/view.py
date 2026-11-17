@@ -577,7 +577,7 @@ def _detail(settings, run_id: str) -> dict:
     mode = run["mode"]
     out = {"run": {k: run.get(k) for k in ("id", "name", "mode", "status", "round", "max_rounds", "target_root", "request",
                                            "feature", "agent", "model", "effort", "accepted", "cost_usd", "created_at",
-                                           "limit_until", "error", "streaming", "work_branch", "tampered", "sandbox", "tokens")},
+                                           "limit_until", "error", "streaming", "work_branch", "tampered", "sandbox", "tokens", "cmd_rules")},
            "mode_text": MODE_TEXT[mode], "status": label, "tone": tone, "stages": STAGES[mode], "stage": _stage(run, st),
            "activity": _activity(run, asks, len(reviews), bool(st and (st.get("license") or {}).get("acked") is False)), "plan": run.get("plan"), "handoff": run.get("handoff"), "asks": asks,
            "feed": feed(settings, run, live=run.get("status") == "running" and runner.lock_owner(settings, run_id) is not None),

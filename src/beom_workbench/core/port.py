@@ -798,7 +798,7 @@ try:
     out = {"ok": True, "return": target(*req.get("args", []), **req.get("kwargs", {}))}
 except Exception as e:  # noqa: BLE001
     out = {"ok": False, "error": type(e).__name__, "message": str(e)}
-sys.stdout.write("\n" + MARK + json.dumps(out, default=enc, ensure_ascii=False))
+sys.stdout.write("\n" + MARK + json.dumps(out, default=enc))  # ASCII 로 — 파이프 인코딩(Windows cp949)과 상관없이 그대로 전해지게
 '''
 
 HARNESS_JS = r'''const path = require("path");
@@ -886,9 +886,14 @@ class _Side:
         if run and sandbox.wraps_powershell(run):
             # 자동 실행 중 툴킷이 대신 돌리는 검증 명령도 같은 샌드박스 안에서 (대상 폴더·임시·도구 캐시 밖에는 못 쓴다)
             return subprocess.run(sandbox.wrap_argv(["cmd", "/d", "/c", cmd], run), cwd=self.cwd, input=stdin,
-                                  capture_output=True, timeout=timeout, env=runtime.safe_env())
+                                  capture_output=True, timeout=timeout, env=self.env())
         return subprocess.run(cmd, shell=True, cwd=self.cwd, input=stdin, capture_output=True, timeout=timeout,
-                              env=runtime.safe_env())
+                              env=self.env())
+
+    def env(self) -> dict:
+        # 파이썬 표준 입출력을 UTF-8 로 — 파이프로 돌리면 Windows 는 cp949 라 한글·✓ 가 깨지거나 쓰다가 죽는다
+        # (사용자 터미널은 유니코드로 보여 주므로 이쪽이 실제와 같다). 출력은 UTF-8 로 읽는다.
+        return runtime.safe_env({"PYTHONIOENCODING": "utf-8", **runtime.coverage_env(self.cwd)})
 
 
 def _auto_run() -> dict | None:
@@ -1211,7 +1216,7 @@ class _Server:
         else:
             args, shell = _direct_argv(cmd)
             kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
-            self.proc = subprocess.Popen(args, shell=shell, cwd=side.cwd, env=runtime.safe_env(), stdout=self.log,
+            self.proc = subprocess.Popen(args, shell=shell, cwd=side.cwd, env=side.env(), stdout=self.log,
                                          stderr=subprocess.STDOUT, **kw)
         self.graceful: bool | None = None
         deadline = time.monotonic() + wait
@@ -1903,6 +1908,9 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
         limitations.append(f"의도적 차이로 허용한 케이스 {len(accepted)}개 (사유는 포팅 원장 divergence 항목)")
     if unapproved:
         limitations.append(f"사용자 승인 전인 허용 차이 {len(unapproved)}개 — 승인 후 다시 verify 해야 근거 발급")
+    hollow = hollow_calls(cases, root)
+    if hollow:
+        limitations.append(f"프로그램이 쓰지 않고 값만 돌려주는 함수를 부르는 케이스 {len(hollow)}개 — 실제 동작을 확인하지 않음")
     limitations.append(f"동시 요청 {concurrency}개씩 검사" if conc else "동시 실행 미검사")
     limitations.append("성능은 비교하지 않음 (지연 시간은 참고값)")
     ev_id = None
@@ -1937,6 +1945,9 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
             "latency_ms": {"source": _latency(src), "target": _latency(dst),
                            "note": "참고값 — 골든 기준이면 원본 시간은 capture 시점"},
             "accepted_unapproved": unapproved, "target_adequacy": tgt_adq,
+            **({"hollow_calls": hollow, "hollow_note": "이 케이스들은 프로그램이 쓰지 않는 함수가 적힌 값을 그대로 돌려주는지만 본다 — "
+                "프로그램이 실제로 쓰는 함수를 부르거나, 화면 배치처럼 잴 수 없는 것은 .beom/helpers 에서 실제 창·위젯을 조사하게 바꾼다"}
+               if hollow else {}),
             "limitations": limitations, **{k: v for k, v in status_(conn, port_id, brief=True).items()
                                            if k in ("gates", "next_step", "approvals")}}
 
@@ -1983,6 +1994,54 @@ def _target_adequacy(conn, port: dict, report: Path, fp: str) -> dict:
     # 바로 사슬에 잇는다 — 이어지는 검증이 도중에 실패해도 이 기록이 '기록에 없는 검사 결과'로 남아 무결이 깨지지 않게
     guard.record(conn, port["id"], "coverage", {"id": cid, "kind": "adequacy:target"}, checks=[cid])
     return {"check_id": cid, "ported": len(rows), "executed": len(rows) - len(not_run), "not_executed": not_run[:30]}
+
+
+_SKIP_DIRS = {".beom", ".git", "tests", "test", "node_modules", ".venv", "venv", "__pycache__"}
+
+
+def hollow_calls(cases: list[dict], root: Path) -> list[str]:
+    """케이스가 부르는 파이썬 함수가 '적힌 값을 그대로 돌려주기만' 하고 프로그램 어디에서도 쓰이지 않으면 그 케이스 이름.
+    합격 케이스를 통과시키려고 만든 검증 전용 함수(예: 화면 배치를 목록으로 돌려주기)를 잡는다 — 실제 동작을 확인하지 않는다."""
+    import ast
+    out: list[str] = []
+    sources: dict[Path, str] | None = None
+    for c in cases:
+        spec = c.get("call")
+        target = spec.get("target") if isinstance(spec, dict) else spec
+        if not isinstance(target, str) or ":" not in target:
+            continue
+        file, _, func = target.rpartition(":")
+        if not file.endswith(".py") or file.replace("\\", "/").startswith(".beom/") or "." in func:
+            continue
+        path = root / file
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        fn = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == func), None)
+        if fn is None:
+            continue
+        body = [n for n in fn.body if not (isinstance(n, ast.Expr) and isinstance(getattr(n, "value", None), ast.Constant)
+                                           and isinstance(n.value.value, str))]
+        if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+            continue
+        try:
+            ast.literal_eval(body[0].value)
+        except (ValueError, SyntaxError, TypeError):
+            continue
+        if sources is None:
+            sources = {}
+            for p in root.rglob("*.py"):
+                if not (_SKIP_DIRS & set(p.relative_to(root).parts)):
+                    try:
+                        sources[p] = p.read_text(encoding="utf-8")
+                    except (OSError, ValueError):
+                        pass
+        word = re.compile(rf"\b{re.escape(func)}\b")
+        used = any(len(word.findall(text)) > (1 if p.resolve() == path.resolve() else 0) for p, text in sources.items())
+        if not used:
+            out.append(str(c.get("name") or func))
+    return out
 
 
 def _group_failures(fails: list[dict]) -> dict:
