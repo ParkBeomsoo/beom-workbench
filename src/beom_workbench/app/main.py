@@ -10,14 +10,14 @@ import sys
 from importlib import resources
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QUrl
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
 from PySide6.QtWebEngineCore import (QWebEnginePage, QWebEngineSettings, QWebEngineUrlRequestJob, QWebEngineUrlScheme,
                                      QWebEngineUrlSchemeHandler)
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QSystemTrayIcon, QWidget
 
 from beom_workbench.app.bridge import Api
 from beom_workbench.config import load_settings
@@ -177,13 +177,54 @@ def _windows_setup() -> None:
 class Page(QWebEnginePage):
     """앱 안의 화면만 보여 준다. 링크는 기본 브라우저로 넘기고, 창 안에서는 바깥 주소로 가지 않는다."""
 
+    def __init__(self, parent=None, on_drop=None):
+        super().__init__(parent)
+        self.on_drop = on_drop
+
     def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
-        if url.scheme() in ("file", "qrc", "data"):
+        if url.scheme() == "file":
+            # 앱 화면 파일만 — 창에 끌어다 놓은 파일로 화면이 바뀌지 않게, 그 파일은 첨부로 넘긴다
+            try:
+                inside = Path(url.toLocalFile()).resolve().is_relative_to(web_root().resolve())
+            except (OSError, ValueError):
+                inside = False
+            if inside:
+                return True
+            if is_main_frame and self.on_drop and Path(url.toLocalFile()).is_file():
+                self.on_drop([url.toLocalFile()])
+            return False
+        if url.scheme() in ("qrc", "data"):
             return True
         if url.scheme() == PROTO_SCHEME.decode() and not is_main_frame:  # 화면 설계 프로토타입 (틀 안에서만)
             return True
         if url.scheme() in ("http", "https") and nav_type == QWebEnginePage.NavigationTypeLinkClicked:
             QDesktopServices.openUrl(url)
+        return False
+
+
+class DropFilter(QObject):
+    """창에 끌어다 놓은 파일을 첨부로 — 웹 화면은 파일의 실제 경로를 모르므로 Qt 에서 받아 경로째 넘긴다."""
+
+    def __init__(self, on_drop, parent=None):
+        super().__init__(parent)
+        self.on_drop = on_drop
+
+    @staticmethod
+    def _paths(e) -> list[str]:
+        md = e.mimeData()
+        return [u.toLocalFile() for u in md.urls() if u.isLocalFile()] if md and md.hasUrls() else []
+
+    def eventFilter(self, obj, e) -> bool:  # noqa: N802
+        t = e.type()
+        if t == QEvent.ChildAdded and e.child().isWidgetType():  # 웹 화면의 실제 그리기 위젯은 나중에 생긴다
+            e.child().installEventFilter(self)
+        elif t in (QEvent.DragEnter, QEvent.DragMove) and self._paths(e):
+            e.acceptProposedAction()
+            return True
+        elif t == QEvent.Drop and self._paths(e):
+            e.acceptProposedAction()
+            self.on_drop(self._paths(e))
+            return True
         return False
 
 
@@ -196,7 +237,11 @@ class Window(QMainWindow):
         self.resize(1400, 880)
         self.setMinimumSize(1080, 680)
         self.view = QWebEngineView(self)
-        page = Page(self.view)
+        page = Page(self.view, on_drop=self._dropped)
+        self.drops = DropFilter(self._dropped, self)
+        self.view.installEventFilter(self.drops)
+        for w in self.view.findChildren(QWidget):
+            w.installEventFilter(self.drops)
         s = page.settings()
         s.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, False)
         s.setAttribute(QWebEngineSettings.JavascriptCanOpenWindows, False)
@@ -220,6 +265,10 @@ class Window(QMainWindow):
         self.tray.show()
         self.api.notify.connect(self._notify)
         self.api.attention.connect(self._flash)
+
+    def _dropped(self, paths: list[str]) -> None:
+        import json
+        self.api.filesDropped.emit(json.dumps(paths))
 
     def closeEvent(self, e) -> None:  # noqa: N802
         """닫을 때 이 창이 돌리던 작업을 멈춘다 — 에이전트·개발 서버가 감시 없이 계속 폴더를 고치지 않게."""

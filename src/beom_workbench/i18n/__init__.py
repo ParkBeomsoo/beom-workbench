@@ -88,6 +88,8 @@ def tr(text: str, lang: str) -> str:
     if not text or lang == DEFAULT or not _HANGUL.search(text):
         return text
     cat = catalog(lang)
+    if text in cat:  # 앞뒤 공백까지 키인 문구 (예: 터미널 질문 끝의 ": ")
+        return cat[text]
     core = text.strip()
     if core in cat:
         return text.replace(core, cat[core])

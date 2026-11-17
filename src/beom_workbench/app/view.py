@@ -519,7 +519,8 @@ def _summary(settings, run: dict) -> dict:
             reviews = 0
     label, tone = _status(run, asks, reviews, runner.lock_owner(settings, run["id"]) is not None)
     return {"id": run["id"], "name": run.get("name"), "mode": run["mode"], "mode_text": MODE_TEXT[run["mode"]], "archived": bool(run.get("archived")),
-            "status": label, "tone": tone, "state": run.get("status"), "created_at": run.get("created_at"), "agent": run.get("agent", "claude")}
+            "status": label, "tone": tone, "state": run.get("status"), "created_at": run.get("created_at"), "agent": run.get("agent", "claude"),
+            "target_root": run.get("target_root") or ""}  # 작업 목록 찾기 (폴더 이름으로도)
 
 
 def runs(settings) -> list[dict]:
