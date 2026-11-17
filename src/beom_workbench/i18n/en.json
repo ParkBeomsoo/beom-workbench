@@ -1527,5 +1527,7 @@
 "[c] 이 명령은 항상": "[c] this command, always",
 "명령 허락('이 명령은 항상')이 앱 밖에서 추가됐습니다 ({0})": "A command permission ('this command, always') was added outside the app ({0})",
 "이 작업에서 기억한 명령": "Commands remembered for this task",
-"이 꼴로 시작하는 한 줄 명령은 묻지 않고 허용합니다. 지우면 다음부터 다시 묻습니다": "One-line commands starting like this are allowed without asking. Remove one to be asked again."
+"이 꼴로 시작하는 한 줄 명령은 묻지 않고 허용합니다. 지우면 다음부터 다시 묻습니다": "One-line commands starting like this are allowed without asking. Remove one to be asked again.",
+"{0}/{1}단계 진행 중 — {2}": "Step {0}/{1} in progress — {2}",
+"{0}/{1}단계 진행 중": "Step {0}/{1} in progress"
 }

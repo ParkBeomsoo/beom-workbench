@@ -306,6 +306,8 @@ def slice_(conn, proj: dict, targets: list[str], depth: int = 10, within: list[s
         licenses[path] = [{"license": x["license"], "category": x["category"], "source": x["source"]} for x in pick] or [
             {"license": "unknown", "category": "unknown", "source": "none"}]
     unknown_lic = sorted(p for p, ls in licenses.items() if any(x["category"] == "unknown" for x in ls))
+    notices = _copyright_lines(proj, [x for x in lic if x["source"] == "text" and x["category"] == "permissive"
+                                      and any(x["scope"] == "dir:" or p.startswith(x["scope"][4:] + "/") for p in files)])
     restricted = sorted(p for p, ls in licenses.items() if any(x["category"] not in ("permissive", "unknown") for x in ls))
     open_unknowns = [dict(r) for r in conn.execute("SELECT id, question, severity, scope FROM unknown WHERE status != 'resolved'").fetchall()
                      if r["scope"] and any(f in r["scope"] for f in files)]
@@ -333,11 +335,44 @@ def slice_(conn, proj: dict, targets: list[str], depth: int = 10, within: list[s
         "license_note": (f"원본 파일 {_files_text(unknown_lic)} 에서 라이선스 표기를 찾지 못했습니다 — 사내 코드라면 보통 그렇고, "
                          "공개 저장소라면 옮겨 써도 되는지 확인하세요") if unknown_lic else None,
         "open_unknowns": open_unknowns,
+        **({"notices": notices} if notices else {}),
         "limitations": ["dispatch 갈래는 인터페이스 메서드 이름 기준 — 인터페이스로 잡히지 않은 덕 타이핑·콜백은 빠질 수 있음",
                         *(["경계(within) 밖은 구조 지도 호출만 boundary 로 남김 — 이름 기반 갈래는 경계 밖으로 따라가지 않음"]
                           if within else []),
                         "외부 호출 목록은 구조 지도가 해석한 것만 — 슬라이스 코드를 읽어 확인"],
     }
+
+
+_COPYRIGHT = re.compile(r"^\s*(?:copyright\b|\(c\)\s|©).*\S", re.I)
+NOTICE_FILE = re.compile(r"(?i)^(licen[sc]e|copying|notice|third[_-]?party|credits|authors)([._-].*)?$")
+
+
+def _copyright_lines(proj: dict, findings: list[dict]) -> list[str]:
+    """허용형 라이선스 파일의 저작권 줄 — MIT·BSD·Apache 는 옮긴 코드에도 이 표기와 라이선스 문구를 남겨야 한다."""
+    out: list[str] = []
+    for fd in findings:
+        try:
+            lines = evidence.read_lines(proj, fd["path"])
+        except (OSError, ToolError):
+            continue
+        for ln in lines[:60]:
+            if _COPYRIGHT.match(ln) and "<" not in ln and "[" not in ln:  # 템플릿 자리표시('[year] [fullname]')는 뺀다
+                out.append(" ".join(ln.split()))
+    return list(dict.fromkeys(out))[:10]
+
+
+def missing_notices(root: Path, notices: list[str]) -> list[str]:
+    """대상 폴더의 라이선스·NOTICE 류 파일과 README 에 원본 저작권 줄이 없으면 그 줄."""
+    if not notices:
+        return []
+    texts = []
+    try:
+        for p in root.iterdir():
+            if p.is_file() and (NOTICE_FILE.match(p.name) or p.name.lower().startswith("readme")) and p.stat().st_size < 2_000_000:
+                texts.append(" ".join(p.read_text(encoding="utf-8", errors="replace").split()).casefold())
+    except OSError:
+        return []
+    return [n for n in notices if not any(n.casefold() in t for t in texts)]
 
 
 def by_path_symbol(by_path, path: str, line: int) -> dict | None:
@@ -700,6 +735,12 @@ def status_(conn, port_id: str, brief: bool = False, fp_max_age: float = 0) -> d
         out["license"] = {"warning": warning, "acked": gates[GATE_LICENSE]}
     if port["slice"].get("license_note"):  # 막지 않는 참고 — 화면·인계에 한 줄로
         out["license_note"] = port["slice"]["license_note"]
+    missing = missing_notices(Path(port["target_root"]), port["slice"].get("notices") or [])
+    if missing:  # 허용형이라도 저작권 표기는 남겨야 한다 — 막지 않고 할 일로 알린다
+        out["license_notice"] = {"missing": missing,
+                                 "todo": "원본은 허용형 라이선스라 옮긴 코드에도 원본 저작권 표기와 라이선스 문구를 남겨야 한다 — "
+                                         "대상에 LICENSE 가 없으면 원본 라이선스 전문(저작권 줄 포함)을 LICENSE 로, 대상에 이미 다른 "
+                                         "라이선스가 있으면 THIRD_PARTY_NOTICES 같은 파일에 원본 이름·저작권 줄·라이선스 전문을 둔다"}
     if not integ["ok"] or integ.get("legacy"):
         out["integrity"] = integ
     if not brief:
@@ -1843,6 +1884,7 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
     side = _Side("target", root, _harness_dir(settings))
     side.screens = _port_dir(settings, proj, port_id) / "screens" / "target"
     server, conc = None, None
+    before = _files(root)
     try:
         if target_cmd:
             server = _Server(side, target_cmd, target_url)
@@ -1857,6 +1899,8 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
     finally:
         if server:
             server.close()
+        # 케이스를 돌리며 프로그램이 새로 만든 파일(데이터 파일 등)은 치운다 — 결과물에 검증 찌꺼기가 남지 않게
+        cleaned = _drop_new(root, before, keep={target_coverage_report} if target_coverage_report else set())
     fp = guard.target_fingerprint(root, fresh=True)
     tgt_adq = None
     if target_coverage_report:
@@ -1945,6 +1989,8 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
             "latency_ms": {"source": _latency(src), "target": _latency(dst),
                            "note": "참고값 — 골든 기준이면 원본 시간은 capture 시점"},
             "accepted_unapproved": unapproved, "target_adequacy": tgt_adq,
+            **({"cleaned": cleaned[:20], "cleaned_note": "케이스를 돌리는 동안 프로그램이 새로 만든 파일이라 지웠다 — 직접 지울 필요 없다"}
+               if cleaned else {}),
             **({"hollow_calls": hollow, "hollow_note": "이 케이스들은 프로그램이 쓰지 않는 함수가 적힌 값을 그대로 돌려주는지만 본다 — "
                 "프로그램이 실제로 쓰는 함수를 부르거나, 화면 배치처럼 잴 수 없는 것은 .beom/helpers 에서 실제 창·위젯을 조사하게 바꾼다"}
                if hollow else {}),
@@ -1997,6 +2043,42 @@ def _target_adequacy(conn, port: dict, report: Path, fp: str) -> dict:
 
 
 _SKIP_DIRS = {".beom", ".git", "tests", "test", "node_modules", ".venv", "venv", "__pycache__"}
+_WALK_SKIP = {".beom", ".git", "node_modules", ".venv", "venv"}
+
+
+def _files(root: Path) -> set[str] | None:
+    """대상 폴더의 파일 목록(상대 경로) — 검증 전후를 비교해 검증이 만든 파일만 치우려고. 너무 크면 None (치우지 않는다)."""
+    out: set[str] = set()
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in _WALK_SKIP]
+        rel = Path(dirpath).relative_to(root)
+        out.update(str(rel / f) for f in files)
+        out.update(str(rel / d) + os.sep for d in dirs)
+        if len(out) > 20000:
+            return None
+    return out
+
+
+def _drop_new(root: Path, before: set[str] | None, keep: set[str]) -> list[str]:
+    if before is None:
+        return []
+    after = _files(root) or set()
+    keep_n = {str(Path(k)) for k in keep if k}
+    new = sorted(after - before, key=lambda x: -x.count(os.sep))  # 깊은 것부터 — 파일을 지운 뒤 빈 폴더를 지운다
+    gone: list[str] = []
+    for rel in new:
+        p = root / rel.rstrip(os.sep)
+        if rel.rstrip(os.sep) in keep_n or "__pycache__" in Path(rel).parts:
+            continue
+        try:
+            if rel.endswith(os.sep):
+                p.rmdir()  # 빈 폴더만
+            else:
+                p.unlink()
+            gone.append(rel.replace(os.sep, "/"))
+        except OSError:
+            pass
+    return gone
 
 
 def hollow_calls(cases: list[dict], root: Path) -> list[str]:

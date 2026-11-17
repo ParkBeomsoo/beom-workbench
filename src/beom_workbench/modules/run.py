@@ -198,6 +198,10 @@ def wb_plan_progress(index: int, status: str, note: str = "") -> dict:
             steps[index]["status"] = status
             if note:
                 steps[index]["note"] = note.strip()[:300]
+            if status == "doing":  # 진행 줄에도 — 따로 알리지 않는 에이전트(Codex 등)도 지금 단계가 보이게 (wb_activity 가 오면 그것으로 바뀐다)
+                title = str(steps[index].get("title") or "").strip()[:150]
+                r["activity"] = {"text": f"{index + 1}/{len(steps)}단계 진행 중 — {title}" if title else f"{index + 1}/{len(steps)}단계 진행 중",
+                                 "at": inbox._now()}
     return _update(put)
 
 

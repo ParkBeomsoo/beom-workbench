@@ -115,7 +115,7 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   브라우저(Edge·Chrome 의 --app 창 포함)로 HTML 을 여는 바로가기는 앱이 아니다. 웹 기술로 화면을 만들면 pywebview·Tauri·Electron
   같은 껍데기로 감싸 실행 파일로 만든다 (가벼운 쪽 우선). 웹으로 충분하다고 보면 decisions 에서 대안으로만 제안한다.
 - 사전 설계 — 만들기 전에 정해야 결과가 크게 갈리는 것을 먼저 정한다: 형태(웹·데스크톱 앱·모바일·API만·CLI),
-  데이터 저장(파일·브라우저 저장소·SQLite·서버 DB — 백업·옮기기 방법까지), 기술 스택과 실행 방법(설치 없이 바로 열리는지,
+  데이터 저장(파일·브라우저 저장소·SQLite·서버 DB — 백업·옮기기가 필요한지까지. 필요하면 사용자가 화면이나 파일 복사로 할 수 있는 방법(내보내기·가져오기 등)으로 정하고, 개발자 도구를 열어 값을 복사하라는 안내는 방법으로 치지 않는다. 요청에 없고 꼭 필요하지 않으면 '두지 않음'을 추천해도 된다), 기술 스택과 실행 방법(설치 없이 바로 열리는지,
   더블클릭 실행 파일·바로가기), 외부 연동, 디자인 방향. 사용자가 이미 정한 것은 그대로 따른다. 나머지는 각각 추천안 하나와
   대안 1~2개, 고른 이유 한 줄을 계획의 decisions 로 낸다 — wb_plan_set(decisions=[{"topic": "데이터 저장",
   "choice": "SQLite 파일", "options": ["JSON 파일", "브라우저 저장소"], "why": "…"}]). 사용자는 기준·계획과 함께 이것을
@@ -474,7 +474,7 @@ MODE_REF = ("레퍼런스 기반 — 원본 저장소의 기능·동작을 참�
             "문자열이 아닌 값의 암묵 변환(JS 의 'undefined'·'null'·'[object Object]'·배열의 쉼표 연결), 원본 언어식 숫자 표기, "
             "UTF-16 길이 세기, 옵션 값을 원본 정규식 문법으로 해석하기 같은 것은 대상 언어에서 자연스러운 동작으로 한다 "
             "(예: 문자열이 아니면 TypeError, 인자가 없으면 TypeError, 구분자는 글자 그대로). 그런 입력의 케이스에는 대상 언어 "
-            "동작을 `expect` 로 적어 사용자 승인을 받는다 — 원본 런타임을 재현하는 코드를 만들지 않는다")
+            "동작을 `expect` 로 적어 사용자 승인을 받는다 — 원본 런타임을 재현하는 코드를 만들지 않는다. 원본이 허용형 라이선스(MIT·BSD·Apache 등)여도 옮긴 코드에는 원본 저작권 표기와 라이선스 문구를 남긴다 — wb_port_status 의 license_notice 가 비지 않으면 인수인계 전에 처리한다")
 
 
 def _brief(run: dict, st: dict | None) -> str:
@@ -1294,18 +1294,19 @@ class Runner:
             self._keep_branch(run)  # 라운드·메시지를 쓰기 전에 — 작업 브랜치로 못 돌아가면 그대로 멈춘다
             if self._stop.is_set():
                 break
-            run = self._set(round=run["round"] + 1)
-            prompt = _brief(run, st)
             revising = self._new_messages() and (waiting or ((run.get("plan") or {}).get("steps")
                                                            and not (run.get("plan") or {}).get("approved")))
+            # 끝난(완료 조건을 다 채운) 작업에 추가 요청이 왔다 — '인수인계만, 코드는 바꾸지 않는다' 지시와 부딪히지 않게 먼저 본다
+            follow_up = bool(not revising and self._new_messages() and st and st["complete"])
+            nxt = run["round"] + 1
+            # 라운드 번호와 '새 한 바퀴' 표시를 한 번에 — 따로 쓰면 그 사이 화면이 새 라운드를 이전 결과의 '검증' 단계로 보여 준다
+            run = self._set(round=nxt, **({"revision_round": nxt, "revision_touched": False} if follow_up else {}))
+            prompt = _brief(run, st)
             if revising:
                 prompt += ("\n\n이번 라운드: 사용자가 승인하지 않고 고칠 점을 보냈다. 위 요청대로 요구사항·합격 케이스"
                            "(다시 wb_port_capture) 또는 계획(wb_plan_set)을 고치고 끝낸다. 승인은 사람만 한다.")
-            elif self._new_messages() and st and st["complete"]:
-                # 끝난(완료 조건을 다 채운) 작업에 추가 요청이 왔다 — '인수인계만, 코드는 바꾸지 않는다' 지시와 부딪히지 않게 먼저 본다
+            elif follow_up:
                 prompt += FOLLOW_UP
-                # 화면의 진행 단계는 새 한 바퀴로 — 손대기 전에는 '기준'부터 (이전 결과의 '검증'에서 뒤로 튀지 않게)
-                run = self._set(revision_round=run["round"], revision_touched=False)
             elif run["round"] == 1 and run["mode"] == "request" and end_mode:
                 prompt += ("\n\n이번 라운드: 요청을 요구사항(wb_make_requirements)으로 나누고, 요구사항마다 합격 케이스 파일을 "
                            "대상 폴더의 .beom/cases.json 에 써서 wb_port_capture 로 저장한 뒤, 승인을 기다리지 말고 계획(wb_plan_set)·"

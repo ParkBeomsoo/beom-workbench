@@ -530,6 +530,7 @@ class Codex(Agent):
         if sys.platform == "win32":
             # Windows 는 샌드박스 방식을 정하지 않으면 쓰기가 모두 막힌다 — 관리자 설치가 필요 없는 방식
             cfg.append('windows.sandbox="unelevated"')
+        cfg += codex_isolation(pol)
         # exec resume 는 -s·-C 를 받지 않는다 (codex 0.167) — 샌드박스는 설정 값으로, 작업 폴더는 프로세스 cwd 로
         flags = ["--json", "--skip-git-repo-check"]
         for c in cfg:
@@ -609,7 +610,8 @@ class Codex(Agent):
                 return [{"kind": "tool", "tool": "Bash", "input": {"command": item.get("command")}}]
             if t == "item.completed" and it in ("mcp_tool_call", "file_change"):
                 name = item.get("tool") or item.get("name") or it
-                out = [{"kind": "tool", "tool": f"mcp__{MCP_NAME}__{name}" if it == "mcp_tool_call" else "Edit",
+                server = item.get("server") or MCP_NAME  # 다른 서버의 도구를 우리 도구처럼 적지 않는다
+                out = [{"kind": "tool", "tool": f"mcp__{server}__{name}" if it == "mcp_tool_call" else "Edit",
                         "input": item.get("arguments") or {"changes": item.get("changes")}}]
                 err = item.get("error")
                 if item.get("status") == "failed" and err:
@@ -621,6 +623,29 @@ class Codex(Agent):
             msg = (ev.get("error") or {}).get("message") if isinstance(ev.get("error"), dict) else ev.get("message")
             return [{"kind": "result", "ok": False, "text": str(msg)[:2000]}]
         return []
+
+
+def codex_isolation(policy: dict, home: Path | None = None) -> list[str]:
+    """Codex 실행에서 사용자 설정의 다른 도구 서버·플러그인(브라우저·컴퓨터 사용 등)을 끈다 — Claude 의 --strict-mcp-config 와
+    같게, 이 실행의 도구는 우리 서버만. 그 도구들은 권한 규칙(웹·대상 폴더 밖·시스템)을 거치지 않는다.
+    웹 접속을 허용하지 않으면 Codex 자체 웹 검색도 끈다. 사용자 설정 파일은 바꾸지 않는다 (이 실행의 -c 덮어쓰기만)."""
+    import tomllib
+    home = home or Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        conf = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        conf = {}
+    out: list[str] = []
+    for name in conf.get("mcp_servers") or {}:
+        if name != MCP_NAME and re.fullmatch(r"[\w-]+", name):
+            out.append(f"mcp_servers.{name}.enabled=false")
+    for name, v in (conf.get("plugins") or {}).items():
+        # 이름에 점이 있으면 -c 경로로 쓸 수 없다 (따옴표로 감싼 키는 codex 가 받지 않는다 — 0.167 에서 확인)
+        if re.fullmatch(r"[\w@-]+", name) and (not isinstance(v, dict) or v.get("enabled", True)):
+            out.append(f"plugins.{name}.enabled=false")
+    if (policy or {}).get("web") != "allow":
+        out.append('web_search="disabled"')
+    return out
 
 
 # ---------------------------------------------------------------- Gemini — Antigravity CLI (agy) · 예전 Gemini CLI (실험적)
