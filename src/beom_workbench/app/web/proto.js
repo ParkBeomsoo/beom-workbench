@@ -39,7 +39,9 @@ span.pv-sref{color:var(--pv-acc);font-weight:600;cursor:pointer;border-bottom:1p
 .pv-over{max-width:860px}
 @media print{.pv{display:none}}`;
 
-  function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  // 앱 안에서는 앱의 화면 언어로 (window.__t), 내보낸 파일에서는 그대로
+  const tt = (s) => (typeof window !== "undefined" && window.__t ? window.__t(s) : s);
+  function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = tt(text); return e; }
   function injectStyle() { if (document.getElementById("pv-style")) return; const s = el("style"); s.id = "pv-style"; s.textContent = CSS; document.head.append(s); }
   // 화면 안에 넣는 작은 스크립트(proto-frame.js) — 앱에서는 앱이 화면을 내줄 때 넣고(src), 내보낸 파일에서는 여기서 넣는다(srcdoc)
   function withInject(html, inject) {

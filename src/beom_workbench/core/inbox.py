@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import secrets
 import shlex
 import tempfile
@@ -358,7 +359,10 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
         if len(parts) > 1 and all((BUILD_COMMANDS.match(x) and not CHAINING.search(x)) or _inspect_only(x) for x in parts):
             return "build"
         # 버전·설치 여부만 보는 명령(node --version; Test-Path …)은 아무것도 바꾸지 않는다 — 묻지 않고 빌드와 같이 둔다
-        return "build" if _inspect_only(core) else "commands"
+        if _inspect_only(core):
+            return "build"
+        # 읽기만 하는 셸 명령(목록·내용·검색)은 Read 도구와 같게 — 대상 폴더 안이면 묻지 않는다 (기획·탐색이 묻는 창으로 막히지 않게)
+        return "edit" if _read_only_shell(cmd, target_root) else "commands"
     if tool.startswith("mcp__beom-workbench__"):
         return "other" if tool.endswith(("port_approve",)) else "edit"
     return "other"
@@ -408,6 +412,45 @@ def _touches(cmd: str, protected: list[Path]) -> bool:
 
 DELETE_CMD = re.compile(r"\brm\s+(?:-{1,2}[\w-]+\s+)*(?:-[a-zA-Z]*[rR][a-zA-Z]*\b|--recursive\b)|\brmdir\b|\bRemove-Item\b"
                         r"|\b(?:ri|erase|del|rd|rm)\b[^;&|\n]*(?:-Recurse\b|\s/s\b)", re.I)
+
+
+# 읽기만 하는 명령 — 명령 자리에 오는 낱말이 모두 여기 있어야 한다 (PowerShell 별칭 포함, 대소문자 무시).
+# git 은 넣지 않는다: 저장소 설정(fsmonitor·diff 드라이버)으로 git status 조차 다른 프로그램을 돌릴 수 있다
+READ_ONLY_WORDS = {
+    "get-childitem", "gci", "ls", "dir", "get-content", "gc", "cat", "type", "select-string", "sls", "select-object", "select",
+    "where-object", "where", "?", "sort-object", "sort", "measure-object", "measure", "group-object", "group", "format-table", "ft",
+    "format-list", "fl", "format-wide", "out-string", "test-path", "get-item", "gi", "resolve-path", "split-path", "join-path",
+    "convertfrom-json", "convertto-json", "get-date", "write-output", "echo", "write-host", "get-filehash", "get-location", "pwd",
+    "head", "tail", "wc", "grep", "rg", "findstr", "tree", "file", "stat", "du", "realpath", "basename", "dirname", "true",
+    "if", "elseif", "else", "foreach",  # 제어문 자체는 실행이 아니다 — 안의 명령은 따로 검사된다
+}
+_RO_BAD = re.compile(r"[>`]|\$\(|@\(|&|::|\$env:|\$home\b|(?:^|[\s'\"(])~(?:[\\/]|$)|\\\\\\\\|-(?:delete|exec|execdir|ok)\b|\b(?:iex|icm)\b", re.I)
+_RO_SPLIT = re.compile(r"\|\||[|;{}()\n=]")
+_RO_ABS = re.compile(r"(?<![\w$])(?:[A-Za-z]:[\\/][^\s'\"`;|(){}]*|/(?:[\w.-]+/)*[\w.-]+)")
+
+
+def _read_only_shell(cmd: str, root: Path) -> bool:
+    """명령 전체가 읽기만 하는가 — 쓰기·실행으로 이어질 수 있는 것(리다이렉트, 하위 식, 호출 연산자, .NET 정적 호출,
+    목록에 없는 명령)이 하나라도 있으면 아니다. 절대 경로는 모두 대상 폴더(또는 에이전트 임시 폴더) 안이어야 한다."""
+    if not cmd or len(cmd) > 4000 or _RO_BAD.search(cmd):
+        return False
+    for seg in _RO_SPLIT.split(cmd):
+        seg = seg.strip()
+        if not seg or seg.startswith(("$", "'", '"', "-", "#")) or re.fullmatch(r"[\d.,\s]+", seg):
+            continue  # 변수·문자열·인자 조각·숫자 — 명령이 아니다 ($x = 'a' 의 오른쪽도 여기서 다시 본다)
+        words = seg.split()
+        first = words[0].lower().strip("'\"")
+        if first not in READ_ONLY_WORDS:
+            return False
+        if first in ("sort", "tail", "head") and any(w in ("-o", "--output", "-f", "--follow") for w in words):
+            return False
+    for m in _RO_ABS.finditer(cmd):
+        path = m.group(0).rstrip(".,")
+        if path.startswith("/") and sys.platform == "win32":
+            continue  # PowerShell 안의 /옵션 따위 — Windows 경로가 아니다
+        if not (_inside(path, root) or _scratch(path)):
+            return False
+    return True
 
 
 def _deletes_inside(cmd: str, root: Path) -> bool:

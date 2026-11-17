@@ -5,9 +5,9 @@
 **코딩 에이전트의 작업대 — 기획하고, 요청이나 참고 저장소로 만들고, 승인한 합격 기준대로 되는지 검증합니다**
 
 
-> 앱 화면은 지금 한국어만 지원합니다 (영어 화면은 준비 중). 에이전트는 요청한 언어로 일하고 보고합니다.
+> 앱 화면은 한국어·영어·일본어·중국어(간체)를 지원합니다. 처음에는 시스템 언어를 따르고(그 밖의 언어면 한국어), 사이드바의 언어 단추로 바꿀 수 있습니다. 에이전트는 요청한 언어로 일하고 보고합니다.
 
-![version](https://img.shields.io/badge/version-0.1.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.2.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 에이전트가 "다 됐다"고 할 때까지 맡기는 대신, 요구사항과 합격 케이스를 먼저 정하고, 에이전트는 자기 브랜치에서만 일하게 하고,
 결과가 그 기준을 채우는지(옮겨 오는 경우 원본과 같은 동작인지) 프로그램으로 확인합니다. 분석 결론에는 모두 근거(파일:줄)가 붙습니다. Claude Code 같은 AI 에이전트가 절차를 따라 쓰도록

@@ -141,7 +141,31 @@ class Api(QObject):
                 "defaults": self._prefs().get("defaults") or {},
                 "kinds": inbox.KINDS, "default_policy": inbox.DEFAULT_POLICY, "sandbox": _sandbox_status(),
                 "permission_modes": [{"id": k, "label": m["label"], "desc": m["desc"], "policy": m["policy"]}
-                                     for k, m in inbox.PERMISSION_MODES.items()]}
+                                     for k, m in inbox.PERMISSION_MODES.items()],
+                "i18n": self._i18n()}
+
+    def _i18n(self) -> dict:
+        """화면 언어 — 고른 값(auto·ko·en·ja·zh), 실제로 보일 언어, 그 언어의 번역표 (한국어가 원문이라 한국어는 빈 표)."""
+        from beom_workbench import i18n
+        choice = self._prefs().get("lang") or "auto"
+        lang = i18n.resolve(choice)
+        return {"choice": choice, "lang": lang, "system": i18n.system_language(), "languages": i18n.LANGUAGES,
+                "catalog": i18n.catalog(lang)}
+
+    def lang(self) -> str:
+        from beom_workbench import i18n
+        return i18n.resolve(self._prefs().get("lang") or "auto")
+
+    @Slot(str, result=str)
+    @safe
+    def setLanguage(self, choice):
+        """화면 언어를 바꾼다 — 'auto' 는 운영체제 언어를 따르고, 지원하지 않는 언어면 한국어."""
+        from beom_workbench import i18n
+        from beom_workbench.core import storage
+        if choice != "auto" and choice not in i18n.LANGUAGES:
+            raise ToolError("invalid_request", f"지원하지 않는 언어: {choice}")
+        storage.save_prefs(self.settings, {"lang": choice})
+        return self._i18n()
 
     @Slot(result=str)
     @safe
@@ -163,7 +187,9 @@ class Api(QObject):
                 self.attention.emit()
                 continue
             self._unseen[r["id"]] = text
-            self.notify.emit(r["name"] or "프로젝트", text)
+            from beom_workbench import i18n
+            lang = self.lang()
+            self.notify.emit(r["name"] or i18n.tr("프로젝트", lang), i18n.tr(text, lang))
         return rows
 
     def seen(self) -> None:
