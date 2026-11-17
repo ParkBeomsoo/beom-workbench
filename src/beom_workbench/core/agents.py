@@ -185,7 +185,7 @@ _PATH_AT = {"t": 0.0}
 
 def refresh_path(max_age: float = 30) -> None:
     """PATH 를 저장된 설정에서 다시 읽어 합친다 — 앱을 켠 뒤에 설치했거나 nvm use 로 Node 를 바꿔도 다시 켜지 않고 찾게.
-    Windows: 사용자·시스템 환경 변수(레지스트리). macOS·Linux: 로그인 셸의 PATH. 앞에 새 값을 두되 원래 항목은 남긴다."""
+    Windows: 사용자·시스템 환경 변수(레지스트리) — 새 폴더만 뒤에 붙인다. macOS·Linux: 로그인 셸의 PATH 를 앞에 둔다."""
     import time
     if time.monotonic() - _PATH_AT["t"] < max_age:
         return
@@ -214,7 +214,13 @@ def refresh_path(max_age: float = 30) -> None:
         if "__OSS_PATH__" in out:
             fresh = [x for x in out.rsplit("__OSS_PATH__", 1)[-1].strip().split(os.pathsep) if x]
     have = os.environ.get("PATH", "").split(os.pathsep)
-    merged = list(dict.fromkeys(fresh + have))
+    if sys.platform == "win32":
+        # 레지스트리 값(사용자 → 시스템)은 실제 순서가 아니다 — 지금 순서는 그대로 두고 새로 생긴 폴더만 뒤에 붙인다.
+        # 앞에 끼우면 같은 이름의 명령이 다른 것으로 바뀐다 (예: bash 가 Git Bash 대신 WSL 실행기로, python 이 스토어 안내 파일로)
+        seen = {os.path.normcase(os.path.normpath(x)) for x in have if x}
+        merged = have + [x for x in dict.fromkeys(fresh) if os.path.normcase(os.path.normpath(x)) not in seen]
+    else:  # 로그인 셸의 PATH 가 사용자가 정한 순서 그대로 — 앞에 둔다 (nvm use 로 바꾼 Node 가 이기게)
+        merged = list(dict.fromkeys(fresh + have))
     if merged != have:
         os.environ["PATH"] = os.pathsep.join(merged)
 

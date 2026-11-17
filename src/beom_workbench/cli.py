@@ -23,6 +23,36 @@ def _print(data: object) -> None:
     sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
+def _lang() -> str:
+    """사람이 읽는 문구(도움말·터미널 질문)의 언어 — 앱과 같은 규칙 (설정 → 운영체제 언어 → 한국어).
+    JSON 결과는 번역하지 않는다 — 스크립트·에이전트가 읽는 계약이라 MCP 와 같게 둔다."""
+    try:
+        from beom_workbench.core.runner import ui_lang
+        return ui_lang(load_settings())
+    except Exception:  # noqa: BLE001
+        return "ko"
+
+
+def _t(text: str, lang: str) -> str:
+    from beom_workbench import i18n
+    return text if lang == "ko" else i18n.tr(text, lang)
+
+
+def _localize(parser: argparse.ArgumentParser, lang: str) -> None:
+    """--help 를 화면 언어로 — 도움말을 볼 때만 번역한다 (평소 실행에는 비용 없음)."""
+    for a in parser._actions:
+        if a.help and a.help is not argparse.SUPPRESS:
+            a.help = _t(a.help, lang)
+        if isinstance(a.metavar, str):
+            a.metavar = _t(a.metavar, lang)
+        if isinstance(a, argparse._SubParsersAction):
+            for ca in a._choices_actions:
+                if ca.help:
+                    ca.help = _t(ca.help, lang)
+            for sp in {id(v): v for v in a.choices.values()}.values():
+                _localize(sp, lang)
+
+
 def _load_json(value: str) -> Any:
     if value == "-":
         sys.stdin.reconfigure(encoding="utf-8")
@@ -413,7 +443,7 @@ def _run(args: argparse.Namespace) -> Any:
                     pass
             if args.create_only:
                 return {"run_id": run_id}
-        sys.stderr.write(f"실행 {run_id} — 승인·질문은 데스크톱 앱(beom-workbench)에서 답한다\n")
+        sys.stderr.write(_t("실행 {0} — 승인·질문은 데스크톱 앱(beom-workbench)에서 답한다", _lang()).replace("{0}", run_id) + "\n")
         return runner.Runner(settings, run_id).run()
     if args.cmd == "make-create":
         from beom_workbench.core import make
@@ -580,11 +610,12 @@ def _port_approve(conn, port_id: str, *, list_only: bool) -> dict:
         raise ToolError("human_required", "승인은 사용자가 터미널에서 직접 입력해야 함 (지금 입력이 터미널이 아님)",
                         recovery="사용자에게 이 명령을 터미널에서 직접 실행해 달라고 요청하거나, MCP wb_port_approve 확인 창 사용",
                         data={"pending": [{k: i[k] for k in ("item_id", "kind", "summary")} for i in items]})
-    sys.stderr.write(f"승인 대기 {len(items)}건\n" + port_guard.render(items) + "\n\n")
-    sys.stderr.write("모두 승인하려면 '승인', 일부만이면 번호(예: 1,3), 취소는 Enter: ")
+    lang = _lang()
+    sys.stderr.write(_t("승인 대기 {0}건", lang).replace("{0}", str(len(items))) + "\n" + port_guard.render(items) + "\n\n")
+    sys.stderr.write(_t("모두 승인하려면 '승인', 일부만이면 번호(예: 1,3), 취소는 Enter: ", lang))
     sys.stderr.flush()
     answer = sys.stdin.readline().strip()
-    if answer == "승인":
+    if answer.casefold() in {"승인", "approve", "承認", "批准"}:
         chosen = items
     elif answer:
         try:
@@ -673,7 +704,12 @@ def main(argv: list[str] | None = None) -> int:
     nowindow.install()  # 앱이 띄운 실행기·CLI 에서도 자식 명령(git·에이전트)이 터미널 창을 열지 않게
     sys.stdout.reconfigure(encoding="utf-8")  # --help 포함 모든 출력 UTF-8
     sys.stderr.reconfigure(encoding="utf-8")
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    if {"-h", "--help"} & set(sys.argv[1:] if argv is None else argv):
+        lang = _lang()
+        if lang != "ko":
+            _localize(parser, lang)
+    args = parser.parse_args(argv)
     env = Envelope(f"cli.{args.cmd}")
     try:
         result = _run(args)

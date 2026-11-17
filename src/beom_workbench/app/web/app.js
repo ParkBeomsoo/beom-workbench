@@ -17,7 +17,7 @@ function setI18n(info) {
   for (const [k, v] of Object.entries((info && info.catalog) || {})) {
     if (!/\{\d\}/.test(k)) { I18N.map.set(k, v); continue; }
     if (!HANGUL.test(k.replace(/\{\d\}/g, ""))) continue;  // 자리표시자뿐인 항목은 아무 글에나 맞으므로 쓰지 않는다
-    const rx = k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\{(\d)\\\}/g, "([^\\n]*?)");  // 빈 값도 맞게, 줄은 넘지 않게 (여러 줄 글은 줄마다 따로)
+    const rx = k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\{(\d)\\\}/g, "((?:(?![.?!]\\s| — )[^\\n])*?)");  // 빈 값도 맞게 — 줄·문장 끝·' — ' 를 넘지 않게 (긴 글은 나눠서)
     I18N.pats.push([new RegExp("^" + rx + "$"), v, k.length]);
   }
   I18N.pats.sort((a, b) => b[2] - a[2]);  // 긴(구체적인) 것부터
@@ -27,8 +27,9 @@ function t(s) {
   if (I18N.cache.has(s)) return I18N.cache.get(s);
   const core = s.trim();
   let out = s;
-  const hit = I18N.map.get(core);
-  if (hit != null) out = s.replace(core, hit);
+  const exact = I18N.map.get(s), hit = exact != null ? null : I18N.map.get(core);
+  if (exact != null) out = exact;
+  else if (hit != null) out = s.replace(core, hit);
   else {
     let found = false;
     for (const [rx, v] of I18N.pats) {
@@ -123,6 +124,7 @@ let openPop = null;
 function applyLang(info) {
   setI18n(info);
   for (const el of document.querySelectorAll("[data-t]")) { el.dataset.src = el.dataset.src || el.textContent; el.textContent = t(el.dataset.src); }
+  for (const el of document.querySelectorAll("[data-tp]")) el.placeholder = t(el.dataset.tp);
   const names = (info && info.languages) || {};
   const lab = $("#langlabel"); if (lab) lab.textContent = names[I18N.lang] || I18N.lang;
 }
@@ -301,6 +303,26 @@ function fmtBytes(n, atLeast) {
   const u = ["B", "KB", "MB", "GB"]; let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return (atLeast ? "≥ " : "") + (i ? n.toFixed(n < 10 ? 1 : 0) : n) + " " + u[i];
 }
+// 사용량 — 작업마다 남긴 비용·토큰을 모아 본다 (구독 로그인의 비용은 API 가격으로 셈한 값)
+async function usagePop(anchor) {
+  const r = await call("usageSummary"); if (!r.ok) return;
+  const U = r.data;
+  const line = (b) => [b.cost_usd ? fmtMoney(b.cost_usd) : null, b.tokens ? "토큰 " + fmtTokens(b.tokens) : null].filter(Boolean).join(" · ") || "—";
+  const stat = (label, b) => h("div", { class: "ustat" }, h("span", { text: label }), h("b", { text: line(b) }),
+    h("span", { class: "pd", text: `작업 ${b.runs}개 · ${b.rounds}라운드` }));
+  const agentRows = Object.entries(U.agents).map(([id, a]) => h("div", { class: "urow" },
+    h("span", { text: agentName(id) }), h("span", { class: "uv", text: line(a) }), h("span", { class: "pd", text: `작업 ${a.runs}개` })));
+  const top = U.top.map((x) => h("button", { class: "urow link", title: "열기", onclick: () => { closePop(); openRun(x.id); } },
+    h("span", { class: "un", text: x.name || "프로젝트" }), h("span", { class: "uv", text: line(x) }), h("span", { class: "pd", text: agentName(x.agent) })));
+  const subs = Object.values(U.agents).some((a) => a.subscription && a.cost_usd);
+  popover(anchor, { width: 340, content: h("div", { class: "optpop usagepop" },
+    h("div", { class: "pt", text: "사용량" }),
+    U.total.runs ? h("div", { class: "ustats" }, stat("이번 달", U.this_month), stat("전체", U.total)) : h("div", { class: "pnote", text: "아직 사용 기록이 없습니다" }),
+    agentRows.length ? h("div", { class: "pt sub2", text: "에이전트별" }) : null, ...agentRows,
+    top.length ? h("div", { class: "pt sub2", text: "많이 쓴 작업" }) : null, ...top,
+    h("div", { class: "pnote", text: "에이전트가 보고한 값입니다 — Claude Code 는 비용, Codex 는 토큰. 기간은 작업을 만든 날 기준." +
+      (subs ? " 구독 로그인의 비용은 실제 청구액이 아니라 같은 사용량을 API 가격으로 셈한 값입니다." : "") })) });
+}
 async function dataPop(anchor) {
   const r = await call("dataReport"); if (!r.ok) return;
   S.data = r.data; drawData(anchor);
@@ -337,6 +359,8 @@ function runMenu(anchor, r) {
   const name = h("input", { class: "pin", value: r.name || "", onkeydown: async (e) => {
     if (e.key === "Enter") { const x = await call("renameRun", r.id, e.target.value); if (x.ok) { closePop(); refresh(); } } } });
   popover(anchor, { width: 260, content: h("div", { class: "optpop" }, h("div", { class: "pt", text: "이름 바꾸기 (Enter)" }), h("div", { class: "pf", style: "border:none;margin:0" }, name),
+    h("button", { class: "pi", onclick: () => { closePop(); retryRun(r.id); } },
+      h("span", { class: "pl" }, h("b", { text: "같은 요청으로 새 작업" })), h("span", { class: "pd", text: "에이전트·모델을 바꿔 다시 해 보고 결과를 비교합니다 — 저장소면 새 작업 브랜치에서" })),
     h("button", { class: "pi", onclick: async () => { closePop(); const x = await call("archiveRun", r.id, !r.archived); if (x.ok) { if (!r.archived && S.current === r.id) goHome(); refresh(); } } },
       h("span", { class: "pl" }, h("b", { text: r.archived ? "다시 보이기" : "목록에서 숨기기" })), h("span", { class: "pd", text: r.archived ? "" : "기록은 그대로 남고 '숨긴 항목'에서 다시 볼 수 있습니다" })),
     h("button", { class: "pi danger", onclick: async () => { closePop();
@@ -348,12 +372,33 @@ function runMenu(anchor, r) {
   setTimeout(() => name.focus(), 0);
 }
 
+// 같은 요청으로 새 작업 — 처음 입력으로 새 작업 화면을 채우고, 에이전트·모델은 사용자가 바꿔서 시작한다
+async function retryRun(id) {
+  const x = await call("retryDraft", id); if (!x.ok) return;
+  const v = x.data;
+  goHome();
+  S.mode = v.mode; S.agentPicked = true;
+  Object.assign(S.draft, { request: v.request, attachments: v.attachments, target_root: v.target_root, context_dir: v.context_dir,
+    source: v.source, feature: v.feature, agent: v.agent || S.draft.agent, model: v.model || "", effort: v.effort || "",
+    policy: v.policy || S.draft.policy, max_rounds: v.max_rounds || 0, confirm_at: v.confirm_at || "start", auth: v.auth || S.draft.auth,
+    plan_approval: v.plan_approval !== false });
+  checkLinks(v.attachments.filter((a) => /^https?:\/\//.test(a)));
+  renderHome();
+  toast((v.kept_folder ? "같은 저장소의 새 작업 브랜치에서 합니다. " : "새 폴더에 만듭니다 (앞의 결과 위에서 시작하지 않게). ") +
+    "에이전트·모델을 바꾼 뒤 시작하세요" + (v.missing ? ` — 찾을 수 없는 첨부 ${v.missing}개는 뺐습니다` : ""), 7000);
+}
+
 // ---------------------------------------------------------------- 사이드바
 function renderSide() {
-  const sig = JSON.stringify([S.runs, S.current, S.agents, S.showHidden, S.sandbox, S.engines]);
+  const sig = JSON.stringify([S.runs, S.current, S.agents, S.showHidden, S.sandbox, S.engines, S.runQ]);
   if (sig === S.sig.side) return; S.sig.side = sig;
   const box = $("#runs"); box.replaceChildren();
-  const shown = S.runs.filter((r) => !r.archived), hidden = S.runs.filter((r) => r.archived);
+  // 작업이 많아지면 찾기 — 이름·모드·상태·폴더에서 (숨긴 항목도 함께 찾는다)
+  const qbox = $("#runq"); if (qbox) qbox.hidden = S.runs.length < 6 && !S.runQ;
+  const q = (S.runQ || "").trim().toLowerCase();
+  const hit = (r) => !q || [r.name, r.mode_text, r.status, r.target_root].some((v) => String(v || "").toLowerCase().includes(q) || t(String(v || "")).toLowerCase().includes(q));
+  const all = S.runs.filter(hit);
+  const shown = all.filter((r) => !r.archived || q), hidden = q ? [] : all.filter((r) => r.archived);
   const active = shown.filter((r) => r.status !== "완료"), done = shown.filter((r) => r.status === "완료");
   const item = (r) => {
     const more = h("button", { class: "more", title: "이름 바꾸기 · 숨기기", onclick: (e) => { e.stopPropagation(); runMenu(e.currentTarget, r); } }, "⋯");
@@ -368,6 +413,7 @@ function renderSide() {
   if (hidden.length) box.append(h("div", { class: "group toggle", onclick: () => { S.showHidden = !S.showHidden; S.sig.side = ""; renderSide(); } },
     `숨긴 항목 ${hidden.length} ${S.showHidden ? "▾" : "▸"}`), ...(S.showHidden ? hidden.map(item) : []));
   if (!S.runs.length) box.append(h("div", { class: "group", text: "프로젝트" }), h("div", { class: "empty", text: "아직 없습니다" }));
+  else if (q && !all.length) box.append(h("div", { class: "empty", text: "찾는 작업이 없습니다" }));
   const ag = $("#agents"); ag.replaceChildren();
   const missing = S.agents.filter((a) => !a.exe && a.install);
   const sb = S.sandbox || {}, sbMissing = !sb.ready && sb.install && !missing.some((a) => a.install === sb.install) ? 1 : 0;
@@ -671,7 +717,7 @@ async function create() {
 
 // ---------------------------------------------------------------- 프로젝트
 async function openRun(id) {
-  S.current = id; S.detail = null; S.changes = null; S.file = null; closePop(); S.edit = null; S.sig = { feed: "", right: "", side: "", cbar: "" };
+  S.current = id; S.detail = null; S.changes = null; S.file = null; S.msgAtts = []; closePop(); S.edit = null; S.sig = { feed: "", right: "", side: "", cbar: "" };
   const msg = $("#msg"); if (msg) { msg.value = ""; msg.style.height = "auto"; }
   document.getElementById("app").classList.remove("home");
   await refresh();
@@ -684,11 +730,13 @@ function renderRun() {
       h("div", { class: "head", id: "head" }), h("div", { class: "meter", id: "meter" }), h("div", { id: "activity" }),
       h("div", { class: "feed", id: "feed" }, h("div", { class: "col", id: "col" })),
       h("div", { class: "composer" }, h("div", { class: "box" },
-        h("textarea", { id: "msg", rows: 1, placeholder: "에이전트에게 지시하거나 고칠 점을 적어 주세요",
+        h("div", { class: "atts msgatts", id: "msgatts" }),
+        h("textarea", { id: "msg", rows: 1, placeholder: "에이전트에게 지시하거나 고칠 점을 적어 주세요 — 스크린샷은 붙여 넣거나 끌어다 놓아도 됩니다",
           oninput: (e) => { e.target.style.height = "auto"; e.target.style.height = Math.min(180, e.target.scrollHeight) + "px"; },
           onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMsg(); } },
           onkeyup: () => updateSendMode() }),
         h("div", { class: "bar", id: "cbar" }))));
+    drawMsgAtts();  // 불러오는 동안 끌어다 놓은 첨부
   }
   $("#head").replaceChildren(...[
     h("span", { class: "crumb", text: D.mode_text + " /" }), h("h1", { text: run.name || "프로젝트" }),
@@ -720,6 +768,9 @@ function renderRun() {
     const resumable = !D.running && !(run.status === "done" && run.accepted);
     $("#cbar").replaceChildren(
       h("div", { class: "tl" },
+        h("button", { class: "iconbtn", title: "파일 첨부 — 스크린샷·문서 (붙여 넣기·끌어다 놓기도 됩니다)", onclick: async () => { const r = await call("pickFiles"); if (!r.ok) return;
+          if (r.data.rejected.length) toast(r.data.rejected.join(" / "), 7000);
+          if (r.data.files.length) addAtts(r.data.files); } }, ico("clip")),
         pill("shield", "권한", modeLabel(D.policy), (b) => permMenu(b, D.policy, (p) => opt({ policy: p }), () => optionsPop(b, true, run))),
         h("button", { class: "iconbtn", title: "실행 옵션 (라운드·계획 승인·세부 권한)", onclick: (e) => { e.stopPropagation(); optionsPop(e.currentTarget, false, { ...run, policy: D.policy, plan_approval: D.plan_approval }); } }, ico("sliders")),
         h("span", { class: "meta", text: `${run.round || 0}회째${run.max_rounds ? ` / ${run.max_rounds}` : ""}` + (usageText(run) ? " · " + usageText(run) : "") })),
@@ -730,7 +781,7 @@ function renderRun() {
         // Claude 데스크톱처럼: 진행 중이고 입력이 비었으면 멈춤, 아니면 보내기
         h("button", { class: "send" + (D.running ? " stopmode" : ""), title: D.running ? "멈추기 (Esc) — 입력하면 보내기로 바뀝니다" : (run.round ? "보내기 — 보내면 바로 이어서 진행" : "시작"),
           disabled: !D.running && !run.round ? false : false,
-          onclick: () => { const t = $("#msg"); if (t && t.value.trim()) sendMsg(); else if (D.running) call("stop", run.id).then(refresh); else startRun(); } },
+          onclick: () => { if (hasMsg()) sendMsg(); else if (D.running) call("stop", run.id).then(refresh); else startRun(); } },
           ico(D.running ? "stop" : "up"))));
     updateSendMode();
   }
@@ -769,7 +820,7 @@ function procPop(anchor) {
 }
 function updateSendMode() {
   const b = document.querySelector(".composer .send"); if (!b || !S.detail) return;
-  const typed = !!($("#msg") && $("#msg").value.trim()), running = S.detail.running;
+  const typed = hasMsg(), running = S.detail.running;
   b.classList.toggle("stopmode", running && !typed);
   b.replaceChildren(ico(running && !typed ? "stop" : "up"));
   const r = S.detail.run;
@@ -784,12 +835,50 @@ function pickReadyAgent() {
 }
 function agentName(id) { const a = S.agents.find((x) => x.id === id); return a ? a.name.replace(" (실험적)", "") : (id || "Claude Code"); }
 async function startRun() {
-  const msg = $("#msg"); if (msg && msg.value.trim()) await sendMsg();
+  if (hasMsg()) await sendMsg();
   const r = await call("start", S.current); if (r.ok) { S.startedAt = Date.now(); refresh(); }
 }
+// 보낼 메시지의 첨부 (실행 화면) — 고칠 점을 보여 주는 스크린샷·문서
+function hasMsg() { const t = $("#msg"); return !!((t && t.value.trim()) || (S.msgAtts || []).length); }
+function drawMsgAtts() {
+  const box = $("#msgatts"); if (!box) return;
+  box.replaceChildren(...(S.msgAtts || []).map((f) => h("span", { class: "att", title: f }, ico("clip"), f.split(/[\\/]/).pop(),
+    h("button", { title: "빼기", onclick: () => { S.msgAtts = S.msgAtts.filter((x) => x !== f); drawMsgAtts(); updateSendMode(); } }, "×"))));
+}
+function addAtts(files) {
+  if (!files.length) return;
+  // 실행 화면이면(불러오는 중이어도) 보낼 메시지에 — 새 작업 화면으로 바뀌지 않게
+  if (S.current) { S.msgAtts = [...new Set([...(S.msgAtts || []), ...files])]; drawMsgAtts(); if (S.detail) updateSendMode(); return; }
+  const d = S.draft; d.attachments = [...new Set([...(d.attachments || []), ...files])]; renderHome();
+}
+// 끌어다 놓은 파일 — 파일 선택과 같은 규칙으로 걸러서 지금 보이는 입력창에
+async function addFiles(paths) {
+  const r = await call("checkFiles", JSON.stringify(paths)); if (!r.ok) return;
+  if (r.data.rejected.length) toast(r.data.rejected.join(" / "), 7000);
+  addAtts(r.data.files);
+}
+// 붙여 넣은 그림(클립보드 스크린샷) — 파일로 저장해 첨부로
+document.addEventListener("paste", (e) => {
+  // 요청·메시지 입력창에서만, 글이 함께 없을 때만 — 엑셀·워드에서 복사하면 글과 그림이 함께 오는데 그때는 글을 붙인다
+  if (!e.target || !["homeText", "msg"].includes(e.target.id)) return;
+  const cd = e.clipboardData; if (!cd || (cd.getData("text/plain") || "").trim()) return;
+  const items = [...(cd.items || [])].filter((it) => it.kind === "file" && /^image\/(png|jpe?g|gif|webp)$/.test(it.type));
+  if (!items.length) return;
+  e.preventDefault();
+  for (const it of items) {
+    const blob = it.getAsFile(); if (!blob) continue;
+    const rd = new FileReader();
+    rd.onload = async () => { const r = await call("pasteImage", String(rd.result), it.type.split("/")[1]); if (r.ok) addAtts([r.data.path]); };
+    rd.readAsDataURL(blob);
+  }
+});
 async function sendMsg() {
-  const t = $("#msg"); const text = t.value.trim(); if (!text) return;
-  const r = await call("sendMessage", S.current, text);
+  const t = $("#msg"); const text = t.value.trim(), atts = S.msgAtts || [], id = S.current; if ((!text && !atts.length) || S.sending) return;
+  S.sending = true;  // 두 번 눌러 두 번 보내지 않게
+  let r;
+  try { r = await call("sendMessage", id, text, JSON.stringify(atts)); } finally { S.sending = false; }
+  if (id !== S.current) return;  // 보내는 사이 다른 실행으로 옮겼다 — 그 실행의 입력·첨부는 건드리지 않는다
+  if (r.ok) { S.msgAtts = []; drawMsgAtts(); if ((r.data.notes || []).length) toast(r.data.notes.join(" / "), 8000); }
   if (r.ok && !S.detail.running && !S.edit) {  // 멈췄거나 끝난 실행에 보내면 대화처럼 바로 이어서 진행
     t.value = ""; t.style.height = "auto";
     const st = await call("start", S.current); if (st.ok) { S.startedAt = Date.now(); toast("보냈습니다 — 이어서 진행합니다"); refresh(); }
@@ -1765,6 +1854,8 @@ document.addEventListener("keydown", (e) => {
 });
 function goHome() { closePop(); S.edit = null; S.current = null; S.detail = null; S.sig = { feed: "", right: "", side: "", cbar: "" }; S.preparing = false; renderSide(); renderHome(); }
 $("#newbtn").addEventListener("click", goHome);
+$("#runq").addEventListener("input", (e) => { S.runQ = e.target.value; renderSide(); });
+$("#runq").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.target.value = ""; S.runQ = ""; renderSide(); e.target.blur(); } });
 
 new QWebChannel(qt.webChannelTransport, async (ch) => {
   api = ch.objects.api;
@@ -1785,8 +1876,15 @@ new QWebChannel(qt.webChannelTransport, async (ch) => {
   renderSide(); renderHome();
   api.dataReady.connect((raw) => { const r = JSON.parse(raw); if (r.ok && openPop && openPop.querySelector(".datapop")) { S.data = r.data; drawData($("#databtn")); } });
   $("#langbtn").addEventListener("click", (e) => { e.stopPropagation(); if (openPop && openPop.querySelector(".pt") && openPop.querySelector(".pt").textContent === t("화면 언어")) { closePop(); return; } langPop(e.currentTarget); });
+  $("#usagebtn").addEventListener("click", (e) => { e.stopPropagation(); if (openPop && openPop.querySelector(".usagepop")) { closePop(); return; } usagePop(e.currentTarget); });
   $("#databtn").addEventListener("click", (e) => { e.stopPropagation(); if (openPop && openPop.querySelector(".datapop")) { closePop(); return; } dataPop(e.currentTarget); });
   if (api.exportDone) api.exportDone.connect((raw) => { const r = JSON.parse(raw); toast(r.ok ? "PDF 를 만들었습니다 — " + r.path : "PDF 를 만들지 못했습니다", 5000); if (r.ok) call("openFolder", r.folder); });
+  if (api.filesDropped) api.filesDropped.connect((raw) => addFiles(JSON.parse(raw)));
+  if (api.updateFound) {  // 새 버전 — 버전 옆에 작게, 누르면 릴리스 노트 (업데이트 명령은 툴팁)
+    api.updateFound.connect((raw) => { const r = JSON.parse(raw), v = $("#ver"); if (!v || document.querySelector(".upd")) return;
+      v.after(h("a", { class: "upd", href: r.url || "#", title: "릴리스 노트 열기 — 업데이트: pipx upgrade beom-workbench", text: `새 버전 v${r.version}` })); });
+    setTimeout(() => call("checkUpdate"), 4000);
+  }
   api.linkChecked.connect((raw) => { const r = JSON.parse(raw); S.links = S.links || {};
     S.links[r.url] = { state: r.ok ? "ok" : r.needs_login ? "login" : "error", error: r.error };
     if (r.needs_login) { toast("로그인이 필요한 링크입니다 — 앱 브라우저 창에서 로그인해 주세요", 7000); loginLink(r.url); }

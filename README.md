@@ -5,9 +5,9 @@
 **A desktop workbench for coding agents: plan a feature, build it from a request or from a reference repository, and verify it against acceptance criteria you approved.**
 
 
-> The app's interface is available in Korean, English, Japanese and Simplified Chinese. It follows your system language on first start (Korean when the system language is not one of these) and can be changed from the language button in the sidebar. Agents work and report in the language of your request.
+> The app's interface is available in Korean, English, Japanese and Simplified Chinese. It follows your system language on first start (Korean when the system language is not one of these) and can be changed from the language button in the sidebar. Agents follow their own rules for the language they write in: when the language of your request is clear they are told to use it; when it is not (only an attachment or a link), or when you set a response language in the agent's own settings (Claude Code `language`), the agent's setting applies. Command-line help (`--help`) and the installers' messages follow the same language.
 
-![version](https://img.shields.io/badge/version-0.2.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.3.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 Instead of letting an agent build until it says "done", the workbench fixes the requirements and acceptance cases first, has the
 agent work on its own branch, and checks by program that the result meets them — or, when porting, that it behaves like the
@@ -192,7 +192,7 @@ converted to text) — a spec page is often half tables and screen mock-ups. For
 asks you to sign in: it opens its own browser window, you log in there and press **Get this document**. For Confluence it reads the
 page through the site's own REST API with that signed-in session, together with its child pages, comments and attachments; for Jira,
 the issue with its description, sub-tasks, linked issues, comments and attachments. Other sites use the main content of the page.
-Sign-ins are kept in a separate app profile (clear them under **Storage → Document sign-ins**). The agent reads attachments first.
+Sign-ins are kept in a separate app profile (clear them under **Storage → Document sign-ins**). The agent reads attachments first. Files can also be dropped onto the window, and a screenshot can be pasted (Ctrl+V); messages sent to a running or finished task can carry attachments too — e.g. a screenshot of what to fix.
 
 **Planning package** — planning mode produces the set of documents a product planner hands over, not a single page (in `.beom/brief/`):
 기획서.md (goals and success metrics, users, feature list P0/P1/P2, requirements R1…, out of scope, open questions, release steps),
@@ -555,7 +555,8 @@ In the app: **Storage** at the bottom of the sidebar, and **Move to trash** in a
 | `BEOM_WORKBENCH_HOME` | `~/.beom-workbench` | location of ledgers, clones, engines and backups |
 | `BEOM_WORKBENCH_CONTAINER` | `auto` | isolated execution engine: `auto`·`docker`·`wsl`·`none` |
 | `BEOM_WORKBENCH_WSL_DISTRO` | `beom-sandbox` | WSL distribution used on Windows |
-| `BEOM_WORKBENCH_SANDBOX_DIR` | `%LOCALAPPDATA%eom-workbench-sandbox` | Windows: where the built-in isolation records which folders it granted |
+| `BEOM_WORKBENCH_SANDBOX_DIR` | `%LOCALAPPDATA%\beom-workbench-sandbox` | Windows: where the built-in isolation records which folders it granted |
+| `BEOM_WORKBENCH_NO_UPDATE_CHECK` | — | set to `1` to stop the app checking the public release list for a new version |
 | `BEOM_WORKBENCH_LEASE_SECONDS` | `3600` | analysis unit lease time |
 | `BEOM_WORKBENCH_UNIT_MAX_LINES` / `_UNIT_MAX_CHARS` | `1500` / `45000` | analysis unit size limits |
 | `BEOM_WORKBENCH_CONTEXT_MAX_CHARS` | `24000` | page size of `context` |

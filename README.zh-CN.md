@@ -7,9 +7,9 @@
 **编码代理的工作台 — 先规划，再按需求或参考仓库实现，并按你批准的验收标准验证**
 
 
-> 应用界面支持韩语、英语、日语和简体中文。首次启动时跟随系统语言 (其他语言则为韩语)，可在侧边栏的语言按钮中更改。代理会用与需求相同的语言工作和汇报。
+> 应用界面支持韩语、英语、日语和简体中文。首次启动时跟随系统语言 (其他语言则为韩语)，可在侧边栏的语言按钮中更改。代理使用的语言遵循代理自身的规则 — 需求语言明确时告诉它使用该语言；无法判断时 (只有附件或链接)，或你在代理设置中指定了回复语言时 (Claude Code `language`)，以该设置为准。命令行帮助 (`--help`) 和安装脚本的提示也跟随同一语言。
 
-![version](https://img.shields.io/badge/version-0.2.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.3.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 与其“粗略读一遍别人写的功能再照着做”，不如对整个代码库进行分析并为每条结论附上证据（文件:行号），
 再通过程序确认移植后的结果与原项目行为一致。本工具包同时提供技能、MCP 工具和 CLI，让 Claude Code 等 AI 代理能够按流程使用；
@@ -163,7 +163,7 @@ beom-workbench app --shortcut          # 创建开始菜单(搜索) + 桌面快�
 
 **附件** — 任何模式都可附加策划书、文档、链接: md · txt · pdf · 图片，以及 Word · PowerPoint · Excel · 韩文 (HWPX)
 (同时提供转换后的文本)。公开网页会保存内容，需要登录的页面 (如 Confluence) 只传链接 — 这时导出为文件再附加最可靠。
-代理会先读附件。
+代理会先读附件。也可以把文件拖放到窗口上，或粘贴截图 (Ctrl+V)；发给进行中或已完成任务的消息也可以带附件 — 例如要修改之处的截图。
 
 参考模式只需要仓库 URL (或路径)。要搬的功能可以用文字写在输入框里，留空则由代理列出仓库功能让你挑选。
 
@@ -436,6 +436,8 @@ beom-workbench data --set-cleanup 30       # 启动时自动清理 (0 = 关闭)
 | `BEOM_WORKBENCH_HOME` | `~/.beom-workbench` | 台账·clone·引擎·备份的位置 |
 | `BEOM_WORKBENCH_CONTAINER` | `auto` | 隔离运行引擎 `auto`·`docker`·`wsl`·`none` |
 | `BEOM_WORKBENCH_WSL_DISTRO` | `beom-sandbox` | 在 Windows 上使用的 WSL 发行版 |
+| `BEOM_WORKBENCH_SANDBOX_DIR` | `%LOCALAPPDATA%\beom-workbench-sandbox` | Windows：内置隔离运行记录已授权文件夹的位置 |
+| `BEOM_WORKBENCH_NO_UPDATE_CHECK` | — | 设为 `1` 时应用不再检查新版本 (公开发布列表) |
 | `BEOM_WORKBENCH_LEASE_SECONDS` | `3600` | 分析单元的租用时长 |
 | `BEOM_WORKBENCH_UNIT_MAX_LINES` / `_UNIT_MAX_CHARS` | `1500` / `45000` | 分析单元的大小上限 |
 | `BEOM_WORKBENCH_CONTEXT_MAX_CHARS` | `24000` | `context` 单页大小 |
