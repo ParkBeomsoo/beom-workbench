@@ -184,6 +184,8 @@ class Page(QWebEnginePage):
     def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
         if url.scheme() == "file":
             # 앱 화면 파일만 — 창에 끌어다 놓은 파일로 화면이 바뀌지 않게, 그 파일은 첨부로 넘긴다
+            if url.host():  # file://서버/공유 — 파일 시스템을 건드리기 전에 거절 (네트워크 접속이 일어나지 않게)
+                return False
             try:
                 inside = Path(url.toLocalFile()).resolve().is_relative_to(web_root().resolve())
             except (OSError, ValueError):

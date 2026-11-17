@@ -736,6 +736,7 @@ function renderRun() {
           onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMsg(); } },
           onkeyup: () => updateSendMode() }),
         h("div", { class: "bar", id: "cbar" }))));
+    drawMsgAtts();  // 불러오는 동안 끌어다 놓은 첨부
   }
   $("#head").replaceChildren(...[
     h("span", { class: "crumb", text: D.mode_text + " /" }), h("h1", { text: run.name || "프로젝트" }),
@@ -846,7 +847,8 @@ function drawMsgAtts() {
 }
 function addAtts(files) {
   if (!files.length) return;
-  if (S.current && S.detail) { S.msgAtts = [...new Set([...(S.msgAtts || []), ...files])]; drawMsgAtts(); updateSendMode(); return; }
+  // 실행 화면이면(불러오는 중이어도) 보낼 메시지에 — 새 작업 화면으로 바뀌지 않게
+  if (S.current) { S.msgAtts = [...new Set([...(S.msgAtts || []), ...files])]; drawMsgAtts(); if (S.detail) updateSendMode(); return; }
   const d = S.draft; d.attachments = [...new Set([...(d.attachments || []), ...files])]; renderHome();
 }
 // 끌어다 놓은 파일 — 파일 선택과 같은 규칙으로 걸러서 지금 보이는 입력창에
@@ -857,8 +859,11 @@ async function addFiles(paths) {
 }
 // 붙여 넣은 그림(클립보드 스크린샷) — 파일로 저장해 첨부로
 document.addEventListener("paste", (e) => {
-  const items = [...((e.clipboardData && e.clipboardData.items) || [])].filter((it) => it.kind === "file" && /^image\/(png|jpe?g|gif|webp)$/.test(it.type));
-  if (!items.length || (!S.current && !$("#homeText"))) return;
+  // 요청·메시지 입력창에서만, 글이 함께 없을 때만 — 엑셀·워드에서 복사하면 글과 그림이 함께 오는데 그때는 글을 붙인다
+  if (!e.target || !["homeText", "msg"].includes(e.target.id)) return;
+  const cd = e.clipboardData; if (!cd || (cd.getData("text/plain") || "").trim()) return;
+  const items = [...(cd.items || [])].filter((it) => it.kind === "file" && /^image\/(png|jpe?g|gif|webp)$/.test(it.type));
+  if (!items.length) return;
   e.preventDefault();
   for (const it of items) {
     const blob = it.getAsFile(); if (!blob) continue;
@@ -868,8 +873,11 @@ document.addEventListener("paste", (e) => {
   }
 });
 async function sendMsg() {
-  const t = $("#msg"); const text = t.value.trim(), atts = S.msgAtts || []; if (!text && !atts.length) return;
-  const r = await call("sendMessage", S.current, text, JSON.stringify(atts));
+  const t = $("#msg"); const text = t.value.trim(), atts = S.msgAtts || [], id = S.current; if ((!text && !atts.length) || S.sending) return;
+  S.sending = true;  // 두 번 눌러 두 번 보내지 않게
+  let r;
+  try { r = await call("sendMessage", id, text, JSON.stringify(atts)); } finally { S.sending = false; }
+  if (id !== S.current) return;  // 보내는 사이 다른 실행으로 옮겼다 — 그 실행의 입력·첨부는 건드리지 않는다
   if (r.ok) { S.msgAtts = []; drawMsgAtts(); if ((r.data.notes || []).length) toast(r.data.notes.join(" / "), 8000); }
   if (r.ok && !S.detail.running && !S.edit) {  // 멈췄거나 끝난 실행에 보내면 대화처럼 바로 이어서 진행
     t.value = ""; t.style.height = "auto";

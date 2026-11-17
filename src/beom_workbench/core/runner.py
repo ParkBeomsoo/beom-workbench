@@ -408,6 +408,21 @@ def agent_language_setting(agent: str | None) -> str | None:
     return (str(lang).strip() or None) if lang else None
 
 
+ATTACH_HEADS = ("첨부한 기획서대로 만든다.", "첨부한 파일을 보고 반영한다.")
+
+
+def user_request(run: dict) -> str:
+    """사용자가 직접 적은 요청 — 앱이 붙인 첨부·링크 안내(한국어)는 뺀다 (언어 판단·다시 하기에 쓴다)."""
+    o = run.get("origin")
+    if isinstance(o, dict) and "request" in o:
+        return o.get("request") or ""
+    text = run.get("request") or ""
+    for mark in ("\n\n[첨부 문서 — ", "\n\n[링크 — ", "\n\n[이 메시지의 첨부 — "):
+        text = text.split(mark, 1)[0]
+    text = text.strip()
+    return "" if text in ATTACH_HEADS else text
+
+
 def lang_line(run: dict, text: str | None, what: str) -> str | None:
     """에이전트에게 줄 언어 지시 한 줄. 기본은 에이전트 자체 규칙(사용자 설정)을 따른다 —
     우리 지시문이 한국어라, 요청 언어가 분명할 때만 그 언어로 쓰라고 적는다 (영어 요청이 한국어로 끌려가지 않게).
@@ -424,7 +439,7 @@ MODE_REF = ("레퍼런스 기반 — 원본 저장소의 기능·동작을 참�
 
 
 def _brief(run: dict, st: dict | None) -> str:
-    lines = [x for x in [lang_line(run, run.get('request') or run.get('feature'), "중간 메시지·보고·질문 모두"),
+    lines = [x for x in [lang_line(run, user_request(run) or run.get('feature'), "중간 메시지·보고·질문 모두"),
              f"[모드] {'요청사항 기반 만들기' if run['mode'] == 'request' else MODE_REF}",
              f"[대상 폴더] {run['target_root']}"] if x]
     if run.get("request"):
@@ -1285,7 +1300,7 @@ class Runner:
                 if msgs:
                     prompt += "\n\n" + "\n".join(m["text"] for m in msgs)
                 if run["mode"] == "plan":
-                    head = lang_line(run, run.get("request"), "문서·질문·중간 메시지 모두")
+                    head = lang_line(run, user_request(run), "문서·질문·중간 메시지 모두")
                     prompt = (head + "\n" if head else "") + f"[기획할 것]\n{prompt}\n\n[대상 폴더] {run['target_root']}"
                     if run.get("existing"):
                         prompt += "\n" + _existing_line(run["existing"])

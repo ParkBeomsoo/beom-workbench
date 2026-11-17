@@ -350,18 +350,22 @@ class Api(QObject):
         새 폴더에 만든다 — 앞의 실행이 만든 파일 위에서 시작하지 않게.
         """
         run = inbox.load_run(self.settings, run_id)
-        if not run:
-            raise ToolError("not_found", "실행을 찾을 수 없습니다")
         o = run.get("origin")
-        if o is None:  # 이 기능 전에 만든 실행 — 저장된 요청에서 첨부 안내를 떼고, 대상 폴더에 남은 첨부를 다시 쓴다
+        if o is None:  # 이 기능 전에 만든 실행 — 저장된 요청에서 첨부 안내를 떼고, 대상 폴더에 남은 첨부·링크를 다시 쓴다
             text = run.get("request") or ""
-            head, _, tail = text.partition("\n\n[첨부 문서 — ")
+            brief = Path(run["target_root"]) / ".beom" / "brief"
             atts = []
-            for line in tail.splitlines():
-                m = re.match(r"- (\.beom/brief/.+?)(?: \((?:원본|출처|로그인해) .*\))?$", line.strip())
+            for line in text.splitlines():
+                line = line.strip()
+                m = re.match(r"- (\.beom/brief/.+?)(?: \((원본|출처|로그인해) ?(.*)\))?$", line)
                 if m:
-                    atts.append(str(Path(run["target_root"]) / m.group(1)))
-            o = {"request": "" if head.strip() == "첨부한 기획서대로 만든다." else head.strip(), "attachments": atts, "context_dir": ""}
+                    f = Path(run["target_root"]) / m.group(1)
+                    if m.group(2) == "원본" and (brief / m.group(3)).is_file():  # spec.docx.md (원본 spec.docx) → 원본 파일
+                        f = brief / m.group(3)
+                    atts.append(str(f))
+                elif re.match(r"- https?://\S+$", line):
+                    atts.append(line[2:])
+            o = {"request": runner.user_request(run), "attachments": list(dict.fromkeys(atts)), "context_dir": ""}
         atts = [a for a in o.get("attachments") or [] if re.match(r"https?://", str(a)) or Path(a).is_file()]
         missing = len(o.get("attachments") or []) - len(atts)
         keep_folder = bool(run.get("work_branch"))
@@ -1066,6 +1070,12 @@ class Api(QObject):
             raise ToolError("invalid_request", "첨부 파일이 너무 큽니다 (20MB 까지): 붙여 넣은 그림")
         folder = self.settings.home / "pasted"
         folder.mkdir(parents=True, exist_ok=True)
+        for old in folder.glob("pasted-*"):  # 첨부할 때 대상 폴더로 복사되므로 오래된 원본은 지운다 (30일)
+            try:
+                if time.time() - old.stat().st_mtime > 30 * 86400:
+                    old.unlink()
+            except OSError:
+                pass
         stamp = time.strftime("%Y%m%d-%H%M%S")
         f, n = folder / f"pasted-{stamp}.{ext}", 2
         while f.exists():

@@ -68,7 +68,7 @@ t engines
 if [ "$(uname -s)" = "Linux" ]; then
   CHOICE="${BEOM_SHORTCUT:-}"
   if [ -z "$CHOICE" ] && [ -t 0 ]; then
-    printf "%s" "$(t ask)"
+    printf "%s " "$(t ask)"
     read -r ANS
     case "$ANS" in s*|S*) CHOICE=start ;; n*|N*) CHOICE=none ;; *) CHOICE=start,desktop ;; esac
   fi
