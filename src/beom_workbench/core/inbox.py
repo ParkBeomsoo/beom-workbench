@@ -39,20 +39,23 @@ KINDS = {
     "delete": "대상 폴더 밖 삭제",
     "system": "시스템·설정 변경 (툴킷 원장·질문함 포함)",
     "other": "그 밖의 도구",
+    "unsandboxed": "격리 없이 실행 (Node 빌드 도구는 Windows 격리 안에서 돌지 않음)",
 }
 DEFAULT_POLICY = {"edit": "allow", "build": "allow", "commands": "ask", "web": "ask", "outside": "ask",
-                  "publish": "refuse", "branch": "refuse", "delete": "refuse", "system": "refuse", "other": "ask"}
+                  "publish": "refuse", "branch": "refuse", "delete": "refuse", "system": "refuse", "other": "ask",
+                  "unsandboxed": "ask"}
 STRICTNESS = {"allow": 0, "ask": 1, "refuse": 2}
 # 권한 모드 — 대부분은 셋 중 하나로 충분하다. 세부(종류별) 규칙은 "직접 설정"으로.
 _NEVER = {"publish": "refuse", "branch": "refuse", "delete": "refuse", "system": "refuse"}
 PERMISSION_MODES = {
     "ask": {"label": "모두 물어보기", "desc": "파일 수정·명령 실행마다 확인합니다",
-            "policy": {"edit": "ask", "build": "ask", "commands": "ask", "web": "ask", "outside": "ask", "other": "ask", **_NEVER}},
+            "policy": {"edit": "ask", "build": "ask", "commands": "ask", "web": "ask", "outside": "ask", "other": "ask",
+                       "unsandboxed": "ask", **_NEVER}},
     "edits": {"label": "편집 자동 허용", "desc": "대상 폴더 안 수정과 빌드·테스트는 바로, 그 밖의 명령·웹은 확인합니다",
               "policy": dict(DEFAULT_POLICY)},
     "auto": {"label": "자동", "desc": "명령·웹 조사까지 묻지 않고 진행합니다 (폴더 밖 파일·배포·시스템 변경만 확인). 믿을 수 있는 작업에만",
              "policy": {"edit": "allow", "build": "allow", "commands": "allow", "web": "allow", "outside": "ask", "other": "ask",
-                        **_NEVER}},
+                        "unsandboxed": "allow", **_NEVER}},
 }
 
 
@@ -67,7 +70,9 @@ def mode_of(policy: dict) -> str:
 # 정확히 이 줄만 '빌드'로 바로 허용 — 덧붙인 인자는 실행기를 바꿀 수 있다 (go test -exec, yarn dlx, pytest -p 등).
 # 그 밖의 줄은 '그 밖의 명령'으로 규칙에 따라 묻는다.
 BUILD_COMMANDS = re.compile(
-    r"^(npm (ci|install|test|run (build|test|lint))|pnpm (install|test|build)|yarn (install|test|build)|"
+    # npm·pnpm·yarn: 출력만 줄이거나 보고·설치 스크립트를 끄는 옵션은 같은 명령이다 (실행하는 것을 바꾸지 않는다)
+    r"^((?:npm (ci|install|test|run (build|test|lint))|pnpm (install|test|build)|yarn (install|test|build))"
+    r"(?: --(?:no-audit|no-fund|silent|prefer-offline|no-progress|ignore-scripts|loglevel=(?:error|warn|silent)))*|"
     r"cargo (build|test|check|fmt|clippy)|go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
     r"\./gradlew (test|build)|pip install -e \.|dotnet (build|test)|"
     # pytest 는 실행기를 바꾸지 않는 인자만 (출력·멈춤·고르기·테스트 파일) — -p(플러그인)·-c·--rootdir 같은 것은 묻는다
@@ -383,6 +388,41 @@ INSPECT_COMMANDS = re.compile(
 # 에이전트가 PowerShell 로 한 번 더 감싸 보내는 명령 — 안쪽 명령으로 판단한다 (안에 다른 따옴표가 없을 때만)
 SHELL_WRAP = re.compile(r'^(?:powershell|pwsh)(?:\.exe)?(?:\s+-(?:NoProfile|NonInteractive|NoLogo|ExecutionPolicy\s+Bypass))*'
                         r'\s+-(?:Command|c)\s+"([^"`]*)"\s*$', re.I)
+
+
+# 끝나지 않는 개발 서버·감시 명령 — 앞에서(포그라운드) 돌리면 명령이 돌아오지 않아 라운드가 멈춘다
+DEV_SERVER = re.compile(
+    r"(?:^|[;&|]\s*)(?:"
+    r"(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+(?:dev|start|serve|preview|watch)\b"
+    r"|npx\s+(?:vite(?!\s+build)|next\s+dev|serve|http-server|live-server|nodemon|webpack\s+serve)\b"
+    r"|vite(?:\.cmd)?(?:\s+(?:dev|serve|preview))?\s*(?:$|[;&|]|--)"
+    r"|next\s+dev\b|ng\s+serve\b|webpack(?:-dev-server|\s+serve)\b|nodemon\b|live-server\b|http-server\b"
+    r"|(?:python3?|py)\s+-m\s+http\.server\b|uvicorn\s|flask\s+run\b|php\s+-S\b|rails\s+s(?:erver)?\b"
+    r"|(?:python3?|py)\s+manage\.py\s+runserver\b|dotnet\s+(?:watch|run)\b(?!.*--no-launch)"
+    r")", re.I)
+SERVER_HINT = ("개발 서버처럼 끝나지 않는 명령은 앞에서 돌리면 돌아오지 않아 라운드가 멈춥니다. "
+               "띄워 둘 거면 백그라운드로(run_in_background) 실행하고, 화면·동작 확인은 검증 도구(target_cmd·target_url·화면 케이스)로 하세요 — "
+               "검증 도구는 서버를 띄우고 확인한 뒤 끝냅니다.")
+
+
+# Windows 격리(쓰기 제한 토큰)에서는 Node 가 파이프로 자식 프로세스를 띄우지 못한다 (spawn EPERM) — 이름 있는 파이프의
+# 기본 권한이 쓰기를 Everyone 에게 주지 않아서다. npm 설치 스크립트·vite·esbuild·node --test 같은 Node 도구가 모두 여기에 걸린다.
+NODE_TOOLS = re.compile(r"(?:^|[;&|(]\s*)(?:npm|npx|pnpm|yarn|bun|node|vite|next|nuxt|astro|webpack|esbuild|rollup|vitest|jest|"
+                        r"playwright|ng|turbo|tsx|ts-node)(?:\.cmd|\.exe)?(?=$|[\s;&|)])", re.I)
+
+
+def needs_unsandboxed(cmd: str) -> bool:
+    """Windows 격리 안에서는 돌지 않는 Node 도구를 쓰는 명령인가."""
+    return bool(NODE_TOOLS.search(cmd or ""))
+
+
+def foreground_server(tool_input: dict) -> bool:
+    """개발 서버를 백그라운드가 아니라 앞에서 돌리려 하는가 (빌드·테스트 명령의 'build'·'test' 는 해당 없음)."""
+    if tool_input.get("run_in_background"):
+        return False
+    cmd = str(tool_input.get("command") or "")
+    return bool(cmd) and bool(DEV_SERVER.search(cmd)) and not re.search(r"(?:^|\s)(?:--help|-h|--version)\b", cmd) \
+        and not re.search(r"\bStart-Process\b|\bstart\s+/b\b|&\s*$|\bnohup\b", cmd, re.I)  # 따로 띄우는 것은 돌아온다
 
 
 def _unwrap_shell(cmd: str) -> str:

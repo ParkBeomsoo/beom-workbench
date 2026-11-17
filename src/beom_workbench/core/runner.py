@@ -671,6 +671,7 @@ PLAN_FOLLOW_UP = ("\n\n[이번 라운드] 인계까지 끝난 기획에 사용�
 
 LOCK_FILE = "runner.lock"
 WATCHDOG_SEC = 15
+RESULT_GRACE_SEC = 10  # 결과를 보낸 에이전트가 스스로 끝나기를 기다리는 시간
 LOCK_BEAT_SEC = 10
 LOCK_STALE_SEC = 45
 # 아래 기본값은 사용자가 라운드 규칙(core/rounds.py, 앱의 실행 옵션)으로 바꿀 수 있다 — 러너는 rounds.get() 을 읽는다
@@ -892,6 +893,20 @@ class Runner:
                       "끝낼 때 작업 브랜치 이름과 합치기 전에 볼 점만 알린다.")
         return rules
 
+    def _close_after_result(self, proc: subprocess.Popen) -> None:
+        """에이전트가 이번 차례를 끝냈다(결과를 보냈다) — 그런데도 프로세스가 남아 있으면 라운드를 닫는다.
+        백그라운드로 띄운 미리보기·개발 서버가 남아 있으면 에이전트가 그것이 끝날 때까지(수 분) 살아 있어서, 할 일을 다 하고
+        승인만 남았는데도 '진행 중'으로 보였다. 남은 일이 있으면 다음 라운드가 이어 간다."""
+        deadline = time.monotonic() + RESULT_GRACE_SEC
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return
+            time.sleep(0.5)
+        if proc.poll() is None and not self._stop.is_set():
+            inbox.log(self.settings, self.run_id, "note", tone="",
+                      text="에이전트가 일을 마쳤지만 백그라운드 작업이 남아 있어 라운드를 닫았습니다 (남은 서버도 함께 껐습니다)")
+            kill_tree(proc)
+
     def _keep_branch(self, run: dict) -> None:
         """작업 브랜치를 벗어났으면 되돌린다 (규칙을 거치지 않는 에이전트·스크립트가 바꿨을 때). 못 되돌리면 실행을 멈춘다."""
         wb = run.get("work_branch")
@@ -1060,6 +1075,8 @@ class Runner:
                         self._auto_approve()
                 elif kind == "result":
                     result = {"is_error": not e.get("ok", True), **e}
+                    if e.get("ok", True):
+                        threading.Thread(target=self._close_after_result, args=(proc,), daemon=True).start()
                     inbox.log(self.settings, self.run_id, "agent_result", subtype=e.get("subtype"), is_error=not e.get("ok", True),
                               cost_usd=e.get("cost_usd"), turns=e.get("turns"), usage=e.get("usage"), result=e.get("text"))
                     u = e.get("usage")

@@ -243,7 +243,7 @@ Any other model name can be typed in. Model and effort can be changed during a r
 | Allow edits (default) | edits inside the target folder, build/test commands and read-only commands run directly; other commands (running the project's own scripts, `python -c`, network, paths outside the folder …) and the web are confirmed |
 | Auto | commands and web research run without asking; only files outside the folder are confirmed — use for trusted work. CLI: `beom-workbench run --permission auto` |
 
-Push, publish, deleting outside the folder and system changes are always refused. Commands the agent passes to verification tools
+Push, publish, deleting outside the folder and system changes are always refused. A dev server started in the foreground (`npm run dev`, `python -m http.server` …) is sent back with a hint — it never returns and would stall the round; it can run in the background, and verification starts and stops servers itself. On Windows the built-in isolation cannot run Node build tools (npm, vite, esbuild … cannot start child processes there), so such commands ask to *run outside isolation* — auto mode allows it, and *Always for this project* stops asking. Commands the agent passes to verification tools
 (including commands inside case files) go through the same rules. Auth: *my login* (subscription) or *API key* (reads the key from an
 environment variable, billed per use) — both can do the same things.
 

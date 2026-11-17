@@ -749,12 +749,8 @@ function renderRun() {
   $("#meter").replaceChildren(h("div", { class: "stepper" }, ...D.stages.map((s, i) => h("div", { class: "st " + (i < D.stage ? "done" : i === D.stage ? "now" : "") },
     h("i", {}, i < D.stage ? ico("check") : String(i + 1)), h("span", { text: s })))));
   const act = $("#activity"); act.replaceChildren();
-  if (D.running && D.tone === "turn") {
-    // 실행기는 살아 있지만 사용자를 기다린다 — '진행 중'·작업 시간이 아니라 무엇을 기다리는지 (내 차례와 진행 중이 함께 보이지 않게)
-    S.startedAt = null;
-    act.append(h("div", { class: "activity waiting" }, ico("chat", "wi"),
-      (D.activity && D.activity.text) || "내 차례 — 아래 카드를 확인해 주세요"));
-  } else if (D.running) {
+  // 내 차례면 할 일을 다 하고 사용자를 기다리는 것 — 도는 것이 없으니 '진행 중'·작업 시간·멈추기를 보이지 않는다 (카드가 할 일을 말한다)
+  if (isBusy()) {
     if (!S.startedAt) S.startedAt = Date.now();
     const sec = Math.floor((Date.now() - S.startedAt) / 1000);
     // 에이전트가 긴 글·파일을 쓰는 중이면 얼마나 썼는지 (조각 출력을 주는 에이전트만)
@@ -765,7 +761,7 @@ function renderRun() {
       writing ? h("span", { class: "wr", text: writing }) : null,
       h("span", { class: "el", text: `${agentName(run.agent)} · ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}` })));
   } else S.startedAt = null;
-  const cbarSig = JSON.stringify([run.agent, run.model, run.effort, run.round, run.max_rounds, run.cost_usd, run.tokens, D.policy, D.running, run.status, run.accepted]);
+  const cbarSig = JSON.stringify([run.agent, run.model, run.effort, run.round, run.max_rounds, run.cost_usd, run.tokens, D.policy, D.running, D.tone, run.status, run.accepted]);
   if (cbarSig !== S.sig.cbar) {  // 메뉴가 열린 채로 1.5초마다 다시 그려지지 않게
     S.sig.cbar = cbarSig;
     const opt = (patch) => call("setRunOptions", run.id, JSON.stringify(patch)).then((r) => r.ok && (toast("바꿨습니다 — 다음 라운드부터 적용"), refresh()));
@@ -784,10 +780,10 @@ function renderRun() {
         pill("agent", "모델 · 노력 (다음 라운드부터)", brainLabel(run.agent, run.model, run.effort), (b) => brainPop(b, () => cur,
           (patch) => { Object.assign(cur, patch); opt(patch); }, false), "brain"),
         // Claude 데스크톱처럼: 진행 중이고 입력이 비었으면 멈춤, 아니면 보내기
-        h("button", { class: "send" + (D.running ? " stopmode" : ""), title: D.running ? "멈추기 (Esc) — 입력하면 보내기로 바뀝니다" : (run.round ? "보내기 — 보내면 바로 이어서 진행" : "시작"),
-          disabled: !D.running && !run.round ? false : false,
-          onclick: () => { if (hasMsg()) sendMsg(); else if (D.running) call("stop", run.id).then(refresh); else startRun(); } },
-          ico(D.running ? "stop" : "up"))));
+        h("button", { class: "send" + (isBusy() ? " stopmode" : ""),
+          title: isBusy() ? "멈추기 (Esc) — 입력하면 보내기로 바뀝니다" : D.running ? "고칠 점을 보내기 — 반영해 다시 확인을 요청합니다" : (run.round ? "보내기 — 보내면 바로 이어서 진행" : "시작"),
+          onclick: () => { if (hasMsg()) sendMsg(); else if (isBusy()) call("stop", run.id).then(refresh); else if (!D.running) startRun(); } },
+          ico(isBusy() ? "stop" : "up"))));
     updateSendMode();
   }
   drawProcs();
@@ -800,7 +796,8 @@ function drawProcs() {
   const list = (S.procs && S.procs.run === S.current ? S.procs.rows : []) || [];
   const extra = list.filter((p) => p.kind !== "agent");
   box.replaceChildren();
-  if (!list.length) return;
+  // 내 차례면 에이전트는 멈춰 기다린다 — '에이전트 실행 중'을 띄우지 않는다 (남은 개발 서버 같은 백그라운드는 그대로 보인다)
+  if (!extra.length && (!list.length || !isBusy())) return;
   const agent = list.find((p) => p.kind === "agent");
   box.append(h("button", { class: "procchip" + (extra.length ? " has" : ""), title: "이 작업이 띄운 프로세스 — 눌러서 보고 끄기",
     onclick: (e) => { e.stopPropagation(); procPop(e.currentTarget); } },
@@ -825,11 +822,12 @@ function procPop(anchor) {
 }
 function updateSendMode() {
   const b = document.querySelector(".composer .send"); if (!b || !S.detail) return;
-  const typed = hasMsg(), running = S.detail.running;
-  b.classList.toggle("stopmode", running && !typed);
-  b.replaceChildren(ico(running && !typed ? "stop" : "up"));
+  const typed = hasMsg(), busy = isBusy();
+  b.classList.toggle("stopmode", busy && !typed);
+  b.replaceChildren(ico(busy && !typed ? "stop" : "up"));
   const r = S.detail.run;
-  b.disabled = !typed && !running && (r.status === "done" && r.accepted);
+  // 내 차례(승인·답 대기)에 빈 입력은 보낼 것도 멈출 것도 없다 — 카드로 답한다
+  b.disabled = !typed && ((S.detail.running && !busy) || (!S.detail.running && r.status === "done" && r.accepted));
 }
 // 쓰던 에이전트가 연결돼 있지 않으면 연결된 것으로 (Claude 고정이 아니라)
 function pickReadyAgent() {
@@ -1825,6 +1823,8 @@ async function approveShown(what) {
     + (changed.length ? ` · 결정 ${changed.length}개를 바꿔 전달했습니다` : ""));
   refresh();
 }
+// 에이전트가 실제로 일하는 중인가 — 실행기가 살아 있어도 사용자를 기다리면(내 차례) 일하는 중이 아니다
+function isBusy() { const D = S.detail; return !!D && !!D.running && D.tone !== "turn"; }
 function gateOpen() { const D = S.detail; return !!D && (!D.running || ["waiting_approval", "waiting_plan"].includes(D.run.status) || !!S.edit); }
 function bothPending() { const D = S.detail; return !!(D && D.reviews && D.reviews.count && D.plan && D.plan.steps && D.plan.steps.length && !D.plan.approved); }
 async function refresh() {

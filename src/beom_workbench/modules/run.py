@@ -40,25 +40,47 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
     if run is None:
         return json.dumps({"behavior": "deny", "message": "자동 실행 밖에서는 쓸 수 없음"}, ensure_ascii=False)
     root = Path(run["target_root"])
+    if tool_name in ("Bash", "PowerShell") and inbox.foreground_server(input or {}):
+        # 끝나지 않는 개발 서버를 앞에서 돌리면 라운드가 무응답 한도(기본 30분)까지 멈춘다 — 규칙(자동 포함)과 상관없이 돌려보낸다
+        inbox.log(settings, run["id"], "permission", tool=tool_name, permission_kind="commands", decision="refuse",
+                  what=mask_command(str((input or {}).get("command"))[:160]), why="foreground_server")
+        return json.dumps({"behavior": "deny", "message": inbox.SERVER_HINT}, ensure_ascii=False)
     kind = inbox.classify(tool_name, input or {}, root, [settings.home])
     decision = inbox.decide(run, kind)
     if decision == "ask" and tool_name == "Bash" and inbox.planned_command(run, (input or {}).get("command", "")):
         decision = "allow"  # 사람이 승인한 계획에 그대로 있던 명령 — 다시 묻지 않는다
+    from beom_workbench.core import sandbox
+    wrap = tool_name == "PowerShell" and run.get("agent", "claude") == "claude" and sandbox.wraps_powershell(run) \
+        and bool((input or {}).get("command"))
+    # Node 도구는 Windows 격리 안에서 돌지 않는다 — 격리 없이 돌릴지는 별도 종류(unsandboxed)의 규칙으로 정한다
+    node = wrap and inbox.needs_unsandboxed(str((input or {}).get("command")))
     # 기록에 남는 글은 비밀을 가린다 (카드에는 사람이 판단할 수 있게 원래 입력을 그대로 보여 준다)
     summary = mask_command(f"{inbox.KINDS.get(kind, kind)}: {tool_name} {_readable(input, root)[:300]}")
     what = mask_command(str((input or {}).get("command") or (input or {}).get("file_path") or (input or {}).get("url") or "")[:160])
     inbox.log(settings, run["id"], "permission", tool=tool_name, permission_kind=kind, decision=decision, what=what)
+    outside_ok = node and inbox.decide(run, "unsandboxed") == "allow"
     if decision == "ask":
-        ans = inbox.ask(settings, run["id"], "permission", {"summary": summary, "tool": tool_name, "input": input,
+        note = " — 격리 없이 실행됩니다 (Node 빌드 도구는 격리 안에서 돌지 않음)" if node and not outside_ok else ""
+        ans = inbox.ask(settings, run["id"], "permission", {"summary": summary + note, "tool": tool_name, "input": input,
                                                             "permission_kind": kind})
         if ans.get("always") and ans.get("allow"):
             inbox.update_run(settings, run["id"], lambda r: r["policy"].__setitem__(kind, "allow"))
         decision = "allow" if ans.get("allow") else "refuse"
+        outside_ok = outside_ok or (node and decision == "allow")  # 사람이 격리 없이 실행된다는 것을 보고 허용했다
+    elif decision == "allow" and node and not outside_ok and inbox.decide(run, "unsandboxed") == "ask":
+        # 빌드처럼 바로 허용되는 명령이라도 격리 밖으로 나가는 것은 사람이 정한다 (한 번만 묻게 '이 프로젝트에서 항상'을 고를 수 있다)
+        ans = inbox.ask(settings, run["id"], "permission", {
+            "summary": mask_command(f"{inbox.KINDS['unsandboxed']}: {tool_name} {_readable(input, root)[:300]}"),
+            "tool": tool_name, "input": input, "permission_kind": "unsandboxed"})
+        if ans.get("always") and ans.get("allow"):
+            inbox.update_run(settings, run["id"], lambda r: r["policy"].__setitem__("unsandboxed", "allow"))
+        outside_ok = bool(ans.get("allow"))  # 거절하면 격리 안에서 그대로 돌린다 (Node 도구는 실패할 수 있다)
     if decision == "allow":
-        from beom_workbench.core import sandbox
-        if tool_name == "PowerShell" and run.get("agent", "claude") == "claude" and sandbox.wraps_powershell(run) and (input or {}).get("command"):
+        if wrap and not outside_ok:
             # 격리 실행 — 허용한 명령을 Windows 샌드박스 안에서 (대상 폴더·임시·도구 캐시 밖에는 못 쓴다)
             input = {**input, "command": sandbox.wrap_powershell(input["command"], run)}  # noqa: A001
+        elif wrap:
+            inbox.log(settings, run["id"], "permission", tool=tool_name, permission_kind="unsandboxed", decision="allow", what=what)
         return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
     return json.dumps({"behavior": "deny", "message": f"규칙상 허용되지 않음 ({inbox.KINDS.get(kind, kind)}). 다른 방법을 찾거나 "
                                                       "wb_person_ask 로 사용자에게 이유와 함께 물어본다."}, ensure_ascii=False)
