@@ -9,7 +9,7 @@
 
 > アプリの画面は韓国語・英語・日本語・中国語 (簡体字) に対応しています。初回はシステムの言語に合わせ (それ以外の言語なら韓国語)、サイドバーの言語ボタンで変更できます。エージェントが使う言語はエージェント自身のルールに従います — 依頼の言語が明確ならその言語を使うよう伝え、分からない場合 (添付・リンクのみ) やエージェントの設定で応答言語を決めている場合 (Claude Code `language`) はその設定に従います。コマンドラインのヘルプ (`--help`) とインストーラーの案内も同じ言語に従います。
 
-![version](https://img.shields.io/badge/version-0.3.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.3.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 他人が作った機能を「ざっと読んで真似して作る」のではなく、コード全体を根拠(ファイル:行)付きで分析し、
 移植した結果がオリジナルと同じ動作をするかをプログラムで確認します。Claude Code のような AI エージェントが手順どおりに使えるよう
@@ -182,7 +182,7 @@ beom-workbench app --shortcut          # スタートメニュー(検索) + デ�
 | モード | 動作 |
 |---|---|
 | すべて確認 | 編集・コマンドごとに確認 |
-| 編集を自動許可 (既定) | 対象フォルダ内の編集とビルド・テストはそのまま、その他のコマンドとウェブは確認 |
+| 編集を自動許可 (既定) | 対象フォルダ内の編集、ビルド・テスト、読み取りだけのコマンド、そのフォルダの自前スクリプトの実行はそのまま、その他のコマンド (`python -c`・ネットワーク・フォルダ外のパスなど) とウェブは確認 |
 | 自動 | コマンドも確認なしで実行、ウェブとフォルダ外のファイルのみ確認 — 信頼できる作業にのみ |
 
 push・公開・フォルダ外の削除・システム変更は常に拒否します。エージェントが検証ツールに渡すコマンド (ケースファイル内のコマンドを含む) も同じルールを通ります。

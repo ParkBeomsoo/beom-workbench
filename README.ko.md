@@ -7,7 +7,7 @@
 
 > 앱 화면은 한국어·영어·일본어·중국어(간체)를 지원합니다. 처음에는 시스템 언어를 따르고(그 밖의 언어면 한국어), 사이드바의 언어 단추로 바꿀 수 있습니다. 에이전트가 쓰는 언어는 에이전트 자체 규칙을 따릅니다 — 요청 언어가 분명하면 그 언어로 쓰라고 알려 주고, 알 수 없거나(첨부·링크뿐) 에이전트 설정에 응답 언어를 정해 두었으면(Claude Code `language`) 그 설정을 따릅니다. 명령줄 도움말(`--help`)과 설치 스크립트 안내도 같은 언어를 따릅니다.
 
-![version](https://img.shields.io/badge/version-0.3.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.3.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 에이전트가 "다 됐다"고 할 때까지 맡기는 대신, 요구사항과 합격 케이스를 먼저 정하고, 에이전트는 자기 브랜치에서만 일하게 하고,
 결과가 그 기준을 채우는지(옮겨 오는 경우 원본과 같은 동작인지) 프로그램으로 확인합니다. 분석 결론에는 모두 근거(파일:줄)가 붙습니다. Claude Code 같은 AI 에이전트가 절차를 따라 쓰도록
@@ -245,7 +245,7 @@ Claude Code·Codex CLI 를 그 폴더에서 그대로 쓰는 것과 같습니다
 | 모드 | 동작 |
 |---|---|
 | 모두 물어보기 | 수정·명령마다 확인 |
-| 편집 자동 허용 (기본) | 대상 폴더 안 수정과 빌드·테스트는 바로, 그 밖의 명령과 웹은 확인 |
+| 편집 자동 허용 (기본) | 대상 폴더 안 수정, 빌드·테스트, 읽기만 하는 명령, 그 폴더의 자기 스크립트 실행은 바로, 그 밖의 명령(`python -c`·네트워크·폴더 밖 경로 등)과 웹은 확인 |
 | 자동 | 명령·웹 조사도 묻지 않고 진행, 폴더 밖 파일만 확인 — 믿을 수 있는 작업에만. CLI 는 `beom-workbench run --permission auto` |
 
 에이전트 자신의 임시 폴더(`%TEMP%/claude`)는 대상 폴더처럼 다룹니다 — 메모·임시 스크립트마다 묻지 않게.

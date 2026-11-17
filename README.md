@@ -7,7 +7,7 @@
 
 > The app's interface is available in Korean, English, Japanese and Simplified Chinese. It follows your system language on first start (Korean when the system language is not one of these) and can be changed from the language button in the sidebar. Agents follow their own rules for the language they write in: when the language of your request is clear they are told to use it; when it is not (only an attachment or a link), or when you set a response language in the agent's own settings (Claude Code `language`), the agent's setting applies. Command-line help (`--help`) and the installers' messages follow the same language.
 
-![version](https://img.shields.io/badge/version-0.3.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.3.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 Instead of letting an agent build until it says "done", the workbench fixes the requirements and acceptance cases first, has the
 agent work on its own branch, and checks by program that the result meets them — or, when porting, that it behaves like the
@@ -240,7 +240,7 @@ Any other model name can be typed in. Model and effort can be changed during a r
 | Mode | Behaviour |
 |---|---|
 | Ask everything | every edit and command is confirmed |
-| Allow edits (default) | edits inside the target folder and build/test commands run directly; other commands and the web are confirmed |
+| Allow edits (default) | edits inside the target folder, build/test commands, read-only commands and running the project's own scripts there run directly; other commands (e.g. `python -c`, network, paths outside the folder) and the web are confirmed |
 | Auto | commands and web research run without asking; only files outside the folder are confirmed — use for trusted work. CLI: `beom-workbench run --permission auto` |
 
 Push, publish, deleting outside the folder and system changes are always refused. Commands the agent passes to verification tools

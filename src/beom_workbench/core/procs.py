@@ -14,7 +14,34 @@ from pathlib import Path
 RUNTIMES = {"node", "python", "pythonw", "py", "deno", "bun", "java", "javaw", "dotnet", "go", "cargo", "ruby", "php", "electron",
             "powershell", "pwsh", "cmd", "bash", "sh", "uvicorn", "gunicorn", "vite", "esbuild", "msedge", "chrome"}
 _SELF = ("beom-workbench-mcp", "beom_workbench.main", "beom_workbench\\main", "beom_workbench/main")
+# 콘솔 창 호스트 — 명령마다 따라 뜨는 Windows 부속이라 '백그라운드'로 세지 않는다
+_INFRA = {"conhost", "openconsole"}
 _MEMO: dict = {}
+
+
+def _agent_dirs() -> list[str]:
+    """에이전트 자신의 설치·실행 폴더 — 여기서 도는 것(플러그인·런타임·도구 서버)은 에이전트의 일부이지 작업이 띄운 것이 아니다."""
+    home = Path.home()
+    local = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+    dirs = [home / ".codex", home / ".claude", local / "OpenAI", local / "AnthropicClaude", local / "Programs" / "claude",
+            Path(os.environ.get("CODEX_HOME") or home / ".codex"), Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude")]
+    return list(dict.fromkeys(_norm(d) for d in dirs))
+
+
+def _agent_part(p) -> bool:
+    """에이전트 자신의 부속 프로세스인가 (콘솔 호스트, 에이전트 폴더의 실행 파일이나 그 폴더의 스크립트를 도는 것)."""
+    try:
+        name = p.name().lower().removesuffix(".exe")
+        if name in _INFRA:
+            return True
+        dirs = _agent_dirs()
+        exe = p.exe()
+        if exe and any(_inside(exe, d) for d in dirs):
+            return True
+        line = os.path.normcase(" ".join(p.cmdline()[1:3])).replace("/", os.sep)
+        return any(d in line for d in dirs)
+    except Exception:  # noqa: BLE001 — 끝났거나 볼 권한이 없음
+        return False
 
 
 def _psutil():
@@ -83,7 +110,7 @@ def list_for(run: dict) -> list[dict]:
                 if r:
                     out[ap.pid] = r
                 for k in ap.children(recursive=True):
-                    if k.pid not in mine and (r := _row(k, "child", root)):
+                    if k.pid not in mine and not _agent_part(k) and (r := _row(k, "child", root)):
                         out[k.pid] = r
         except Exception:  # noqa: BLE001 — 에이전트가 이미 끝남
             pass

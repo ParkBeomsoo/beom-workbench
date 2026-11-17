@@ -20,6 +20,17 @@ def _run() -> dict | None:
     return inbox.load_run(settings, rid) if rid else None
 
 
+def _readable(inp: dict | None, root: Path) -> str:
+    """권한 요청을 사람이 읽을 글로 — 명령·파일·주소·검색어 그대로 (JSON 으로 감싸면 경로의 \\ 가 두 겹으로 보인다).
+    대상 폴더 경로는 '.' 으로 줄인다."""
+    inp = inp or {}
+    body = next((inp[k] for k in ("command", "file_path", "path", "url", "query", "pattern") if inp.get(k)), None)
+    text = str(body) if body is not None else json.dumps(inp, ensure_ascii=False)
+    for form in {str(root), str(root).replace("\\", "/")}:
+        text = text.replace(form, ".")
+    return " ".join(text.split())
+
+
 # structured_output=False: Claude Code 는 권한 처리기의 결과로 '글자 블록 하나'만 받는다. 반환형이 str 이면 MCP SDK 2.x 가
 # {"result": …} 구조화 결과를 함께 보내는데, 그러면 "Permission prompt tool returned an invalid result" 로 도구 호출이 실패한다.
 @mcp.tool(structured_output=False)
@@ -34,7 +45,7 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
     if decision == "ask" and tool_name == "Bash" and inbox.planned_command(run, (input or {}).get("command", "")):
         decision = "allow"  # 사람이 승인한 계획에 그대로 있던 명령 — 다시 묻지 않는다
     # 기록에 남는 글은 비밀을 가린다 (카드에는 사람이 판단할 수 있게 원래 입력을 그대로 보여 준다)
-    summary = mask_command(f"{inbox.KINDS.get(kind, kind)}: {tool_name} {json.dumps(input, ensure_ascii=False)[:300]}")
+    summary = mask_command(f"{inbox.KINDS.get(kind, kind)}: {tool_name} {_readable(input, root)[:300]}")
     what = mask_command(str((input or {}).get("command") or (input or {}).get("file_path") or (input or {}).get("url") or "")[:160])
     inbox.log(settings, run["id"], "permission", tool=tool_name, permission_kind=kind, decision=decision, what=what)
     if decision == "ask":

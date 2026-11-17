@@ -25,7 +25,16 @@ TOOL_TEXT = {
     "wb_plan_progress": "계획 진행 표시", "wb_handoff": "인수인계 작성", "wb_port_slice": "옮길 범위 계산",
     "wb_port_create": "원장 만들기", "wb_features": "기능 목록 확인", "wb_person_ask": "질문",
     "wb_port_accept": "차이 허용 제안", "wb_port_finish": "완료 판정", "wb_inventory_build": "저장소 분석",
+    "wb_activity": "진행 상황 알림", "wb_brief_check": "기획 패키지 점검", "wb_brief_screens": "화면 그림 만들기",
+    "wb_screen_shot": "화면 찍기", "wb_license_scan": "라이선스 확인", "wb_capabilities": "쓸 수 있는 기능 확인",
+    "wb_repo_open": "저장소 열기", "wb_repo_status": "저장소 상태 확인", "wb_repo_list": "저장소 목록 확인",
+    "wb_graph_query": "구조 지도 찾기", "wb_impact_analyze": "영향 범위 확인", "wb_extension_points": "확장 지점 찾기",
+    "wb_report_features": "기능 목록 확인", "wb_report_coverage": "커버리지 확인", "wb_runtime_run": "실행해서 확인",
+    "wb_make_create": "원장 만들기", "wb_run_policy": "권한 규칙 확인", "wb_customization_record": "커스텀 기록",
 }
+# 이름이 이 접두로 시작하는 도구는 한 묶음으로 — 도구 이름이 그대로 보이지 않게
+TOOL_GROUP = (("wb_lsp_", "코드 관계 확인"), ("wb_unit", "코드 분석"), ("wb_dataflow_", "데이터 흐름 확인"),
+              ("wb_unknown", "확인할 점 기록"), ("wb_claim", "결론 검토"), ("wb_finding", "결론 기록"), ("wb_", "도구 작업"))
 
 
 # 완료 조건을 보여 줄 순서 — 일이 진행되는 순서대로 (기준 → 확인 → 구현 → 검증 → 기록)
@@ -54,8 +63,17 @@ def plan_core(plan: dict) -> dict:
             "summary": plan.get("summary"), "design": plan.get("design"), "decisions": plan.get("decisions"), "look": plan.get("look"), "previews": plan.get("previews"), "at": plan.get("at")}
 
 
+def _holds_for_plan(run: dict, reviews: int) -> bool:
+    """기준은 정리됐지만 계획까지 세우는 중 — 화면이 기준을 계획과 한 장으로 띄우려고 아직 보여 주지 않는 때.
+    이때는 사용자 차례가 아니다 (상태·알림이 '내 차례'를 먼저 내지 않게)."""
+    return bool(reviews) and run.get("status") == "running" and run.get("mode") in ("request", "reference") \
+        and run.get("plan_approval", True) and not (run.get("plan") or {}).get("steps")
+
+
 def _status(run: dict, asks: int, reviews: int, alive: bool = True) -> tuple[str, str]:
     s = run.get("status")
+    if _holds_for_plan(run, reviews):
+        reviews = 0
     if s in ("running", "waiting_answer") and not alive and not (asks or reviews):
         return "중단됨", "idle"  # 진행하던 실행기가 사라짐 (앱을 닫았거나 비정상 종료) — 이어서 진행으로 재개
     if s not in ("done", "error") and (asks or reviews or s in ("waiting_approval", "waiting_plan")):
@@ -168,6 +186,9 @@ def _tool_label(name: str | None, raw: str | None) -> str:
         return "웹 확인"
     if short in ("TodoWrite",):
         return "할 일 정리"
+    for prefix, label in TOOL_GROUP:
+        if short.startswith(prefix):
+            return label
     return short or "도구"
 
 
@@ -630,7 +651,6 @@ def _activity(run: dict, asks: list, reviews: int = 0, license_open: bool = Fals
         return {"text": "확인을 기다리는 중 — 아래 '시작 전 확인'을 보고 승인하거나 고칠 점을 보내 주세요"}
     if s == "waiting_answer" or asks:
         return {"text": "답을 기다리는 중 — 아래 카드에 답해 주세요"}
-    plan = run.get("plan") or {}
-    if s == "running" and reviews and not plan.get("steps") and run.get("plan_approval", True):
+    if _holds_for_plan(run, reviews):  # 화면도 이 두 모드에서만 기준을 계획과 함께 띄운다
         return {"text": "기준을 정리했습니다 — 계획까지 세우면 한 번에 확인하도록 보여 드립니다"}
     return run.get("activity")

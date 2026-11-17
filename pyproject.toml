@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "beom-workbench"
-version = "0.3.0"
+version = "0.3.1"
 description = "Toolkit and desktop app for coding agents: analyze repositories, build or port features against approved acceptance criteria, and verify them (CLI, agent skill, MCP server)"
 license = "LicenseRef-beom-workbench-use-only"
 license-files = ["LICENSE", "NOTICE"]

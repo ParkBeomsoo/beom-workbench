@@ -369,7 +369,7 @@ class Api(QObject):
         atts = [a for a in o.get("attachments") or [] if re.match(r"https?://", str(a)) or Path(a).is_file()]
         missing = len(o.get("attachments") or []) - len(atts)
         keep_folder = bool(run.get("work_branch"))
-        return {"mode": run["mode"], "request": o.get("request") or "", "attachments": atts, "missing": missing,
+        return {"mode": run["mode"], "name": run.get("name") or "", "request": o.get("request") or "", "attachments": atts, "missing": missing,
                 "target_root": run["target_root"] if keep_folder else "", "kept_folder": keep_folder,
                 "context_dir": o.get("context_dir") or "", "source": run.get("source") or "", "feature": run.get("feature") or "",
                 **{k: run.get(k) for k in ("agent", "model", "effort", "policy", "max_rounds", "confirm_at", "auth", "plan_approval")

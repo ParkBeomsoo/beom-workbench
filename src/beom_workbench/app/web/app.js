@@ -378,7 +378,7 @@ async function retryRun(id) {
   const v = x.data;
   goHome();
   S.mode = v.mode; S.agentPicked = true;
-  Object.assign(S.draft, { request: v.request, attachments: v.attachments, target_root: v.target_root, context_dir: v.context_dir,
+  Object.assign(S.draft, { name: v.name || "", request: v.request, attachments: v.attachments, target_root: v.target_root, context_dir: v.context_dir,
     source: v.source, feature: v.feature, agent: v.agent || S.draft.agent, model: v.model || "", effort: v.effort || "",
     policy: v.policy || S.draft.policy, max_rounds: v.max_rounds || 0, confirm_at: v.confirm_at || "start", auth: v.auth || S.draft.auth,
     plan_approval: v.plan_approval !== false });
@@ -709,7 +709,7 @@ async function create() {
     feature: d.feature, agent: d.agent, model: d.model, effort: d.effort, confirm_at: d.confirm_at, attachments: d.attachments || [], max_rounds: d.max_rounds, auth: d.auth,
     plan_approval: d.plan_approval === true || d.plan_approval === "true", policy: d.policy || S.policy, new_branch: d.new_branch !== false,
     sandbox: d.sandbox !== false,
-    name: (d.request || d.feature || "새 프로젝트").split(/[.\n]/)[0].slice(0, 28) };
+    name: d.name || (d.request || d.feature || "새 프로젝트").split(/[.\n]/)[0].slice(0, 28) };  // 같은 요청으로 새 작업이면 원래 이름
   S.preparing = true; renderHome();
   const r = await call("createRun", JSON.stringify(payload));
   if (!r.ok) { S.preparing = false; renderHome(); }
@@ -985,7 +985,7 @@ function cards() {
   const planOpen = plan && plan.steps && plan.steps.length && !plan.approved && D.run.status !== "done";  // 끝난 작업에 승인할 계획은 없다
   // 처음 한 번 확인: 기준과 계획이 함께 떠 있으면 한 장으로 — 사용자가 무엇을 승인하는지 위에서부터 읽히게
   // 계획까지 세우는 중이면 기준만 먼저 띄우지 않는다 — 기준과 계획은 한 장으로 한 번에 확인한다
-  const waitPlan = D.running && D.run.mode === "request" && D.plan_approval !== false && !(plan && plan.steps && plan.steps.length);
+  const waitPlan = D.running && ["request", "reference"].includes(D.run.mode) && D.plan_approval !== false && !(plan && plan.steps && plan.steps.length);
   if (D.reviews && D.reviews.count && planOpen && !S.edit && D.reviews.requirements.length) out.push(startCard(D.reviews, plan, asking));
   else {
     if (D.reviews && D.reviews.count && !(waitPlan && !S.edit)) out.push(reviewCard(D.reviews, asking));
@@ -1852,7 +1852,7 @@ document.addEventListener("keydown", (e) => {
     call("answer", S.current, perm.id, JSON.stringify(data)).then(refresh);
   }
 });
-function goHome() { closePop(); S.edit = null; S.current = null; S.detail = null; S.sig = { feed: "", right: "", side: "", cbar: "" }; S.preparing = false; renderSide(); renderHome(); }
+function goHome() { closePop(); delete S.draft.name; S.edit = null; S.current = null; S.detail = null; S.sig = { feed: "", right: "", side: "", cbar: "" }; S.preparing = false; renderSide(); renderHome(); }
 $("#newbtn").addEventListener("click", goHome);
 $("#runq").addEventListener("input", (e) => { S.runQ = e.target.value; renderSide(); });
 $("#runq").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.target.value = ""; S.runQ = ""; renderSide(); e.target.blur(); } });
@@ -1862,7 +1862,7 @@ new QWebChannel(qt.webChannelTransport, async (ch) => {
   api.created.connect((raw) => {
     const r = JSON.parse(raw); S.preparing = false;
     if (r.error) { toast(r.error); renderHome(); return; }
-    S.draft.request = ""; S.draft.attachments = []; delete S.draft.new_branch; openRun(r.run_id).then(() => r.start && startRun());
+    S.draft.request = ""; S.draft.attachments = []; delete S.draft.name; delete S.draft.new_branch; openRun(r.run_id).then(() => r.start && startRun());
   });
   const b = await call("bootstrap");
   if (b.ok) applyLang(b.data.i18n);

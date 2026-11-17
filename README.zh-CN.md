@@ -9,7 +9,7 @@
 
 > 应用界面支持韩语、英语、日语和简体中文。首次启动时跟随系统语言 (其他语言则为韩语)，可在侧边栏的语言按钮中更改。代理使用的语言遵循代理自身的规则 — 需求语言明确时告诉它使用该语言；无法判断时 (只有附件或链接)，或你在代理设置中指定了回复语言时 (Claude Code `language`)，以该设置为准。命令行帮助 (`--help`) 和安装脚本的提示也跟随同一语言。
 
-![version](https://img.shields.io/badge/version-0.3.0-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
+![version](https://img.shields.io/badge/version-0.3.1-blue) [![smoke](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/ParkBeomsoo/beom-workbench/actions/workflows/ci.yml) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-use%20only%2C%20no%20modification-lightgrey)
 
 与其“粗略读一遍别人写的功能再照着做”，不如对整个代码库进行分析并为每条结论附上证据（文件:行号），
 再通过程序确认移植后的结果与原项目行为一致。本工具包同时提供技能、MCP 工具和 CLI，让 Claude Code 等 AI 代理能够按流程使用；
@@ -182,7 +182,7 @@ beom-workbench app --shortcut          # 创建开始菜单(搜索) + 桌面快�
 | 模式 | 行为 |
 |---|---|
 | 全部询问 | 每次修改和命令都确认 |
-| 自动允许编辑 (默认) | 目标文件夹内的修改和构建/测试直接执行，其他命令和网络需确认 |
+| 自动允许编辑 (默认) | 目标文件夹内的修改、构建/测试、只读命令以及运行该文件夹中自己的脚本直接执行，其他命令 (`python -c`、网络、文件夹外路径等) 和网络需确认 |
 | 自动 | 命令也不询问直接执行，只确认网络和文件夹外的文件 — 仅用于可信任务 |
 
 push、发布、文件夹外删除和系统更改始终拒绝。代理传给验证工具的命令 (包括用例文件里的命令) 也走同样的规则。
