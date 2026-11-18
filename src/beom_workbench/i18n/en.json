@@ -1538,5 +1538,8 @@
 "눌러서 항목별로 보기": "Click to see each item",
 "{0}개 설치 필요": "{0} to install",
 "에이전트가 실행하는 명령을 운영체제 샌드박스 안에서 돌립니다 — 대상 폴더·임시 폴더·도구 캐시 밖에는 쓰지 못합니다": "Runs the agents' commands inside the operating system sandbox — they cannot write outside the target folder, temp folder and tool caches",
-"레퍼런스 모드에서 원본 저장소를 분석해 옮길 범위를 찾습니다": "Analyzes the original repository in reference mode to find what to port"
+"레퍼런스 모드에서 원본 저장소를 분석해 옮길 범위를 찾습니다": "Analyzes the original repository in reference mode to find what to port",
+"비용 한도에 닿아 멈췄습니다 — '이어서'를 누르면 다시 한도까지 진행합니다 (한도는 라운드 규칙에서)": "Stopped at the cost limit — Continue runs up to the limit again (set it in the round rules)",
+"안전용 최대 라운드에 닿아 멈췄습니다 — 결과를 보고 '이어서'를 누르거나 고칠 점을 보내 주세요": "Stopped at the safety round limit — check the result, then Continue or send a correction",
+"반복 횟수 한도({0}회)에 닿아 멈췄습니다 — 실행 옵션에서 횟수를 늘리거나 끄고 '이어서'를 누르세요": "Stopped at the round limit ({0}) — raise or turn off the limit in run options, then Continue"
 }

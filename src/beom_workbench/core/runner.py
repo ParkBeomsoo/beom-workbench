@@ -1322,9 +1322,11 @@ class Runner:
                 continue
             if (run.get("max_rounds") and run["round"] >= run["max_rounds"]) or run["round"] >= self._loop_rules()["hard_rounds"]:  # 0 = 제한 없음 (헛돌면 따로 멈춘다)
                 inbox.log(self.settings, self.run_id, "max_rounds", round=run["round"])
-                return self._set(status="stopped_max_rounds")
+                # 왜 멈췄는지 — 화면이 '확인 필요'만이 아니라 무엇을 바꾸면 이어 가는지 말해 준다
+                why = "max_rounds" if run.get("max_rounds") and run["round"] >= run["max_rounds"] else "hard_rounds"
+                return self._set(status="stopped_max_rounds", stop_reason=why)
             if self._over_budget(run):
-                return self._set(status="stopped_max_rounds")
+                return self._set(status="stopped_max_rounds", stop_reason="budget")
             self._keep_branch(run)  # 라운드·메시지를 쓰기 전에 — 작업 브랜치로 못 돌아가면 그대로 멈춘다
             if self._stop.is_set():
                 break

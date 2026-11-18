@@ -648,6 +648,14 @@ def _activity(run: dict, asks: list, reviews: int = 0, license_open: bool = Fals
         return None if run.get("accepted") else {"text": "끝났습니다 — 인수인계를 보고 수락하거나, 고칠 점을 보내 주세요"}
     if s == "stopped" and not asks:  # 멈춘 작업에 마지막 '검증하는 중' 같은 한 줄이 남으면 아직 도는 것처럼 보인다
         return {"text": "멈췄습니다 — '이어서'를 누르거나 메시지를 보내면 이어서 진행합니다"}
+    if s == "stopped_max_rounds":  # 한도에 닿아 멈춤 — 지난 '…정리했습니다'가 남으면 왜 멈췄는지 모른다
+        why = run.get("stop_reason")
+        if why == "budget":
+            return {"text": "비용 한도에 닿아 멈췄습니다 — '이어서'를 누르면 다시 한도까지 진행합니다 (한도는 라운드 규칙에서)"}
+        if why == "hard_rounds":
+            return {"text": "안전용 최대 라운드에 닿아 멈췄습니다 — 결과를 보고 '이어서'를 누르거나 고칠 점을 보내 주세요"}
+        return {"text": "반복 횟수 한도({0}회)에 닿아 멈췄습니다 — 실행 옵션에서 횟수를 늘리거나 끄고 '이어서'를 누르세요".replace(
+            "{0}", str(run.get("max_rounds") or run.get("round") or 0))}
     if s == "waiting_approval" and license_open and not reviews:
         return {"text": "원본 라이선스 확인을 기다리는 중 — 아래 카드를 보고 옮겨도 되는지 확인해 주세요"}
     plan_open = bool((run.get("plan") or {}).get("steps")) and not (run.get("plan") or {}).get("approved") \
