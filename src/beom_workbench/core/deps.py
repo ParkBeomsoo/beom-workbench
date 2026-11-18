@@ -77,6 +77,32 @@ def _python_reqs(root: Path) -> tuple[list[str], list[str]]:
     return files, pkgs
 
 
+NODE_DEP_KEYS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "overrides", "resolutions")
+
+
+def _node_stamp(root: Path) -> str:
+    """package.json 의 의존성 칸만 — 설명·스크립트·버전을 고친 것으로 다시 설치하지 않는다 (설치할 것이 그대로다)."""
+    try:
+        data = json.loads((root / "package.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        data = {}
+    picked = {k: data.get(k) for k in NODE_DEP_KEYS if data.get(k)}
+    return hashlib.sha256(json.dumps(picked, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def src_layout(root: Path) -> Path | None:
+    """src 구조 파이썬 프로젝트(src/<패키지>/__init__.py 와 pyproject·setup 파일)의 src 폴더 — 없으면 None.
+    설치하지 않으면 테스트의 'import 패키지' 가 깨져서, 에이전트가 pytest 경로 설정을 프로젝트에 끼워 넣게 된다."""
+    root = Path(root)
+    src = root / "src"
+    if not src.is_dir() or not any((root / n).is_file() for n in ("pyproject.toml", "setup.cfg", "setup.py")):
+        return None
+    try:
+        return src if any((d / "__init__.py").is_file() for d in src.iterdir() if d.is_dir()) else None
+    except OSError:
+        return None
+
+
 def _stamp(root: Path, files: list[str], extra: list[str] = ()) -> str:
     h = hashlib.sha256()
     for n in files:
@@ -97,17 +123,21 @@ def plan(root: Path) -> list[dict]:
     out = []
     node = _node_needed(root)
     if node:
-        # 지문은 package.json 만으로 — package-lock.json 은 npm 이 설치하면서 새로 쓰거나 고쳐서, 넣으면 매번 다시 설치하게 된다
-        sig = _stamp(root, ["package.json"])
+        # 지문은 package.json 의 의존성 칸만 — package-lock.json 은 npm 이 설치하면서 새로 쓰거나 고쳐서, 넣으면 매번 다시 설치하게 된다
+        sig = _node_stamp(root)
         done = _stamp_file(root, "node")
-        if not (root / "node_modules").is_dir() or not done.is_file() or done.read_text().strip() != sig:
+        nm = root / "node_modules"
+        # 검증용 커버리지가 빠짐 (npm 이 지웠거나 예전 설치) — 이 vitest 버전으로 한 번 시도했으면 다시 하지 않는다 (오프라인 등)
+        no_cov = (nm / "vitest").is_dir() and not (nm / "@vitest" / "coverage-v8").is_dir() and _vitest_tried(root) != _vitest_version(root)
+        if not nm.is_dir() or not done.is_file() or done.read_text().strip() != sig or no_cov:
             out.append({"kind": "node", "files": node, "sig": sig, "command": "npm install --no-audit --no-fund"})
     files, pkgs = _python_reqs(root)
-    if files or pkgs:
-        sig = _stamp(root, files, pkgs + list(VERIFY_TOOLS))
+    src = src_layout(root)
+    if files or pkgs or src:
+        sig = _stamp(root, files, pkgs + list(VERIFY_TOOLS) + ([f"src:{src.resolve()}"] if src else []))
         done = _stamp_file(root, "python")
         if not venv_python(root).is_file() or not done.is_file() or done.read_text().strip() != sig:
-            what = " ".join([*(f"-r {f}" for f in files), *pkgs])
+            what = " ".join([*(f"-r {f}" for f in files), *pkgs, *(["(src 폴더를 import 경로에)"] if src else [])])
             out.append({"kind": "python", "files": files + (["pyproject.toml"] if pkgs else []), "sig": sig, "pkgs": pkgs,
                         "command": f"pip install {what} pytest coverage  (.beom/venv)"})
     return out
@@ -139,6 +169,18 @@ def _borrow(root: Path, user: Path) -> None:
         (mine / "_beom_user_venv.pth").write_text(str(theirs.resolve()) + "\n", encoding="utf-8")
 
 
+def _src_path(root: Path) -> None:
+    """src 구조면 .beom/venv 에서 src 폴더가 import 경로에 오게 (.pth 한 줄) — pip install -e 처럼 빌드하거나 프로젝트에
+    egg-info 를 남기지 않는다."""
+    src, mine = src_layout(root), _site_packages(venv_dir(root))
+    if mine:
+        pth = mine / "_beom_project_src.pth"
+        if src:
+            pth.write_text(str(src.resolve()) + "\n", encoding="utf-8")
+        elif pth.is_file():
+            pth.unlink()
+
+
 def _base_python() -> str:
     """가상 환경을 만들 파이썬 — 사용자가 쓰는 python (Windows 스토어 바로가기는 아니다), 없으면 툴킷의 파이썬."""
     p = shutil.which("python") or shutil.which("python3")
@@ -162,6 +204,8 @@ def _install(item: dict, root: Path, timeout: float) -> dict:
         argv = (["cmd", "/d", "/c", "npm", "install", "--no-audit", "--no-fund"] if os.name == "nt"
                 else ["npm", "install", "--no-audit", "--no-fund"])
         code, out = _run(argv, root, timeout)
+        if code == 0:
+            _vitest_coverage(root, timeout)
     else:
         py = venv_python(root)
         user = user_venv(root)
@@ -173,6 +217,7 @@ def _install(item: dict, root: Path, timeout: float) -> dict:
                 return {"kind": "python", "ok": False, "output_tail": out}
             if user:
                 _borrow(root, user)
+        _src_path(root)
         args = [str(py), "-m", "pip", "install", "-q"]
         for f in item["files"]:
             if f != "pyproject.toml":
@@ -185,6 +230,33 @@ def _install(item: dict, root: Path, timeout: float) -> dict:
         sf.parent.mkdir(parents=True, exist_ok=True)
         sf.write_text(item["sig"], encoding="utf-8")
     return {"kind": item["kind"], "ok": ok, "exit_code": code, **({} if ok else {"output_tail": out})}
+
+
+def _vitest_coverage(root: Path, timeout: float) -> None:
+    """vitest 프로젝트면 같은 버전의 v8 커버리지 패키지를 package.json 에 적지 않고(--no-save) 넣는다 — 파이썬의 pytest·coverage 처럼
+    검증용 도구는 툴킷이 준비한다 (에이전트가 프로젝트 의존성에 끼워 넣지 않게). 실패해도 설치 자체는 성공이다 (그때는 사용자 확인 카드)."""
+    ver = _vitest_version(root)
+    if not ver or (root / "node_modules" / "@vitest" / "coverage-v8").is_dir():
+        return
+    pkg = f"@vitest/coverage-v8@{ver}"
+    argv = (["cmd", "/d", "/c", "npm", "install", "--no-save", "--no-audit", "--no-fund", pkg] if os.name == "nt"
+            else ["npm", "install", "--no-save", "--no-audit", "--no-fund", pkg])
+    _run(argv, root, timeout)
+    mark = _stamp_file(root, "vitest-coverage")
+    mark.parent.mkdir(parents=True, exist_ok=True)
+    mark.write_text(ver, encoding="utf-8")
+
+
+def _vitest_version(root: Path) -> str | None:
+    try:
+        return json.loads((Path(root) / "node_modules" / "vitest" / "package.json").read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError):
+        return None
+
+
+def _vitest_tried(root: Path) -> str | None:
+    f = _stamp_file(root, "vitest-coverage")
+    return f.read_text(encoding="utf-8").strip() if f.is_file() else None
 
 
 def _permit(settings, run: dict | None, item: dict) -> None:
@@ -276,4 +348,7 @@ def status(root: Path) -> dict:
     if py.is_file():
         out["python"] = {"python": py.relative_to(root).as_posix(),
                          "note": "파이썬 테스트·실행은 이 python 으로 — 의존성과 pytest·coverage 가 들어 있다"}
+        if src_layout(root):
+            out["python"]["src"] = ("src 폴더가 이 python 의 import 경로에 있다 — pytest pythonpath 설정·sys.path 조작·"
+                                    "conftest 를 프로젝트에 넣지 않아도 된다")
     return out

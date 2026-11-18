@@ -133,7 +133,8 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   description 은 사용자 요청과 같은 언어로, 무엇을 넣으면 어떻게 되는지 한 줄 (예: "수량 10개 — 여기서부터 10% 할인").
   사용자는 name 이 아니라 description 을 본다. name 은 공백 없는 짧은 id.
   입력 — CLI: "argv": ["3"] (+ "stdin"), HTTP: "method", "path", "json",
-  함수: "call": "calc.js:calculateOrder" (파일:함수, 대상 폴더 기준) + "args": [3] — 돌려준 값은 body 로 비교한다. 
+  함수: "call": "calc.js:calculateOrder" (파일:함수, 대상 폴더 기준) + "args": [3] — 돌려준 값은 body 로 비교한다. .py·.js 와
+  .ts 도 바로 부른다 (감싸는 보조 파일을 만들지 않는다). 
   expect — "status"(CLI 는 종료 코드, HTTP 는 상태 코드, 함수는 "ok"(정상 반환)·"raised"(예외) — 숫자 아님),
   "body"(출력·반환값 전체가 같음), "equals"({"a.b": 값} 일부 필드), "match"(정규식).
   정해진 키 밖의 키는 거절된다 (조용히 무시되면 다른 입력으로 검증되기 때문).
@@ -171,8 +172,12 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   의존성은 의존성 파일(package.json·requirements.txt·pyproject.toml)에 적고 mcp__beom-workbench__wb_deps 를 부른다 — 툴킷이
   같은 자리(Node: node_modules · Python: .beom/venv, pytest·coverage 포함)에 설치한다. npm install·pip install·가상 환경 만들기를
   직접 하지 않는다. 파이썬 테스트는 wb_deps 가 알려 준 python(.beom/venv)으로, 의존성이 없으면 평소 python 으로 돌린다.
-  커버리지(케이스가 만든 코드를 실행했는지)는 툴킷이 잰다 — wb_port_verify 가 매핑한 파일을 프로젝트의 테스트(pytest·node --test)로
-  돌려 잰다. 측정 명령(target_coverage_cmd)을 짜거나 커버리지 도구를 깔거나 변환 스크립트를 만들지 않는다 (테스트를 만들면 된다).
+  src 구조(src/<패키지>) 프로젝트는 툴킷이 .beom/venv 에서 src 를 import 경로에 둔다 — 검증을 위해 pytest pythonpath 설정·
+  sys.path 조작·conftest 를 프로젝트에 넣지 않는다 (사용자가 요청한 변경이 아니다).
+  커버리지(케이스가 만든 코드를 실행했는지)는 툴킷이 잰다 — wb_port_verify 가 매핑한 파일을 프로젝트의 테스트(pytest·node --test·
+  vitest)로 돌려 잰다. 측정 명령(target_coverage_cmd)을 짜거나 커버리지 도구를 깔거나(의존성에 넣는 것도) 변환 스크립트를 만들지
+  않는다 (테스트를 만들면 된다). 툴킷이 잴 수 없는 언어(Rust 등)면 툴킷이 사용자 승인 카드('직접 확인할 점')를 올린다 —
+  도구를 찾거나 설치하지 말고, 사용자에게 따로 묻지도 말고 다른 승인과 함께 기다린다.
   격리 실행 안의 node --test(npm test)는 툴킷이 격리용 설정을 미리 넣어 두어 그대로 돈다 — --test-isolation 같은 옵션을 붙이거나
   우회 스크립트(.cmd 등)를 만들지 않는다. 툴킷이 돌리는 명령(target_cmd·cmd)은 평소처럼 python·npm 으로 쓴다 — 준비한 .beom/venv 와
   node_modules/.bin 이 PATH 앞에 있다 (.beom/venv/Scripts/python.exe 처럼 경로를 적지 않는다).

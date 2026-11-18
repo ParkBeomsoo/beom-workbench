@@ -620,7 +620,7 @@ def _next_step(gates: dict, *, counts, capture, diff, human, adequacy, finished)
         return "port-capture 로 원본 응답(골든) 저장"
     if not gates[GATE_DIFF]:
         return f"port-verify — {diff['why']}"
-    if not gates[GATE_ADEQUACY]:
+    if not gates[GATE_ADEQUACY] and not adequacy.get("user_card"):
         return f"케이스 보강 또는 커버리지 측정 — {adequacy['why']}"
     if not gates[GATE_HUMAN]:
         n = sum(1 for h in human if not h["approved"])
@@ -654,8 +654,8 @@ def _next_step_request(gates: dict, *, req_state, capture, diff, human, adequacy
         return "port-map --follow (이동한 구현 위치) 또는 바뀐 위치 다시 매핑"
     if not gates[GATE_DIFF]:
         return f"port-verify — {diff['why']}"
-    if not gates[GATE_ADEQUACY]:
-        return f"port-verify --target-coverage-cmd/--target-coverage-report 로 구현 코드 실행 확인 — {adequacy['why']}"
+    if not gates[GATE_ADEQUACY] and not adequacy.get("user_card"):
+        return f"port-verify 로 구현 코드 실행 확인 (측정은 툴킷이 한다) — {adequacy['why']}"
     if not gates[GATE_HUMAN]:
         n = sum(1 for h in human if not h["approved"])
         return f"사용자 승인 대기 {n}건 — 사용자에게 내용을 설명하고 승인 요청. AI 가 대신 승인할 수 없음"
@@ -694,6 +694,11 @@ def status_(conn, port_id: str, brief: bool = False, fp_max_age: float = 0) -> d
     diff = _diff_state(last, capture_, fp_now)
     adequacy = _adequacy_state(src_adq, tgt_adq, fp_now)
     human = guard.reviews(conn, port_id, last, capture_)
+    card = next((h for h in human if h["kind"] == "coverage_unmeasured"), None)
+    if card and not adequacy["ok"]:
+        adequacy = ({"ok": True, "basis": "사용자 확인 (툴킷이 잴 수 없는 언어)"} if card["approved"] else
+                    {"ok": False, "basis": None, "user_card": True,
+                     "why": "툴킷이 이 언어의 실행 범위를 재지 못함 — 사용자 확인 카드로 넘겼다 (도구를 설치하거나 측정 명령을 짤 일 아님)"})
     integ = guard.integrity(conn, port_id)
     gates = {
         GATE_MAPPED: counts.get("pending", 0) == 0,
@@ -853,6 +858,26 @@ sys.stdout.write("\n" + MARK + json.dumps(out, default=enc))  # ASCII 로 — �
 
 HARNESS_JS = r'''const path = require("path");
 const { pathToFileURL } = require("url");
+const Module = require("module");
+if (typeof Module.registerHooks === "function") {
+  // TypeScript 프로젝트의 상대 import 는 확장자를 안 적거나(./cart) .js 로 적는다(./cart.js → cart.ts) — 번들러처럼 풀어 준다
+  Module.registerHooks({
+    resolve(spec, ctx, next) {
+      try {
+        return next(spec, ctx);
+      } catch (e) {
+        if (!/^\.\.?\//.test(spec) || !e || !/MODULE_NOT_FOUND/.test(String(e.code))) throw e;
+        const base = spec.replace(/\.[cm]?js$/, "");
+        for (const tail of [".ts", ".tsx", ".mts", ".cts", ".js", "/index.ts", "/index.js"]) {
+          try {
+            return next(base + tail, ctx);
+          } catch (_) {}
+        }
+        throw e;
+      }
+    },
+  });
+}
 const MARK = "@@BEOM_HARNESS@@";
 const [root, file, fn] = process.argv.slice(2);
 let input = "";
@@ -894,7 +919,7 @@ process.stdin.on("end", async () => {
 def _harness_dir(settings: Settings) -> Path:
     d = settings.home / "cache" / "harness"  # 매번 다시 쓰는 파일 — 지워도 된다
     d.mkdir(parents=True, exist_ok=True)
-    for name, text in (("harness.py", HARNESS_PY), ("harness.js", HARNESS_JS)):
+    for name, text in (("harness.py", HARNESS_PY), ("harness.cjs", HARNESS_JS)):
         f = d / name
         if not f.exists() or f.read_text(encoding="utf-8") != text:
             f.write_text(text, encoding="utf-8")
@@ -931,13 +956,14 @@ class _Side:
         e = self.engine
         return e.argv("run", "--rm", "-v", f"{e.path(self.cwd)}:/work", "-v", f"{e.path(self.harness)}:/harness:ro", "-w", "/work")
 
-    def shell(self, cmd: str, *, stdin: bytes = b"", timeout: float = 30) -> subprocess.CompletedProcess:
+    def shell(self, cmd: str, *, stdin: bytes = b"", timeout: float = 30, outside: bool = False) -> subprocess.CompletedProcess:
+        """outside: 격리 밖에서 — 툴킷이 직접 짠 측정 명령 중 Node 빌드 도구(vitest 등)만, 권한 규칙을 거친 뒤 (_outside_ok)."""
         if self.image:
             argv = self.docker_base() + ["-i", "--network", "none", self.image, "sh", "-c", cmd]
             return subprocess.run(argv, input=stdin, capture_output=True, timeout=timeout)
         run = _auto_run()
         from beom_workbench.core import sandbox
-        if run and sandbox.wraps_powershell(run):
+        if run and sandbox.wraps_powershell(run) and not outside:
             # 자동 실행 중 툴킷이 대신 돌리는 검증 명령도 같은 샌드박스 안에서 (대상 폴더·임시·도구 캐시 밖에는 못 쓴다)
             return run_tree(sandbox.wrap_argv(["cmd", "/d", "/c", cmd], run), cwd=self.cwd, stdin=stdin, timeout=timeout, env=self.env())
         return run_tree(cmd, shell=True, cwd=self.cwd, stdin=stdin, timeout=timeout, env=self.env())
@@ -1026,6 +1052,8 @@ def auto_coverage(conn, port: dict, root: Path) -> tuple[str, str] | None:
     files = [f for f in files if not f.startswith(".beom/") and (root / f).is_file()]
     py = [f for f in files if f.endswith(".py")]
     js = [f for f in files if f.endswith((".js", ".mjs", ".cjs"))]
+    ts = [f for f in files if f.endswith(guard.TS_EXTS)]
+    rs = [f for f in files if f.endswith(".rs")]
     tmp = root / ".beom" / "tmp"
     tmp.mkdir(parents=True, exist_ok=True)
     if py:
@@ -1047,7 +1075,40 @@ def auto_coverage(conn, port: dict, root: Path) -> tuple[str, str] | None:
         iso = " --test-isolation=none" if major >= 22 else ""  # 격리 실행 안에서는 테스트 파일마다 하위 프로세스를 못 띄운다
         return (f"node --test{iso} --experimental-test-coverage --test-reporter=lcov --test-reporter-destination=.beom/tmp/autocov.info",
                 ".beom/tmp/autocov.info")
+    if ts and all(guard.measurable(root, f) for f in ts[:1]):
+        # vitest 프로젝트 — 그 테스트를 v8 커버리지로 한 번 (리포트는 .beom/tmp 에, 프로젝트의 coverage/ 는 건드리지 않는다)
+        inc = " ".join(f"--coverage.include={f}" for f in ts)
+        return (f"vitest run --coverage.enabled=true --coverage.provider=v8 --coverage.reporter=json "
+                f"--coverage.reportsDirectory=.beom/tmp/vcov {inc}", ".beom/tmp/vcov/coverage-final.json")
+    if rs and guard.measurable(root, rs[0]) and (root / "Cargo.toml").is_file():
+        return "cargo llvm-cov --lcov --output-path .beom/tmp/autocov.info", ".beom/tmp/autocov.info"
     return None
+
+
+def _outside_ok(settings, cmd: str) -> bool:
+    """툴킷이 짠 측정 명령이 Node 빌드 도구라 Windows 격리 안에서 돌지 않을 때 — 권한 규칙대로 격리 밖에서 돌려도 되나.
+    빌드·'격리 없이 실행' 둘 다 허용이면 바로, 거절이면 아니고, 아니면 카드 한 번 (같은 명령은 다시 묻지 않는다).
+    격리 안에서 돌리면 조용히 실패해 리포트가 안 생기고, 에이전트가 같은 측정을 직접 짜서 다시 돌리게 된다."""
+    from beom_workbench.core import inbox, sandbox
+    run = _auto_run()
+    if run is None or not sandbox.wraps_powershell(run) or not inbox.needs_unsandboxed(cmd):
+        return False
+    kd, ku = inbox.decide(run, "build"), inbox.decide(run, "unsandboxed")
+    if "refuse" in (kd, ku):
+        return False
+    # 같은 측정 — 잴 파일 목록(--coverage.include)만 늘거나 줄어도 다시 묻지 않는다 (툴킷이 짠 명령이라 나머지는 그대로다)
+    key = "autocov:" + hashlib.sha256(re.sub(r" --coverage\.include=\S+", "", cmd).encode()).hexdigest()[:16]
+    if kd == "allow" and ku == "allow" or key in (run.get("approved_cmds") or []):
+        return True
+    ans = inbox.ask(settings, run["id"], "permission", {
+        "summary": f"툴킷이 프로젝트 테스트로 실행 범위를 잽니다 (격리 밖 — Node 빌드 도구는 격리 안에서 돌지 않음): {cmd}",
+        "tool": "mcp:coverage", "input": {"command": cmd}, "permission_kind": "unsandboxed"})
+    if not ans.get("allow"):
+        return False
+    if ans.get("always"):
+        inbox.update_run(settings, run["id"], lambda r: r["policy"].__setitem__("unsandboxed", "allow"))
+    inbox.update_run(settings, run["id"], lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [key]))))
+    return True
 
 
 def _auto_run() -> dict | None:
@@ -1128,8 +1189,14 @@ def _cli(side: _Side, cmd: str, case: dict, timeout: float) -> dict:
     try:
         body = json.loads(out) if out.strip() else None
     except json.JSONDecodeError:
-        body = out.replace("\r\n", "\n")
-    return {"status": proc.returncode, "body": body}
+        return {"status": proc.returncode, "body": out.replace("\r\n", "\n")}
+    # JSON 으로 읽혔어도 (숫자 하나 '5' 처럼) 원래 글자를 남긴다 — 기대값을 글자("5\n")로 적은 케이스와 비교할 수 있게
+    return {"status": proc.returncode, "body": body, "text": out.replace("\r\n", "\n")}
+
+
+def _plain(text: str) -> str:
+    """글자 출력 비교용 — 줄바꿈 꼴(\r\n)과 끝 줄바꿈은 같은 출력으로 본다 (print 가 붙이는 마지막 줄바꿈까지 맞추게 하지 않는다)."""
+    return text.replace("\r\n", "\n").rstrip("\n")
 
 
 def _call(side: _Side, case: dict, timeout: float) -> dict:
@@ -1152,9 +1219,16 @@ def _call(side: _Side, case: dict, timeout: float) -> dict:
                 mod = "file:" + file.lstrip("/")
             exe = rt or ("python" if side.image else side.quote(sys.executable))
             cmd = f"{exe} {side.quote(side.harness_path('harness.py'))} {side.quote(side.root)} {side.quote(mod)} {side.quote(fn)}"
-        elif ext in (".js", ".cjs", ".mjs"):
+        elif ext in (".js", ".cjs", ".mjs", ".ts", ".mts", ".cts"):
             exe = rt or "node"
-            cmd = f"{exe} {side.quote(side.harness_path('harness.js'))} {side.quote(side.root)} {side.quote(file)} {side.quote(fn)}"
+            if not rt and ext in (".ts", ".mts", ".cts"):
+                major = _node_major()
+                if major and major < 22:
+                    raise ToolError("capability_unavailable", f"Node {major} 은 .ts 를 바로 불러오지 못함 (22 이상 필요)",
+                                    recovery=f'call.{side.name} 에 {{"cmd": "..."}} 로 빌드한 .js 를 부르는 명령을 지정')
+                if major in (22, 23):
+                    exe = "node --experimental-strip-types"
+            cmd = f"{exe} {side.quote(side.harness_path('harness.cjs'))} {side.quote(side.root)} {side.quote(file)} {side.quote(fn)}"
         else:
             raise ToolError("capability_unavailable", f"{ext} 함수 직접 호출용 내장 하네스 없음",
                             recovery=f'call.{side.name} 에 {{"cmd": "..."}} — stdin JSON {{args, kwargs}} 를 받아 '
@@ -1238,7 +1312,12 @@ def check_expect(dst: dict, case: dict) -> list[str]:
         why = dst.get("detail") or dst.get("error")
         diffs.append(f"status {dst['status']} != 기대 {e['status']}" + (f" — {why}" if why else ""))
     body = dst["body"]
-    if "body" in e:
+    shown_text = body if isinstance(body, str) else dst.get("text")
+    if "body" in e and isinstance(e["body"], str) and shown_text is not None:
+        # 기대값을 글자로 적었으면 글자로 비교한다 — CLI 가 '5' 를 찍으면 JSON 숫자로도 읽히지만 기대 "5\n" 과 같은 출력이다
+        if _plain(e["body"]) != _plain(shown_text):
+            diffs.append(f"body 가 기대와 다름: 기대 {json.dumps(e['body'], ensure_ascii=False)[:300]} / 대상 {json.dumps(shown_text, ensure_ascii=False)[:300]}")
+    elif "body" in e:
         a, b = json.loads(json.dumps(e["body"])), json.loads(json.dumps(body))
         for p in case.get("ignore") or []:
             _drop(a, p.split("."))
@@ -2030,13 +2109,15 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
                                allowed=_accepted(conn, port_id))
         if server:
             server.close()  # 커버리지 도구는 정상 종료 때 기록을 쓴다
+        outside = False
         if not target_coverage_cmd and not target_coverage_report:
             # 측정 명령을 받지 않았으면 툴킷이 잰다 — 매핑한 파일을 그 프로젝트의 테스트로 돌린다 (에이전트가 명령을 짤 일이 없다)
             auto = auto_coverage(conn, port, root)
             if auto:
                 target_coverage_cmd, target_coverage_report = auto
+                outside = _outside_ok(settings, target_coverage_cmd)
         if target_coverage_cmd:
-            side.shell(target_coverage_cmd, timeout=600)
+            side.shell(target_coverage_cmd, timeout=600, outside=outside)
     finally:
         if server:
             server.close()

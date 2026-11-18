@@ -379,7 +379,8 @@ def _reviews(reviews: list[dict], conn, port_id: str) -> dict:
     for r, cases in ((cap or {}).get("detail", {}).get("req_cover") or {}).items():
         for c in cases:
             req_of.setdefault(c, []).append(r)
-    out = {"requirements": [], "expectations": [], "divergences": [], "omitted": [], "case_changes": [], "count": len(reviews)}
+    out = {"requirements": [], "expectations": [], "divergences": [], "omitted": [], "case_changes": [], "checks": [],
+           "count": len(reviews)}
     for h in reviews:
         if h["kind"] == "requirements":
             out["requirements"] = [{"id": d["case"], "text": d["diff"]} for d in h["detail"]]
@@ -393,6 +394,8 @@ def _reviews(reviews: list[dict], conn, port_id: str) -> dict:
             out["divergences"].append({"summary": h["summary"], "detail": h.get("detail")})
         elif h["kind"] == "omitted":
             out["omitted"].append({"summary": h["summary"].removeprefix("생략: ")})
+        elif h["kind"] == "coverage_unmeasured":
+            out["checks"].append({"summary": h["summary"], "files": (h.get("detail") or {}).get("files") or []})
         else:
             out["case_changes"].append(h.get("detail"))
     # 케이스 파일 순서대로, 순서 기록이 없으면 숫자를 숫자로 비교 (#10 이 #2 앞에 오지 않게)

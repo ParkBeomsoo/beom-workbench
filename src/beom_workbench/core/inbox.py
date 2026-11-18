@@ -79,6 +79,16 @@ _PY = (r"(?:python3?|py|(?:\.[\\/])?(?!\.\.)(?:[\w.-]+[\\/])*[\w.-]*venv[\\/](?:
 # 커버리지 옵션 — 고를 파일·기록 위치만 (따옴표로 감싸도 같다). 기록 위치는 상위 경로(..)로 나가지 않는다
 _COV_OPT = (r"(?:\"?--include=[\w./\\*,-]+\"?|\"?--omit=[\w./\\*,-]+\"?|--source=[\w./\\,-]+|--branch|--parallel-mode"
             r"|--data-file=(?!\S*\.\.)[\w./\\-]+|--rcfile=(?:NUL|/dev/null))")
+# cargo 에서 출력·대상만 고르는 옵션 (다른 설정 파일을 끼우는 --config 나 상위 폴더의 Cargo.toml 은 아니다)
+_CARGO_OPT = (r"(?: (?:-q|--quiet|--release|--offline|--locked|--frozen|--all-targets|--lib|--bins|--tests|--no-fail-fast|--workspace"
+              r"|--color(?:=| )(?:never|always|auto)|-j ?\d+|--manifest-path(?:=| )(?:\.[\\/])?(?:[\w-]+[\\/])*Cargo\.toml"
+              r"|--(?:test|bin|example) [\w-]+))*"
+              # -- 뒤는 테스트 실행 파일에 넘기는 것 — 출력·고르기만
+              r"(?: --(?: (?:--nocapture|--quiet|--test-threads=\d+|--include-ignored|--ignored|--exact|--show-output|[\w:]+))+)?")
+# TypeScript 타입 검사·빌드, vitest 한 번 실행 — npm test 와 같은 '프로젝트 빌드·테스트' (npx 는 프로젝트에 깔린 것일 때만: _is_build)
+_TS_TOOLS = (r"(?:npx )?tsc(?: (?:--noEmit|--pretty(?: false)?|(?:-p|--project) (?!\S*\.\.)[\w./\\-]+))*|"
+             r"(?:npx )?vitest (?:run|--run)(?: (?:--reporter(?:=| )[\w-]+|--silent|--passWithNoTests|--run"
+             r"|(?!\.\.)(?![\w.\\/-]*[\\/]\.\.)[\w][\w./\\-]*))*|")
 BUILD_COMMANDS = re.compile(
     # npm·pnpm·yarn: 출력만 줄이거나 보고·설치 스크립트를 끄는 옵션은 같은 명령이다 (실행하는 것을 바꾸지 않는다)
     r"^((?:npm (ci|install|test|run (build|test|lint))|pnpm (install|test|build)|yarn (install|test|build))"
@@ -87,7 +97,7 @@ BUILD_COMMANDS = re.compile(
     # 테스트 실행기에 넘기는 옵션은 아니다. 경로는 상위(..)로 나가지 않는다
     r"npm run build -- (?:(?:--outDir|--out-dir|--base)(?:=| )(?!\S*\.\.)[\w./\\-]+|--emptyOutDir|--mode [\w-]+)"
     r"(?: (?:(?:--outDir|--out-dir|--base)(?:=| )(?!\S*\.\.)[\w./\\-]+|--emptyOutDir|--mode [\w-]+))*|"
-    r"cargo (build|test|check|fmt|clippy)|go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
+    r"cargo (build|test|check|fmt|clippy)" + _CARGO_OPT + r"|" + _TS_TOOLS + r"go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
     r"\./gradlew (test|build)|pip install -e \.|dotnet (build|test)|"
     # 의존성 설치(requirements 파일·현재 패키지)와 대상 폴더 안 가상 환경 만들기
     r"(?:pip|" + _PY + r" -m pip) install(?: -q| --quiet| -U| --upgrade)* (?:-r requirements[\w.-]*\.txt|-e \.(?:\[[\w,-]+\])?)(?: -q| --quiet)*|"
@@ -394,7 +404,7 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
         # 다만 끝에 붙인 출력 거르기(2>&1 | Select-Object -Last 8)는 떼고 보고, ; · && 로 이은 조각이 하나하나 모두 빌드·확인
         # 명령이면 빌드로 본다 (조각마다 따로 검사 — 거르기 말고 다른 연결이 남아 있으면 그대로 묻는다)
         core = OUTPUT_FILTER.sub("", cmd).strip()
-        if BUILD_COMMANDS.match(_unquote(_rel_root(core, target_root))) and not CHAINING.search(core):
+        if _is_build(core, target_root):
             return "build"
         parts = [x.strip() for x in re.split(r"\s*(?:;|&&)\s*", cmd) if x.strip()]
         if len(parts) > 1 and all(_safe_piece(x, target_root) for x in parts) and not _read_only_shell(cmd, target_root):
@@ -537,13 +547,26 @@ def _unquote(cmd: str) -> str:
     return re.sub(r"""(?<![\w=])(["'])([^"'\s;|&<>`$(){}]+)\1""", r"\2", cmd)
 
 
+def _is_build(core: str, root) -> bool:
+    """빌드·테스트 명령인가. npx 는 프로젝트 node_modules/.bin 에 그 도구가 있을 때만 — 없으면 npx 가 같은 이름의 다른 패키지를
+    내려받아 돌린다 (npx tsc 는 typescript 가 아닌 'tsc' 패키지)."""
+    c = _unquote(_rel_root(core, root))
+    if not BUILD_COMMANDS.match(c) or CHAINING.search(core):
+        return False
+    m = re.match(r"npx (\S+)", c)
+    if not m:
+        return True
+    b = Path(root) / "node_modules" / ".bin"
+    return any((b / (m.group(1) + ext)).is_file() for ext in ("", ".cmd", ".ps1"))
+
+
 def _safe_piece(piece: str, root: Path) -> bool:
     """; · && 로 이은 조각 하나 — 끝의 출력 거르기를 떼고 빌드·확인·읽기만 하는 명령인가.
     (프로젝트 코드를 직접 돌리는 명령은 여기 들지 않는다 — 편집 자동 허용에서는 그 밖의 명령으로 묻는다)"""
     core = OUTPUT_FILTER.sub("", re.sub(r"^&\s+", "", piece.strip())).strip()
     if not core:
         return False
-    if BUILD_COMMANDS.match(_unquote(_rel_root(core, root))) and not CHAINING.search(core):
+    if _is_build(core, root):
         return True
     return _inspect_only(core) or _read_only_shell(piece, root) or _mkdir_inside(core, root)
 

@@ -1166,6 +1166,8 @@ function reviewCard(R, asking) {
     h("table", { class: "tbl" }, ...R.divergences.map((x) => h("tr", {}, h("td", { text: x.summary })))));
   if (R.omitted.length) rows.push(h("div", { class: "sub", text: "가져오지 않는 부분" }),
     h("table", { class: "tbl" }, ...R.omitted.map((x) => h("tr", {}, h("td", { text: x.summary })))));
+  if ((R.checks || []).length) rows.push(h("div", { class: "sub", text: "직접 확인할 점" }),
+    h("table", { class: "tbl" }, ...R.checks.map((x) => h("tr", {}, h("td", { text: x.summary + (x.files.length ? " — " + x.files.slice(0, 6).join(", ") : "") })))));
   if (R.case_changes.length) rows.push(h("div", { class: "sub", text: "케이스 변경" }),
     h("table", { class: "tbl" }, ...R.case_changes.flatMap((x) => [
       (x && x.removed && x.removed.length) ? h("tr", {}, h("td", { class: "k", text: "빠짐" }), h("td", { text: x.removed.join(", ") + " — 이전 승인 기준에서 빠진 케이스" })) : null,

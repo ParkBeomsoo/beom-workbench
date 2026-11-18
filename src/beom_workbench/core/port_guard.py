@@ -17,9 +17,11 @@ import getpass
 import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from beom_workbench.core import ledger
 
@@ -43,14 +45,27 @@ def _sha(obj) -> str:
 
 def _git_files(root: Path) -> list[str] | None:
     try:
-        out = subprocess.run(["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z"],
+        out = subprocess.run(["git", "-C", str(root), "ls-files", "-co", "-t", "--exclude-standard", "-z"],
                              capture_output=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if out.returncode != 0:
         return None
-    # -C 로 들어간 폴더 기준 상대 경로로 나온다 (하위 폴더가 대상이면 그 아래만)
-    return sorted(p for p in out.stdout.decode("utf-8", "replace").split("\0") if p and not _toolkit_path(p))
+    # -C 로 들어간 폴더 기준 상대 경로로 나온다 (하위 폴더가 대상이면 그 아래만). -t 로 추적('H' 등)·미추적('?')을 가른다
+    files = []
+    for entry in out.stdout.decode("utf-8", "replace").split("\0"):
+        tag, _, rel = entry.partition(" ")
+        if not rel or _toolkit_path(rel) or (tag == "?" and _generated(rel)):
+            continue
+        files.append(rel)
+    return sorted(files)
+
+
+def _generated(rel: str) -> bool:
+    """추적하지 않는 빌드·캐시 산출물 — .gitignore 가 없어도 지문에 넣지 않는다. 검증·테스트가 돌 때마다 생기는
+    __pycache__ 같은 것이 지문을 바꾸면 '검증 뒤 대상 코드가 바뀜' 으로 방금 한 검증이 무효가 된다."""
+    parts = rel.split("/")
+    return rel.endswith((".pyc", ".pyo")) or any(p in SKIP_DIRS for p in parts[:-1])
 
 
 def _toolkit_path(rel: str) -> bool:
@@ -237,6 +252,43 @@ def is_approved(conn, port_id: str, item_id: str, fp: str) -> bool:
     return (item_id, fp) in _approved(_logs(conn, port_id))
 
 
+TS_EXTS = (".ts", ".mts", ".cts", ".tsx")
+
+
+def local_bin(root: Path, name: str) -> bool:
+    b = Path(root) / "node_modules" / ".bin"
+    return any((b / (name + ext)).is_file() for ext in ("", ".cmd", ".ps1"))
+
+
+def measurable(root: Path, rel: str) -> bool:
+    """툴킷이 이 파일의 실행 범위를 스스로 잴 수 있나 (port.auto_coverage 와 같은 기준)."""
+    if rel.endswith((".py", ".js", ".mjs", ".cjs")):
+        return True
+    if rel.endswith(TS_EXTS):  # vitest 프로젝트에 v8 커버리지 패키지가 깔려 있을 때
+        return (Path(root) / "node_modules" / "@vitest" / "coverage-v8").is_dir() and local_bin(root, "vitest")
+    if rel.endswith(".rs"):
+        return shutil.which("cargo-llvm-cov") is not None
+    return False
+
+
+def coverage_gap(conn, port_id: str) -> dict | None:
+    """구현 파일이 모두 툴킷이 잴 수 없는 언어이고 측정 기록도 없으면 그 파일들 — 사람 확인으로 넘길 것.
+    없으면 에이전트가 커버리지 도구를 찾고 설치하려 하거나, 없는 '생략 승인' 을 사용자에게 요청하며 같은 자리를 돈다."""
+    if conn.execute("SELECT 1 FROM port_check WHERE port_id = ? AND kind LIKE 'adequacy%' LIMIT 1", (port_id,)).fetchone():
+        return None
+    row = conn.execute("SELECT target_root FROM port WHERE id = ?", (port_id,)).fetchone()
+    if not row:
+        return None
+    root = Path(row["target_root"])
+    files = sorted({m.group(1).replace("\\", "/") for r in conn.execute(
+        "SELECT target_ref FROM port_map WHERE port_id = ? AND status = 'ported'", (port_id,)).fetchall()
+        if (m := re.fullmatch(r"(.+?):\d+", r["target_ref"] or ""))})
+    files = [f for f in files if not f.startswith(".beom/")]
+    if not files or any(measurable(root, f) for f in files):
+        return None
+    return {"files": files, "exts": sorted({PurePosixPath(f).suffix or PurePosixPath(f).name for f in files})}
+
+
 def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | None) -> list[dict]:
     """사람 확인이 필요한 항목과 승인 여부. 지문은 '지금 보여 줄 내용' 기준 — 내용이 바뀌면 예전 승인은 무효."""
     approved = _approved(_logs(conn, port_id))
@@ -278,6 +330,12 @@ def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | Non
         items.append({"item_id": f"cases:{last_capture['id']}", "kind": "case_change", "fingerprint": fp,
                       "summary": f"케이스 변경 — 빠짐 {len(change['removed'])}개, 바뀜 {len(change['changed'])}개 (이전 capture 대비)",
                       "detail": change})
+    gap = coverage_gap(conn, port_id)
+    if gap:
+        items.append({"item_id": "coverage", "kind": "coverage_unmeasured", "fingerprint": _sha(gap),
+                      "summary": f"실행 범위 측정 불가 ({', '.join(gap['exts'])}) — 툴킷에 이 언어의 커버리지 도구가 없어 케이스·테스트가 "
+                                 "구현 코드를 모두 거쳤는지 재지 못했습니다. 합격 케이스와 테스트 결과로 충분하면 승인하세요",
+                      "detail": {"files": gap["files"]}})
     for it in items:
         it["approved"] = (it["item_id"], it["fingerprint"]) in approved
     return items
