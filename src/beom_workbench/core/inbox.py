@@ -92,7 +92,7 @@ BUILD_COMMANDS = re.compile(
     r"node(?: " + _NODE_TEST_OPT + r")*(?: --test(?: (?:" + _NODE_TEST_OPT + r"|(?!\.\.)(?![\w.\\/-]*[\\/]\.\.)[\w.][\w./\\-]*))*"
     r"|(?: [\w./\\-]+\.test\.[cm]?js)+(?: " + _NODE_TEST_OPT + r")*))\s*$")
 # 끝에 붙여 출력만 줄이는 것 — 무엇을 실행하는지는 바꾸지 않는다 (따옴표·다른 연결 기호가 들어가면 떼지 않는다)
-OUTPUT_FILTER = re.compile(r"(?:\s*2>&1)?(?:\s*\|\s*(?:Select-Object|select|Select-String|sls|Out-String|head|tail|more)\b"
+OUTPUT_FILTER = re.compile(r"(?:\s*2>&1)?(?:\s*\|\s*(?:Select-Object|select|Select-String|sls|Out-String|Out-Null|head|tail|more)\b"
                            r"[^|;&<>`$()\"'{}@=%]*)+$|\s*2>&1\s*$", re.I)  # 스크립트 블록({ }·@{ })·대입은 떼지 않는다
 # 명령마다 새 셸이라 에이전트는 'cd <대상 폴더 안>; 명령' 으로 쓴다 (격리 실행 규칙이 그렇게 시킨다) — 앞의 이동만 떼고 나머지로 판단한다
 CD_PREFIX = re.compile(r"^(?:cd|chdir|Set-Location|sl|Push-Location|pushd)\s+(?:-LiteralPath\s+|-Path\s+)?"
@@ -374,7 +374,13 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
         if _inspect_only(core):
             return "build"
         # 읽기만 하는 셸 명령(목록·내용·검색)은 Read 도구와 같게 — 대상 폴더 안이면 묻지 않는다 (기획·탐색이 묻는 창으로 막히지 않게)
-        return "edit" if _read_only_shell(cmd, target_root) else "commands"
+        if _read_only_shell(cmd, target_root):
+            return "edit"
+        # 대상 폴더 안에 폴더 만들기(+ 읽기)뿐인 줄도 편집과 같다
+        if parts and all(_mkdir_inside(OUTPUT_FILTER.sub("", x).strip(), target_root) or _read_only_shell(x, target_root) for x in parts) \
+                and any(_mkdir_inside(OUTPUT_FILTER.sub("", x).strip(), target_root) for x in parts):
+            return "edit"
+        return "commands"
     if tool.startswith("mcp__beom-workbench__"):
         return "other" if tool.endswith(("port_approve",)) else "edit"
     return "other"
@@ -474,7 +480,20 @@ def _safe_piece(piece: str, root: Path) -> bool:
         return False
     if BUILD_COMMANDS.match(core) and not CHAINING.search(core):
         return True
-    return _inspect_only(core) or _read_only_shell(piece, root)
+    return _inspect_only(core) or _read_only_shell(piece, root) or _mkdir_inside(core, root)
+
+
+_MKDIR = re.compile(r"^(?:mkdir|md|New-Item\s+(?:-ItemType|-Type)\s+Directory)\b(?P<rest>.*)$", re.I)
+
+
+def _mkdir_inside(cmd: str, root: Path) -> bool:
+    """대상 폴더 안에 폴더만 만드는 명령 — 파일 편집과 같은 수준 (에이전트의 '편집 자동 허용'도 폴더 만들기는 편집으로 친다)."""
+    m = _MKDIR.match(cmd.strip())
+    if not m or re.search(r"[|&;<>`$(){}]", m.group("rest")):
+        return False
+    words = [w for w in re.findall(r'"[^"]*"|\'[^\']*\'|\S+', m.group("rest"))
+             if w.lower() not in ("-force", "-p", "-path", "--parents", "-erroraction", "silentlycontinue")]
+    return bool(words) and all(_inside(w.strip("\"'"), root) for w in words)
 
 
 def _strip_cd(cmd: str, target_root: Path) -> str:
