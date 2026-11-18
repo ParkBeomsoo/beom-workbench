@@ -211,9 +211,30 @@ def permit_outside(settings, run: dict, what: str, key: str = "outside:node") ->
     return True
 
 
+def permit_build(settings, run: dict | None, keys: list[str], summary: str, tool: str = "mcp:wb_port_verify") -> bool:
+    """툴킷이 프로젝트 테스트·타입 검사를 돌려도 되나 — '빌드' 규칙대로. 묻는 규칙이면 작업마다 한 번 (wb_task·검증·실행 범위 측정이
+    같은 승인을 쓴다). 묻는 규칙을 '허용 아님'으로 보고 조용히 건너뛰면 측정도 카드도 없는 막다른 길이 된다."""
+    from beom_workbench.core import inbox
+    if run is None:
+        return True
+    d = inbox.decide(run, "build")
+    if d == "allow":
+        return True
+    if d == "refuse":
+        return False
+    if all(k in (run.get("approved_cmds") or []) for k in keys):
+        return True
+    ans = inbox.ask(settings, run["id"], "permission", {"summary": summary, "tool": tool, "input": {"keys": keys},
+                                                        "permission_kind": "build"})
+    if not ans.get("allow"):
+        return False
+    inbox.update_run(settings, run["id"], lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + keys))))
+    return True
+
+
 def run_task(settings, run: dict, task: str, *, path: str = "", paths: list[str] | None = None, name: str = "",
              timeout: int = 600) -> dict:
-    from beom_workbench.core import deps, inbox, port, sandbox
+    from beom_workbench.core import deps, inbox
     if task not in TASKS:
         raise ToolError("invalid_request", f"task 는 {', '.join(TASKS)} 중 하나")
     base = Path(run["target_root"])
@@ -247,20 +268,37 @@ def run_task(settings, run: dict, task: str, *, path: str = "", paths: list[str]
         inbox.update_run(settings, run["id"],
                          lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [f"task:{task}"]))))
         run = inbox.load_run(settings, run["id"])
+    before = deps.junk(base)
+    results = _execute(settings, run, root, [(k, task, c) for k, c in plan], timeout)
+    cleaned = deps.clean_junk(base, before)
+    return {"ok": all(r["ok"] for r in results), "task": task, "results": results,
+            **({"cleaned": cleaned} if cleaned else {})}
+
+
+def result_of(kind: str, task: str, cmd: str, code: int, out: str) -> dict:
+    text = _ANSI.sub("", out).replace("\r\n", "\n")
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    return {"kind": kind, "task": task, "command": cmd, "ok": code == 0, "exit_code": code, "summary": _summary(kind, text),
+            "output_tail": "\n".join(lines[-60:])[-5000:]}
+
+
+def _execute(settings, run: dict | None, root: Path, plan: list[tuple[str, str, str]], timeout: int = 600) -> list[dict]:
+    """(종류, 작업, 명령) 을 차례로 — 자동 실행 중이면 격리 규칙대로 (Node 도구는 승인받아 격리 밖), 아니면 그냥."""
+    from beom_workbench.core import inbox, port, sandbox
     side = port._Side("target", root, port._harness_dir(settings))
     env = side.env()
-    before = deps.junk(base)
     results = []
-    for kind, cmd in plan:
+    for kind, task, cmd in plan:
+        boxed = run is not None and sandbox.wraps_powershell(run)
         outside = False
-        if sandbox.wraps_powershell(run) and needs_outside(cmd):
+        if boxed and needs_outside(cmd):
             outside = permit_outside(settings, run, cmd)
             run = inbox.load_run(settings, run["id"])
             if not outside:
-                results.append({"kind": kind, "command": cmd, "ok": False, "skipped": True,
+                results.append({"kind": kind, "task": task, "command": cmd, "ok": False, "skipped": True,
                                 "error": "격리 밖 실행이 허용되지 않아 돌리지 않음 (Node 도구는 격리 안에서 돌지 않는다)"})
                 continue
-        if sandbox.wraps_powershell(run) and not outside:
+        if boxed and not outside:
             argv, shell = sandbox.wrap_argv(["cmd", "/d", "/c", cmd], run), False
         else:
             argv, shell = cmd, True  # 문자열 그대로 (목록으로 넘기면 따옴표가 \" 로 바뀌어 cmd 가 경로를 잘못 읽는다)
@@ -270,14 +308,37 @@ def run_task(settings, run: dict, task: str, *, path: str = "", paths: list[str]
             code, out = cp.returncode, (cp.stdout + cp.stderr).decode("utf-8", "replace")
         except subprocess.TimeoutExpired as e:
             code, out = 124, ((e.output or b"") + (e.stderr or b"")).decode("utf-8", "replace") + f"\n({t}초 안에 끝나지 않아 멈춤)"
-        text = _ANSI.sub("", out).replace("\r\n", "\n")
-        lines = [ln for ln in text.splitlines() if ln.strip()]
-        results.append({"kind": kind, "command": cmd, "ok": code == 0, "exit_code": code, "summary": _summary(kind, text),
-                        "output_tail": "\n".join(lines[-60:])[-5000:]})
-        inbox.log(settings, run["id"], "task", task=task, project=kind, command=cmd, exit_code=code, outside=outside)
-    cleaned = deps.clean_junk(base, before)
-    return {"ok": all(r["ok"] for r in results), "task": task, "results": results,
-            **({"cleaned": cleaned} if cleaned else {})}
+        results.append(result_of(kind, task, cmd, code, out))
+        if run is not None:
+            inbox.log(settings, run["id"], "task", task=task, project=kind, command=cmd, exit_code=code, outside=outside)
+    return results
+
+
+def project_checks(settings, run: dict | None, root: Path, done: dict | None = None) -> list[dict]:
+    """검증 때 툴킷이 함께 돌리는 프로젝트 테스트·타입 검사 — 에이전트가 따로 돌리지 않아도 완료 판정에 들어간다.
+    done: 이미 돈 테스트 결과 (커버리지 측정이 그 테스트를 돌렸으면 다시 돌리지 않는다). 규칙상 빌드가 '묻기'면 한 번 묻는다."""
+    from beom_workbench.core import inbox
+    root = Path(root)
+    done = done or {}
+    plan = []
+    for k in kinds(root):
+        if k not in done and (c := command(root, k, "test", [], "")):
+            plan.append((k, "test", c))
+        if k in ("node", "python") and (c := command(root, k, "typecheck", [], "")):
+            plan.append((k, "typecheck", c))  # 다른 언어는 테스트가 컴파일까지 한다
+    results = list(done.values())
+    if not plan:
+        return results
+    if run is not None:
+        # wb_task 와 같은 승인 — 같은 작업(테스트·타입 검사)을 이미 허락했으면 다시 묻지 않는다
+        ok = permit_build(settings, run, [f"task:{t}" for _, t, _ in plan],
+                          "검증 때 프로젝트 테스트·타입 검사 실행 (툴킷이 고른 명령): " + " ; ".join(c for _, _, c in plan))
+        if not ok:
+            why = ("규칙상 빌드·테스트 실행이 허용되지 않아 돌리지 않음" if inbox.decide(run, "build") == "refuse"
+                   else "사용자가 검증 때 테스트 실행을 거절함")
+            return results + [{"kind": k, "task": t, "command": c, "ok": False, "skipped": True, "error": why} for k, t, c in plan]
+        run = inbox.load_run(settings, run["id"])
+    return results + _execute(settings, run, root, plan)
 
 
 # ---------------------------------------------------------------- 파일 지우기

@@ -161,6 +161,28 @@ def screens(target_root: str | Path, files: list[str] | None = None, mobile: boo
     return {"shots": res, "folder": str(out_dir)}
 
 
+SCRIPT_EXT = {".py", ".js", ".mjs", ".cjs", ".ts", ".ps1", ".sh", ".bat", ".cmd", ".json", ".log"}  # 작성용 스크립트·점검 결과
+
+
+def tidy(target_root: str | Path) -> list[str]:
+    """기획 패키지 폴더에 남은 작성용 스크립트(문서·화면을 만들려고 짠 것)와 점검 결과(json·log)를 .beom/tmp/brief-tools 로 옮긴다 — 사용자에게 넘기는
+    폴더에는 문서·와이어프레임·스크린샷만. 와이어프레임 HTML 안의 스크립트와 하위 폴더는 건드리지 않는다."""
+    d = folder(target_root)
+    if not d.is_dir():
+        return []
+    dest = Path(target_root) / WORK / "tmp" / "brief-tools"
+    moved = []
+    for p in sorted(d.iterdir()):
+        if p.is_file() and p.suffix.lower() in SCRIPT_EXT:
+            dest.mkdir(parents=True, exist_ok=True)
+            target = dest / p.name
+            if target.exists():
+                target.unlink()
+            p.replace(target)
+            moved.append(p.name)
+    return moved
+
+
 def files(target_root: str | Path) -> dict:
     """앱이 보여 줄 문서 목록과 스크린샷 — 정해진 문서 순서대로, 그 밖의 .md 는 뒤에."""
     d = folder(target_root)

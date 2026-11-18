@@ -570,6 +570,7 @@ GATE_HUMAN = "사람 확인 항목 모두 승인됨 (차이 허용·생략·케�
 GATE_INTEGRITY = "기록 무결 (툴킷 밖에서 원장·골든을 고치지 않음)"
 GATE_LICENSE = "라이선스 확인 필요 없음"
 GATE_REQ_CASES = "요구사항마다 합격 케이스가 있음 (expect + req)"
+GATE_PROJECT = "프로젝트 테스트·타입 검사 통과 (툴킷이 검증 때 함께 돌림)"
 
 
 def _diff_state(last: dict | None, capture: dict | None, fp_now: str) -> dict:
@@ -592,6 +593,28 @@ def _diff_state(last: dict | None, capture: dict | None, fp_now: str) -> dict:
     if d["target_fp"] != fp_now:
         return {"ok": False, "why": "검증 뒤 대상 코드가 바뀜 — 다시 verify"}
     return {"ok": True}
+
+
+_PROJECT_WHY: dict[int, str] = {}
+
+
+def _project_state(chk: dict | None, fp_now: str) -> dict:
+    """검증 때 함께 돈 프로젝트 테스트·타입 검사 — 기록이 없으면(예전 실행·테스트 없는 프로젝트) 막지 않는다."""
+    if not chk:
+        return {"ok": True, "why": None}
+    d = chk["detail"]
+    bad = [r for r in d.get("results") or [] if not r.get("ok") and not r.get("skipped")]
+    if bad:
+        why = "프로젝트 " + " · ".join(f"{'테스트' if r.get('task') == 'test' else '타입 검사'} 실패 ({r.get('command')}"
+                                      f"{': ' + r['summary'] if r.get('summary') else ''})" for r in bad[:3])
+        return {"ok": False, "why": why, "failed": bad[:3]}
+    if d.get("target_fp") != fp_now:
+        return {"ok": False, "why": "검사 뒤 대상 코드가 바뀜"}
+    return {"ok": True, "why": None, "ran": [f"{r.get('task')}: {r.get('command')}" for r in d.get("results") or []][:6]}
+
+
+def project_why(gates: dict) -> str:
+    return gates.get("_project_why") or "프로젝트 테스트·타입 검사 실패"
 
 
 def _adequacy_state(src: dict | None, tgt: dict | None, fp_now: str) -> dict:
@@ -620,6 +643,8 @@ def _next_step(gates: dict, *, counts, capture, diff, human, adequacy, finished)
         return "port-capture 로 원본 응답(골든) 저장"
     if not gates[GATE_DIFF]:
         return f"port-verify — {diff['why']}"
+    if not gates.get(GATE_PROJECT, True):
+        return f"{project_why(gates)} — 고친 뒤 port-verify (테스트·타입 검사는 툴킷이 검증 때 함께 돌린다)"
     if not gates[GATE_ADEQUACY] and not adequacy.get("user_card"):
         return f"케이스 보강 또는 커버리지 측정 — {adequacy['why']}"
     if not gates[GATE_HUMAN]:
@@ -654,6 +679,8 @@ def _next_step_request(gates: dict, *, req_state, capture, diff, human, adequacy
         return "port-map --follow (이동한 구현 위치) 또는 바뀐 위치 다시 매핑"
     if not gates[GATE_DIFF]:
         return f"port-verify — {diff['why']}"
+    if not gates.get(GATE_PROJECT, True):
+        return f"{project_why(gates)} — 고친 뒤 port-verify (테스트·타입 검사는 툴킷이 검증 때 함께 돌린다)"
     if not gates[GATE_ADEQUACY] and not adequacy.get("user_card"):
         return f"port-verify 로 구현 코드 실행 확인 (측정은 툴킷이 한다) — {adequacy['why']}"
     if not gates[GATE_HUMAN]:
@@ -692,6 +719,7 @@ def status_(conn, port_id: str, brief: bool = False, fp_max_age: float = 0) -> d
         src_adq = _last_check(conn, port_id, "adequacy")  # v9 이전 기록
     tgt_adq = _last_check(conn, port_id, "adequacy:target")
     diff = _diff_state(last, capture_, fp_now)
+    project_state = _project_state(_last_check(conn, port_id, "project"), fp_now)
     adequacy = _adequacy_state(src_adq, tgt_adq, fp_now)
     human = guard.reviews(conn, port_id, last, capture_)
     card = next((h for h in human if h["kind"] == "coverage_unmeasured"), None)
@@ -708,6 +736,7 @@ def status_(conn, port_id: str, brief: bool = False, fp_max_age: float = 0) -> d
         GATE_HUMAN: all(h["approved"] for h in human),
         GATE_INTEGRITY: integ["ok"],
         GATE_LICENSE: _license_ok(conn, port_id, port["slice"].get("license_warning")),
+        GATE_PROJECT: project_state["ok"],
     }
     request_mode = make_mod.is_request(port)
     req_state = None
@@ -719,20 +748,25 @@ def status_(conn, port_id: str, brief: bool = False, fp_max_age: float = 0) -> d
                      "implemented": sum(1 for r in reqs if r["status"] == "ported")}
         gates[GATE_REQ_CASES] = bool(reqs) and capture_ is not None and not uncovered
     complete = all(gates.values())
+    if not project_state["ok"]:
+        gates_for_text = {**gates, "_project_why": project_state["why"]}
+    else:
+        gates_for_text = gates
     fin = _last_check(conn, port_id, "finish")
     finished = None
     if fin:
         finished = {"id": fin["id"], "at": fin["created_at"], "valid": complete and fin["detail"].get("target_fp") == fp_now}
     out = {"port_id": port_id, "name": port["name"], "target_language": port["target_language"], "counts": dict(counts),
            "gates": gates, "complete": complete, "finished": finished,
-           "next_step": (_next_step_request(gates, req_state=req_state, capture=capture_, diff=diff, human=human,
+           "next_step": (_next_step_request(gates_for_text, req_state=req_state, capture=capture_, diff=diff, human=human,
                                             adequacy=adequacy, finished=finished) if request_mode else
-                         _next_step(gates, counts=counts, capture=capture_, diff=diff, human=human,
+                         _next_step(gates_for_text, counts=counts, capture=capture_, diff=diff, human=human,
                                     adequacy=adequacy, finished=finished)),
            "mode": port.get("mode") or "reference",
            **({"requirements": req_state} if request_mode else {}),
            "broken_targets": broken,
            "differential": diff,
+           "project_checks": project_state,
            "adequacy": adequacy,
            "approvals": {"pending": sum(1 for h in human if not h["approved"]),
                          "approved": sum(1 for h in human if h["approved"])},
@@ -1037,15 +1071,17 @@ def _node_major() -> int:
         return 0
 
 
-def auto_coverage(conn, port: dict, root: Path) -> tuple[str, str] | None:
+def auto_coverage(conn, port: dict, root: Path, allowed: bool | None = None) -> tuple[str, str] | None:
     """매핑한 대상 파일(파이썬·JS)을 그 프로젝트의 테스트로 돌려 커버리지를 재는 명령과 리포트 경로 — 테스트가 없거나 다른 언어면 None.
     파이썬은 툴킷이 준비한 .beom/venv(없으면 툴킷 자신의 파이썬 — pytest·coverage 가 들어 있다), Node 는 내장 테스트 실행기."""
     from beom_workbench.core import deps
     run = _auto_run()
-    if run is not None:
+    if allowed is False:
+        return None  # 테스트를 돌리는 것도 빌드 — 규칙이 막거나 사용자가 거절했다
+    if run is not None and allowed is None:
         from beom_workbench.core import inbox
         if inbox.decide(run, "build") != "allow":
-            return None  # 테스트를 돌리는 것도 빌드 — 묻거나 막는 규칙이면 툴킷이 혼자 돌리지 않는다
+            return None  # 승인을 받지 않은 채로는 툴킷이 혼자 돌리지 않는다 (검증은 permit_build 로 먼저 받는다)
     files = sorted({m.group(1).replace("\\", "/") for r in conn.execute(
         "SELECT target_ref FROM port_map WHERE port_id = ? AND status = 'ported'", (port["id"],)).fetchall()
         if (m := re.fullmatch(r"(.+?):\d+", r["target_ref"] or ""))})
@@ -1067,8 +1103,13 @@ def auto_coverage(conn, port: dict, root: Path) -> tuple[str, str] | None:
         cmd = (f"{q(exe)} -m coverage run --data-file=.beom/tmp/.autocov --include={q(inc)} -m pytest -q -p no:cacheprovider"
                f" && {q(exe)} -m coverage json --data-file=.beom/tmp/.autocov -o .beom/tmp/autocov.json")
         return cmd, ".beom/tmp/autocov.json"
+    runner = tasks_mod()._node_runner(root) if js or ts else None
+    if js and runner in ("vitest",) and guard.measurable(root, "x.ts"):
+        ts, js = ts + js, []  # vitest 로 재는 JS 프로젝트 — 아래 vitest 갈래로
+    if js and runner in ("jest", "mocha", "vitest"):
+        return None  # node 내장 실행기로는 그 테스트를 못 돌린다 (vitest 는 커버리지 패키지가 없을 때) — 테스트는 project_checks 가 돌린다
     if js:
-        tests = (root / "test").is_dir() or (root / "tests").is_dir() or any(root.rglob("*.test.js")) or any(root.rglob("*.test.mjs"))
+        tests = (root / "test").is_dir() or (root / "tests").is_dir() or tasks_mod()._has_files(root, (".test.js", ".test.mjs", ".test.cjs"))
         major = _node_major()
         if not tests or major < 20:
             return None
@@ -1095,6 +1136,17 @@ def _outside_ok(settings, cmd: str) -> bool:
         return False
     # wb_task(테스트·타입 검사·빌드)와 같은 승인 — 프로젝트의 Node 도구를 그 폴더에서 돌리는 같은 일이라 프로젝트에서 한 번만 묻는다
     return tasks.permit_outside(settings, run, f"실행 범위 측정 — {cmd}")
+
+
+def tasks_mod():
+    from beom_workbench.core import tasks
+    return tasks
+
+
+def inbox_needs_outside(cmd: str) -> bool:
+    from beom_workbench.core import inbox, sandbox
+    run = _auto_run()
+    return bool(run) and sandbox.wraps_powershell(run) and inbox.needs_unsandboxed(cmd)
 
 
 def _auto_run() -> dict | None:
@@ -1219,7 +1271,8 @@ def _call(side: _Side, case: dict, timeout: float) -> dict:
             raise ToolError("capability_unavailable", f"{ext} 함수 직접 호출용 내장 하네스 없음",
                             recovery=f'call.{side.name} 에 {{"cmd": "..."}} — stdin JSON {{args, kwargs}} 를 받아 '
                                      'stdout 에 {"ok": true, "return": 값} 을 내는 작은 명령을 지정')
-    req = json.dumps({"args": case.get("args", []), "kwargs": case.get("kwargs", {})}).encode()
+    req = json.dumps({"args": side_value(case.get("args"), side.name, []),
+                      "kwargs": side_value(case.get("kwargs"), side.name, {})}).encode()
     proc = side.shell(cmd, stdin=req, timeout=timeout)
     out = proc.stdout.decode("utf-8", "replace")
     payload = out.rsplit(HARNESS_MARK, 1)[-1] if HARNESS_MARK in out else out
@@ -1236,6 +1289,19 @@ def _call(side: _Side, case: dict, timeout: float) -> dict:
         return {"status": "raised", "body": None,
                 "detail": f"{data.get('error')}: {data.get('message')}"[:300] + (f" (위치: {where[:400]})" if where else "")}
     return {"status": "ok", "body": data}
+
+
+def per_side(v) -> bool:
+    """쪽별 값인가 — {"source": ..., "target": ...}. args 는 원래 목록이라 객체면 쪽별이고, kwargs 는 두 쪽 값이 모두 객체일 때만
+    (함수 인자 이름이 source·target 인 경우와 헷갈리지 않게)."""
+    return isinstance(v, dict) and bool(v) and set(v) <= {"source", "target"} and all(isinstance(x, (dict, list)) for x in v.values())
+
+
+def side_value(v, side: str, empty):
+    """원본·대상의 인자 모양이 다를 때(JS 옵션 객체 ↔ 파이썬 키워드 인자) 쪽별로 적은 값에서 이쪽 것."""
+    if per_side(v):
+        return v.get(side, empty)
+    return empty if v is None else v
 
 
 def _drop(body, path: list[str]) -> None:
@@ -1602,6 +1668,9 @@ def _load_cases(path: Path) -> tuple[dict, list[dict]]:
             raise ToolError("invalid_request", f"케이스 {name}: call 은 {{\"target\": \"파일:함수\"}} 또는 \"파일:함수\"")
         if "runtime" in c and not isinstance(c["runtime"], dict):
             raise ToolError("invalid_request", f"케이스 {name}: runtime 은 {{\"target\": \"python3\"}} 처럼 쪽별로")
+        if "args" in c and not isinstance(c["args"], list) and not per_side(c["args"]):
+            raise ToolError("invalid_request", f"케이스 {name}: args 는 목록 — 원본과 대상의 인자가 다르면 "
+                            '{"source": [...], "target": [...]} 처럼 쪽별로')
         if ("args" in c or "kwargs" in c) and "call" not in c:
             raise ToolError("invalid_request", f"케이스 {name}: args·kwargs 는 함수 호출(call) 케이스용 — CLI 인자는 argv 로 적는다")
         if c.get("new") and not c.get("expect") and not c.get("invariant"):
@@ -1677,8 +1746,8 @@ def explore(cases: list[dict], n: int, seed: int = 0) -> list[dict]:
         if c.get("generated") or c.get("explore") is False or c.get("expect"):
             continue  # 기대값은 그 입력에 대한 것 — 입력을 바꾼 변형에는 맞지 않는다
         for key in ("json", "args", "kwargs", "argv"):
-            if key not in c:
-                continue
+            if key not in c or per_side(c[key]):
+                continue  # 쪽별 인자는 두 쪽을 같이 바꿀 방법이 없어 변형하지 않는다
             for path, v in _leaf_paths({key: c[key]}):
                 if len(path) < 2 and key != "json":
                     continue  # args 자체를 없애지는 않는다
@@ -1968,6 +2037,14 @@ def capture(conn, proj: dict, settings: Settings, port_id: str, cases_file: str,
         base = [{k: v for k, v in c.items() if k != "expect"} for c in cases]
         generated = make_mod.invariant_variants(cases, explore(base, explore_n, seed))
     else:
+        no_src = [c.get("name") or f"#{i + 1}" for i, c in enumerate(cases)
+                  if isinstance(c.get("call"), dict) and "source" not in c["call"] and not c.get("new")]
+        if no_src:
+            raise ToolError("invalid_request", f"케이스 {len(no_src)}개의 call 에 원본(source) 쪽이 없음: {', '.join(no_src[:8])} — "
+                            "'파일:함수' 한 줄은 대상(내 코드) 쪽 함수로 읽는다",
+                            recovery='원본과 대상을 함께 적는다: "call": {"source": "원본파일:함수", "target": "대상파일:함수"} '
+                                     '(예: {"source": "textstat/__init__.py:count_words", "target": "src/index.js:countWords"}). '
+                                     '대상을 아직 만들지 않았어도 만들 파일·함수 이름을 적는다. 케이스 파일은 Write 로 통째로 다시 쓴다')
         generated = explore(cases, explore_n, seed)
     cases = cases + generated
     run = _run_source(conn, proj, settings, port, cases, url=source_url, cmd=source_cmd, cli=source_cli, trusted=trusted,
@@ -2096,14 +2173,27 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
         if server:
             server.close()  # 커버리지 도구는 정상 종료 때 기록을 쓴다
         outside = False
+        auto_used = False
         if not target_coverage_cmd and not target_coverage_report:
             # 측정 명령을 받지 않았으면 툴킷이 잰다 — 매핑한 파일을 그 프로젝트의 테스트로 돌린다 (에이전트가 명령을 짤 일이 없다)
-            auto = auto_coverage(conn, port, root)
+            run_now = _auto_run()
+            allowed = tasks_mod().permit_build(
+                settings, run_now, ["task:test"], "검증 때 프로젝트 테스트 실행 (케이스가 구현 코드를 거쳤는지 실행 범위도 함께 잰다)"
+            ) if run_now is not None and tasks_mod().available(root, "test") else None
+            auto = auto_coverage(conn, port, root, allowed=allowed)
             if auto:
                 target_coverage_cmd, target_coverage_report = auto
                 outside = _outside_ok(settings, target_coverage_cmd)
+                auto_used = True
+        done = {}
         if target_coverage_cmd:
-            side.shell(target_coverage_cmd, timeout=600, outside=outside)
+            cov = side.shell(target_coverage_cmd, timeout=600, outside=outside)
+            if auto_used and (outside or not inbox_needs_outside(target_coverage_cmd)):
+                # 툴킷이 고른 측정 명령은 그 프로젝트의 테스트를 돌린 것 — 테스트 결과로 쓴다 (다시 돌리지 않는다)
+                kind = "python" if " -m coverage " in target_coverage_cmd else ("rust" if "cargo llvm-cov" in target_coverage_cmd else "node")
+                done[kind] = tasks_mod().result_of(kind, "test", f"{target_coverage_cmd} (커버리지 측정과 함께)", cov.returncode,
+                                                   (cov.stdout + cov.stderr).decode("utf-8", "replace"))
+        project = tasks_mod().project_checks(settings, _auto_run(), root, done) if root.is_dir() else []
     finally:
         if server:
             server.close()
@@ -2186,8 +2276,18 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
                      (cid, port_id, f"differential:{source_kind}", len(rows), passed, failed,
                       ledger.dumps({"rows": rows, "concurrency": conc, "rules": guard.case_rules(cases), "target_fp": fp}),
                       ev_id, _now()))
+        pcid = None
+        if project:
+            pcid = "chk_" + uuid.uuid4().hex[:12]
+            slim = [{k: v for k, v in r.items() if k != "output_tail"} | ({"output_tail": r["output_tail"][-1500:]}
+                    if not r.get("ok") and r.get("output_tail") else {}) for r in project]
+            conn.execute("INSERT INTO port_check (id, port_id, kind, cases, passed, failed, detail, evidence_id, created_at) "
+                         "VALUES (?, ?, 'project', ?, ?, ?, ?, NULL, ?)",
+                         (pcid, port_id, len(slim), sum(1 for r in slim if r.get("ok")),
+                          sum(1 for r in slim if not r.get("ok") and not r.get("skipped")),
+                          ledger.dumps({"results": slim, "target_fp": fp}), _now()))
     guard.record(conn, port_id, "verify", {"id": cid, "passed": passed, "failed": failed},
-                 checks=[cid, tgt_adq.get("check_id") if isinstance(tgt_adq, dict) else None])
+                 checks=[cid, tgt_adq.get("check_id") if isinstance(tgt_adq, dict) else None, pcid])
     fails = [r for r in rows if not r["ok"]]
     crashes = [d["name"] for d in dst if d.get("crashed")]
     return {"check_id": cid, "source": source_kind, "cases": len(rows), "generated": generated, "passed": passed,
@@ -2197,6 +2297,7 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
             "latency_ms": {"source": _latency(src), "target": _latency(dst),
                            "note": "참고값 — 골든 기준이면 원본 시간은 capture 시점"},
             "accepted_unapproved": unapproved, "target_adequacy": tgt_adq,
+            "project_checks": [{k: v for k, v in r.items() if k != "output_tail" or not r.get("ok")} for r in project],
             **({"cleaned": cleaned[:20], "cleaned_note": "케이스를 돌리는 동안 프로그램이 새로 만든 파일이라 지웠다 — 직접 지울 필요 없다"}
                if cleaned else {}),
             **({"hollow_calls": hollow, "hollow_note": "이 케이스들은 프로그램이 쓰지 않는 함수가 적힌 값을 그대로 돌려주는지만 본다 — "

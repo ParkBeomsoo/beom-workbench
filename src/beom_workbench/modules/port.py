@@ -140,7 +140,14 @@ def wb_port_verify(project_id: str, port_id: str, target_url: str | None = None,
                     source_image: str | None = None, concurrency: int = 0, target_coverage_cmd: str | None = None,
                     target_coverage_report: str | None = None) -> dict:
     """대상(내 코드, 어떤 언어든)을 원본과 차등 비교. 기본은 골든 대비, source_* 를 주면 실시간.
-    concurrency>1: 케이스마다 대상에 동시 요청. 전부 통과하면 원본 처리 함수에 L3 근거(differential)."""
+    concurrency>1: 케이스마다 대상에 동시 요청. 전부 통과하면 원본 처리 함수에 L3 근거(differential).
+    프로젝트 테스트·타입 검사도 툴킷이 함께 돌려(project_checks) 완료 게이트에 넣는다 — 따로 돌리지 않아도 된다."""
+    for side_cmd, side_url, name in ((target_cmd, target_url, "target"), (source_cmd, source_url, "source")):
+        if side_cmd and not side_url:
+            # 묻기 전에 돌려보낸다 — 주소 없는 서버 명령은 검증할 수 없어, 승인 카드만 하나 더 뜨고 실패한다
+            raise ToolError("invalid_request", f"{name}_cmd 는 검증용 서버를 띄우는 명령 — {name}_url 과 함께 쓴다",
+                            recovery=f'CLI 프로그램이면 {name}_cli 에 명령을 넣는다 (예: {name}_cli="python -m mytool"). '
+                                     f'서버면 {name}_url="http://127.0.0.1:{{port}}" 를 함께 준다')
     inbox.gate_commands(settings, {"target_cmd": target_cmd, "target_cli": target_cli, "source_cmd": source_cmd,
                                    "source_cli": source_cli, "target_coverage_cmd": target_coverage_cmd,
                                    **port.commands_in_cases(settings, project_id, port_id, cases_file)})

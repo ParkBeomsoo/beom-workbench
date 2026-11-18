@@ -413,6 +413,7 @@ GATE_HELP = {
     port.GATE_INTEGRITY: "원장·골든 기록이 툴킷 밖에서 고쳐지지 않았다 (해시 사슬)",
     port.GATE_LICENSE: "가져온 코드의 라이선스 문제가 없다",
     port.GATE_REQ_CASES: "요구사항마다 그것을 확인하는 합격 케이스가 하나 이상 있다",
+    port.GATE_PROJECT: "검증할 때 툴킷이 프로젝트의 테스트와 타입 검사를 함께 돌려 모두 통과했다 (없으면 해당 없음)",
 }
 
 

@@ -47,7 +47,7 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
                   what=mask_command(str((input or {}).get("command"))[:160]), why="foreground_server")
         return json.dumps({"behavior": "deny", "message": inbox.SERVER_HINT}, ensure_ascii=False)
     # 작업 폴더가 저장소의 하위 폴더면 그 저장소 안의 다른 폴더는 읽기만 묻지 않는다 (고치기는 묻는다)
-    kind = inbox.classify(tool_name, input or {}, root, [settings.home], read_roots=inbox.repo_roots(run))
+    kind = inbox.classify(tool_name, input or {}, root, [settings.home], read_roots=inbox.read_roots(run, settings))
     decision = inbox.decide(run, kind)
     redirect = _redirect(run, tool_name, input or {}, kind, decision)
     if redirect:
@@ -109,6 +109,11 @@ REDIRECT_PROBE = ("짧은 코드로 동작을 알아보는 명령(python -c)은 
                   "않았습니다). 알아볼 것을 .beom/tmp/test_probe.py 같은 테스트로 적고 mcp__beom-workbench__wb_task(task=\"test\", "
                   "paths=[\".beom/tmp/test_probe.py\"]) 로 돌립니다 — 결과를 print 하거나 assert 로 확인합니다 (-s 없이도 실패 메시지에 "
                   "값이 보이게 assert 에 넣는 것이 낫습니다).")
+REDIRECT_WRITE = ("셸 스크립트로 파일 내용을 바꾸는 명령은 사용자에게 물어야 하는 꼴이라 돌리지 않았습니다 (사용자에게 묻지도 "
+                  "않았습니다). 대상 폴더 안의 파일은 Edit·Write 도구로 고칩니다 — 여러 곳을 한꺼번에 바꿔야 하면 Write 로 파일을 통째로 "
+                  "다시 씁니다 (묻지 않고 바로 됩니다).")
+_SHELL_WRITE = re.compile(r"\b(?:Set-Content|Add-Content|Out-File|New-Item\b[^;|]*-Value)\b|\[(?:System\.)?IO\.File\]::(?:Write|Append)"
+                          r"|(?<![<>\d])>{1,2}\s*['\"]?[\w.\\/:-]+\.\w+", re.I)
 # 파이썬 실행기 옵션(-X utf8 · -W ignore · -B -u 등) 뒤의 -c
 _PY_PROBE = re.compile(r"(?:^|[\s;&|(\\/])(?:python3?|py)(?:\.exe)?\"?\s+(?:-[XW]\s*\S+\s+|-[BuIEsSOq]+\s+)*-c\s", re.I)
 
@@ -126,6 +131,8 @@ def _redirect(run: dict, tool_name: str, inp: dict, kind: str, decision: str) ->
         return None
     if inbox.DELETE_CMD.search(cmd):  # 먼저 — 'Remove-Item vitest.config.ts' 는 테스트가 아니라 삭제다
         return REDIRECT_REMOVE
+    if _SHELL_WRITE.search(cmd):
+        return REDIRECT_WRITE
     task = inbox.task_like(cmd)
     if task and tasks.available(Path(run["target_root"]), task):
         return REDIRECT_TASK
@@ -215,7 +222,7 @@ def wb_run(command: str, timeout: int = 600) -> dict:
     if not cmd:
         return {"ok": False, "error": "command 가 비어 있음"}
     root = Path(run["target_root"])
-    kind = inbox.classify("PowerShell", {"command": cmd}, root, [settings.home], read_roots=inbox.repo_roots(run))
+    kind = inbox.classify("PowerShell", {"command": cmd}, root, [settings.home], read_roots=inbox.read_roots(run, settings))
     dk, du = inbox.decide(run, kind), inbox.decide(run, "unsandboxed")
     if "refuse" in (dk, du):
         inbox.log(settings, run["id"], "permission", tool="mcp:wb_run", permission_kind=kind if dk == "refuse" else "unsandboxed",
@@ -378,6 +385,9 @@ def wb_handoff(summary: str, how_to_run: str | list[str], risks: str | list[str]
     if run is not None and run.get("mode") == "plan":
         from beom_workbench.core import brief
 
+        tidied = brief.tidy(run["target_root"])  # 작성용 스크립트는 사용자에게 넘기는 기획 폴더에 두지 않는다 — 툴킷이 옮긴다
+        if tidied:
+            inbox.log(settings, run["id"], "brief_tidy", moved=tidied[:20])
         chk = brief.check(run["target_root"], _policy_docs(run))
         if not chk["ok"]:
             return {"ok": False, "error": "기획 패키지가 아직 맞물리지 않음 — 고친 뒤 다시 인계한다", "problems": chk["problems"]}
