@@ -840,7 +840,14 @@ try:
         target = getattr(target, part)
     out = {"ok": True, "return": target(*req.get("args", []), **req.get("kwargs", {}))}
 except Exception as e:  # noqa: BLE001
-    out = {"ok": False, "error": type(e).__name__, "message": str(e)}
+    import os
+    import traceback
+    here = os.path.abspath(__file__)
+    # 어디서 났는지 — 프로젝트(와 케이스 보조 파일) 안의 마지막 몇 줄. 이것이 없으면 에이전트가 원인을 찾으려 툴킷 기록을 뒤진다
+    frames = [f for f in traceback.extract_tb(e.__traceback__) if os.path.abspath(f.filename) != here
+              and os.path.abspath(f.filename).lower().startswith(os.path.abspath(root).lower())]
+    where = [f"{os.path.relpath(f.filename, root)}:{f.lineno} {f.name}: {(f.line or '').strip()[:120]}" for f in frames[-3:]]
+    out = {"ok": False, "error": type(e).__name__, "message": str(e), "where": where}
 sys.stdout.write("\n" + MARK + json.dumps(out, default=enc))  # ASCII 로 — 파이프 인코딩(Windows cp949)과 상관없이 그대로 전해지게
 '''
 
@@ -873,7 +880,11 @@ process.stdin.on("end", async () => {
     if (r && typeof r.then === "function") r = await r;
     out = { ok: true, return: r === undefined ? null : r };
   } catch (e) {
-    out = { ok: false, error: (e && e.name) || "Error", message: String((e && e.message) || e) };
+    // 어디서 났는지 — 프로젝트 안의 스택 몇 줄 (node_modules·이 하네스 제외)
+    const where = String((e && e.stack) || "").split("\n").slice(1).map((s) => s.trim())
+      .filter((s) => s.includes(root) && !s.includes("node_modules") && !s.includes(__filename)).slice(0, 3).reverse()  // 파이썬과 같게 바깥 → 안쪽
+      .map((s) => s.split(root).join("."));
+    out = { ok: false, error: (e && e.name) || "Error", message: String((e && e.message) || e), where };
   }
   process.stdout.write("\n" + MARK + JSON.stringify(out));
 });
@@ -1161,7 +1172,9 @@ def _call(side: _Side, case: dict, timeout: float) -> dict:
         if data["ok"]:
             return {"status": "ok", "body": data.get("return")}
         # 예외 이름·메시지는 언어마다 달라 비교하지 않는다 (던졌다는 사실만 비교)
-        return {"status": "raised", "body": None, "detail": f"{data.get('error')}: {data.get('message')}"[:300]}
+        where = " ← ".join(str(x) for x in (data.get("where") or [])[::-1])
+        return {"status": "raised", "body": None,
+                "detail": f"{data.get('error')}: {data.get('message')}"[:300] + (f" (위치: {where[:400]})" if where else "")}
     return {"status": "ok", "body": data}
 
 
@@ -1221,7 +1234,9 @@ def check_expect(dst: dict, case: dict) -> list[str]:
     e = case["expect"]
     diffs = []
     if "status" in e and dst["status"] != e["status"]:
-        diffs.append(f"status {dst['status']} != 기대 {e['status']}")
+        # 예외로 끝났으면 그 이름·메시지·위치까지 — 이것이 없으면 원인을 찾으려 다시 돌리거나 툴킷 기록을 뒤진다
+        why = dst.get("detail") or dst.get("error")
+        diffs.append(f"status {dst['status']} != 기대 {e['status']}" + (f" — {why}" if why else ""))
     body = dst["body"]
     if "body" in e:
         a, b = json.loads(json.dumps(e["body"])), json.loads(json.dumps(body))

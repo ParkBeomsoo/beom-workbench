@@ -394,7 +394,7 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
         # 다만 끝에 붙인 출력 거르기(2>&1 | Select-Object -Last 8)는 떼고 보고, ; · && 로 이은 조각이 하나하나 모두 빌드·확인
         # 명령이면 빌드로 본다 (조각마다 따로 검사 — 거르기 말고 다른 연결이 남아 있으면 그대로 묻는다)
         core = OUTPUT_FILTER.sub("", cmd).strip()
-        if BUILD_COMMANDS.match(_unquote(core)) and not CHAINING.search(core):
+        if BUILD_COMMANDS.match(_unquote(_rel_root(core, target_root))) and not CHAINING.search(core):
             return "build"
         parts = [x.strip() for x in re.split(r"\s*(?:;|&&)\s*", cmd) if x.strip()]
         if len(parts) > 1 and all(_safe_piece(x, target_root) for x in parts) and not _read_only_shell(cmd, target_root):
@@ -523,6 +523,14 @@ def _unwrap_shell(cmd: str) -> str:
     return m.group(1).strip() if m else cmd
 
 
+def _rel_root(cmd: str, root) -> str:
+    """대상 폴더의 절대 경로를 .\\ 로 — 빌드 명령인지 볼 때만 (에이전트가 대상 폴더 안의 venv 파이썬·테스트 폴더를 절대 경로로 쓴다)."""
+    for r in {str(Path(root)), str(Path(root).resolve())}:
+        for form in {r.rstrip("\\/") + "\\", r.rstrip("\\/").replace("\\", "/") + "/"}:
+            cmd = re.sub(re.escape(form), lambda _m: ".\\", cmd, flags=re.I)
+    return cmd
+
+
 def _unquote(cmd: str) -> str:
     """빈칸 없는 낱말의 따옴표를 뗀다 — 빌드 명령인지 볼 때만 (".\\.beom\\venv\\Scripts\\python.exe" -m pytest ".\\tests").
     읽기 전용 판정에는 쓰지 않는다 ($p = '경로' 의 따옴표는 문자열이라는 표시다)."""
@@ -535,7 +543,7 @@ def _safe_piece(piece: str, root: Path) -> bool:
     core = OUTPUT_FILTER.sub("", re.sub(r"^&\s+", "", piece.strip())).strip()
     if not core:
         return False
-    if BUILD_COMMANDS.match(_unquote(core)) and not CHAINING.search(core):
+    if BUILD_COMMANDS.match(_unquote(_rel_root(core, root))) and not CHAINING.search(core):
         return True
     return _inspect_only(core) or _read_only_shell(piece, root) or _mkdir_inside(core, root)
 
@@ -612,6 +620,8 @@ def _read_only_shell(cmd: str, root: Path) -> bool:
     bare = re.sub(r"'[^']*'|\"[^\"$`]*\"", "''", cmd)  # 따옴표 안의 | ; ( 는 명령 구분이 아니다 (-Pattern '^(a|b)')
     for seg in _RO_SPLIT.split(bare):
         seg = seg.strip()
+        if re.match(r"''\s*\S", seg) or seg.startswith('"'):  # 남은 "…" 는 $·` 가 든 문자열 — 무엇이 될지 모른다
+            return False  # "경로\\프로그램.exe" 인자 — 따옴표로 감싼 실행 파일을 돌리는 명령이다 (문자열 하나만 있는 조각이 아니다)
         if not seg or seg.startswith(("$", "'", '"', "-", "#")) or re.fullmatch(r"[\d.,\s]+", seg):
             continue  # 변수·문자열·인자 조각·숫자 — 명령이 아니다 ($x = 'a' 의 오른쪽도 여기서 다시 본다)
         words = seg.split()
