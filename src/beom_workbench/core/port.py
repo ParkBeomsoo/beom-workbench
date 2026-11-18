@@ -1089,26 +1089,12 @@ def _outside_ok(settings, cmd: str) -> bool:
     """툴킷이 짠 측정 명령이 Node 빌드 도구라 Windows 격리 안에서 돌지 않을 때 — 권한 규칙대로 격리 밖에서 돌려도 되나.
     빌드·'격리 없이 실행' 둘 다 허용이면 바로, 거절이면 아니고, 아니면 카드 한 번 (같은 명령은 다시 묻지 않는다).
     격리 안에서 돌리면 조용히 실패해 리포트가 안 생기고, 에이전트가 같은 측정을 직접 짜서 다시 돌리게 된다."""
-    from beom_workbench.core import inbox, sandbox
+    from beom_workbench.core import inbox, sandbox, tasks
     run = _auto_run()
     if run is None or not sandbox.wraps_powershell(run) or not inbox.needs_unsandboxed(cmd):
         return False
-    kd, ku = inbox.decide(run, "build"), inbox.decide(run, "unsandboxed")
-    if "refuse" in (kd, ku):
-        return False
-    # 같은 측정 — 잴 파일 목록(--coverage.include)만 늘거나 줄어도 다시 묻지 않는다 (툴킷이 짠 명령이라 나머지는 그대로다)
-    key = "autocov:" + hashlib.sha256(re.sub(r" --coverage\.include=\S+", "", cmd).encode()).hexdigest()[:16]
-    if kd == "allow" and ku == "allow" or key in (run.get("approved_cmds") or []):
-        return True
-    ans = inbox.ask(settings, run["id"], "permission", {
-        "summary": f"툴킷이 프로젝트 테스트로 실행 범위를 잽니다 (격리 밖 — Node 빌드 도구는 격리 안에서 돌지 않음): {cmd}",
-        "tool": "mcp:coverage", "input": {"command": cmd}, "permission_kind": "unsandboxed"})
-    if not ans.get("allow"):
-        return False
-    if ans.get("always"):
-        inbox.update_run(settings, run["id"], lambda r: r["policy"].__setitem__("unsandboxed", "allow"))
-    inbox.update_run(settings, run["id"], lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [key]))))
-    return True
+    # wb_task(테스트·타입 검사·빌드)와 같은 승인 — 프로젝트의 Node 도구를 그 폴더에서 돌리는 같은 일이라 프로젝트에서 한 번만 묻는다
+    return tasks.permit_outside(settings, run, f"실행 범위 측정 — {cmd}")
 
 
 def _auto_run() -> dict | None:
@@ -2220,6 +2206,9 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
                                            if k in ("gates", "next_step", "approvals")}}
 
 
+TEST_FILE = re.compile(r"(?:^|/)(?:tests?|__tests__|spec)/|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|/)test_[^/]*\.py$|_test\.(?:py|go)$")
+
+
 def _target_adequacy(conn, port: dict, report: Path, fp: str) -> dict:
     """대상(내 코드)을 케이스로 돌린 커버리지에서, ported 로 매핑한 함수가 모두 실행됐는지.
     원본을 계측할 수 없을 때(릴리스 빌드 바이너리 등)의 대안 — 원본 쪽 분기를 다 거쳤다는 뜻은 아니다."""
@@ -2251,6 +2240,11 @@ def _target_adequacy(conn, port: dict, report: Path, fp: str) -> dict:
         path, ln = m.group(1), int(m.group(2))
         d = find(path)
         row = {"item": r["item_id"], "target": r["target_ref"]}
+        if d is None and TEST_FILE.search(path.replace("\\", "/")) and (root / path).is_file():
+            # 테스트 파일 자체 ('테스트가 있다' 같은 요구사항의 위치) — 커버리지 도구는 테스트 파일을 리포트에서 빼지만,
+            # 리포트가 생겼다는 것이 테스트가 돌았다는 뜻이다. 빠졌다고 실패로 두면 고칠 길이 없어 에이전트가 같은 자리를 돈다
+            rows.append({**row, "executed": True, "reason": "테스트 파일 — 테스트 실행으로 확인"})
+            continue
         if d is None:
             rows.append({**row, "executed": None, "reason": "리포트에 이 파일이 없음"})
             continue

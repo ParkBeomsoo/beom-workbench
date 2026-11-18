@@ -461,6 +461,22 @@ NODE_TOOLS = re.compile(r"(?:^|[;&|(]\s*)(?:npm|npx|pnpm|yarn|bun|node|vite|next
                         r"playwright|ng|turbo|tsx|ts-node)(?:\.cmd|\.exe)?(?=$|[\s;&|)])", re.I)
 
 
+_TASK_LIKE = [
+    ("typecheck", re.compile(r"(?:^|[\s;&|(])(?:npx\s+)?tsc(?:\.cmd)?\b|\bnpm\s+run\s+typecheck\b|\bcargo\s+check\b|\bmypy\b", re.I)),
+    ("lint", re.compile(r"\bnpm\s+run\s+lint\b|\beslint\b|\bcargo\s+clippy\b|\bruff\b", re.I)),
+    ("build", re.compile(r"\bnpm\s+run\s+build\b|\bcargo\s+build\b|\bgo\s+build\b|\bmvn\b.*\bpackage\b|\bdotnet\s+build\b", re.I)),
+    ("test", re.compile(r"\bpytest\b|-m\s+unittest\b|\b(?:npm|pnpm|yarn)\s+(?:run\s+)?test\b|\bvitest\b|\bjest\b|\bmocha\b|"
+                        r"\bnode(?:\.exe)?\s+(?:[^;&|]*\s)?--test\b|\bcargo\s+test\b|\bgo\s+test\b|\bmvn\b.*\btest\b|"
+                        r"\bgradlew?\b.*\btest\b|\bdotnet\s+test\b", re.I)),
+]
+
+
+def task_like(cmd: str) -> str | None:
+    """테스트·타입 검사·빌드·린트를 돌리는 명령이면 그 작업 이름 — 여럿이면 테스트가 먼저 (npm test; tsc → test)."""
+    found = [name for name, rx in _TASK_LIKE if rx.search(cmd or "")]
+    return "test" if "test" in found else (found[0] if found else None)
+
+
 def needs_unsandboxed(cmd: str) -> bool:
     """Windows 격리 안에서는 돌지 않는 Node 도구를 쓰는 명령인가. 버전만 보는 것(node --version)은 자식 프로세스가 없어 해당 없다."""
     for seg in re.split(r"[;&|\n]+", cmd or ""):

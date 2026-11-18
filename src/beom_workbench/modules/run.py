@@ -49,6 +49,11 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
     # 작업 폴더가 저장소의 하위 폴더면 그 저장소 안의 다른 폴더는 읽기만 묻지 않는다 (고치기는 묻는다)
     kind = inbox.classify(tool_name, input or {}, root, [settings.home], read_roots=inbox.repo_roots(run))
     decision = inbox.decide(run, kind)
+    redirect = _redirect(run, tool_name, input or {}, kind, decision)
+    if redirect:
+        inbox.log(settings, run["id"], "permission", tool=tool_name, permission_kind=kind, decision="redirect",
+                  what=mask_command(str((input or {}).get("command"))[:160]))
+        return json.dumps({"behavior": "deny", "message": redirect}, ensure_ascii=False)
     if decision == "ask" and tool_name == "Bash" and inbox.planned_command(run, (input or {}).get("command", "")):
         decision = "allow"  # 사람이 승인한 계획에 그대로 있던 명령 — 다시 묻지 않는다
     shell_cmd = str((input or {}).get("command") or "") if tool_name in ("Bash", "PowerShell") else ""
@@ -90,6 +95,69 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
         return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
     return json.dumps({"behavior": "deny", "message": f"규칙상 허용되지 않음 ({inbox.KINDS.get(kind, kind)}). 다른 방법을 찾거나 "
                                                       "wb_person_ask 로 사용자에게 이유와 함께 물어본다."}, ensure_ascii=False)
+
+
+REDIRECT_TASK = ("이 명령은 사용자에게 물어야 하는 꼴이라 돌리지 않았습니다 (사용자에게 묻지도 않았습니다). 테스트·타입 검사·빌드·린트는 "
+                 "mcp__beom-workbench__wb_task(task=\"test\"|\"typecheck\"|\"build\"|\"lint\") 로 돌립니다 — 명령·격리·권한·의존성은 "
+                 "툴킷이 맡습니다. 일부만 돌리려면 paths(테스트 파일)나 name(테스트 이름)을 넘깁니다.")
+REDIRECT_REMOVE = ("이 삭제 명령은 사용자에게 물어야 하는 꼴이라 돌리지 않았습니다 (사용자에게 묻지도 않았습니다). 파일·폴더 지우기는 "
+                   "mcp__beom-workbench__wb_remove(paths=[...]) 로 합니다 — 이번 실행에서 만든 것과 .beom/tmp·.beom/helpers 는 묻지 않고 "
+                   "지우고, 원래 있던 사용자 파일만 규칙대로 묻습니다 (대상 폴더 밖은 지우지 않습니다).")
+
+
+REDIRECT_PROBE = ("짧은 코드로 동작을 알아보는 명령(python -c)은 사용자에게 물어야 하는 꼴이라 돌리지 않았습니다 (사용자에게 묻지도 "
+                  "않았습니다). 알아볼 것을 .beom/tmp/test_probe.py 같은 테스트로 적고 mcp__beom-workbench__wb_task(task=\"test\", "
+                  "paths=[\".beom/tmp/test_probe.py\"]) 로 돌립니다 — 결과를 print 하거나 assert 로 확인합니다 (-s 없이도 실패 메시지에 "
+                  "값이 보이게 assert 에 넣는 것이 낫습니다).")
+# 파이썬 실행기 옵션(-X utf8 · -W ignore · -B -u 등) 뒤의 -c
+_PY_PROBE = re.compile(r"(?:^|[\s;&|(\\/])(?:python3?|py)(?:\.exe)?\"?\s+(?:-[XW]\s*\S+\s+|-[BuIEsSOq]+\s+)*-c\s", re.I)
+
+
+def _redirect(run: dict, tool_name: str, inp: dict, kind: str, decision: str) -> str | None:
+    """물어야 하는 셸 명령 중 툴킷 도구가 맡는 일(테스트·빌드·삭제)이면 카드 대신 그 도구로 돌려보낸다 — 같은 일을 표기만 바꿔
+    다시 묻는 일이 없게. 규칙상 바로 허용되는 명령은 그대로 돌고, 도구가 그 일을 못 하는 폴더면 원래대로 묻는다."""
+    from beom_workbench.core import sandbox, tasks
+    if tool_name not in ("Bash", "PowerShell"):
+        return None
+    cmd = str(inp.get("command") or "")
+    asks = decision == "ask" or (decision == "allow" and tool_name == "PowerShell" and sandbox.wraps_powershell(run)
+                                 and inbox.needs_unsandboxed(cmd) and inbox.decide(run, "unsandboxed") == "ask")
+    if not asks:
+        return None
+    if inbox.DELETE_CMD.search(cmd):  # 먼저 — 'Remove-Item vitest.config.ts' 는 테스트가 아니라 삭제다
+        return REDIRECT_REMOVE
+    task = inbox.task_like(cmd)
+    if task and tasks.available(Path(run["target_root"]), task):
+        return REDIRECT_TASK
+    if _PY_PROBE.search(cmd) and tasks.available(Path(run["target_root"]), "test"):
+        return REDIRECT_PROBE
+    return None
+
+
+@mcp.tool()
+def wb_task(task: str, paths: list[str] | None = None, name: str = "", path: str = "", timeout: int = 600) -> dict:
+    """프로젝트 작업을 툴킷이 돌린다 — task: "test"(테스트) · "typecheck"(타입 검사: tsc --noEmit·cargo check 등) · "build" · "lint".
+    명령은 툴킷이 프로젝트 파일(package.json 스크립트·pyproject·Cargo.toml·go.mod 등)로 고르고, 의존성 준비·격리·PATH·권한·
+    찌꺼기 치우기도 툴킷이 한다. 셸에서 npm test·pytest·tsc·cargo test 를 짜지 말고 이것을 부른다.
+    paths: 일부 테스트 파일만 (대상 폴더 기준 상대 경로) · name: 테스트 이름으로 거르기 · path: 하위 폴더 프로젝트(모노레포).
+    결과: 종류별 명령·종료 코드·요약 줄(통과·실패 수)·끝 출력."""
+    from beom_workbench.core import tasks
+    run = _run()
+    if run is None:
+        return {"ok": False, "error": "자동 실행 밖"}
+    return tasks.run_task(settings, run, task, path=path, paths=paths, name=name, timeout=timeout)
+
+
+@mcp.tool()
+def wb_remove(paths: list[str]) -> dict:
+    """대상 폴더 안의 파일·폴더를 지운다 (Remove-Item·rm 대신). 이번 실행에서 만든 것과 .beom/tmp·.beom/helpers 는 바로 지우고,
+    실행 전부터 있던 사용자 파일은 셸로 지울 때와 같은 규칙대로 (편집 자동 허용이면 카드). 지운 것은 체크포인트로 되돌릴 수 있다.
+    .beom 의 다른 파일(합격 케이스·venv)·.git 은 지우지 않는다."""
+    from beom_workbench.core import tasks
+    run = _run()
+    if run is None:
+        return {"ok": False, "error": "자동 실행 밖"}
+    return tasks.remove(settings, run, paths)
 
 
 def _native_shot(run: dict, app, width, height) -> dict:
@@ -156,6 +224,12 @@ def wb_run(command: str, timeout: int = 600) -> dict:
                 "recovery": "다른 방법을 쓰거나 wb_person_ask 로 사용자에게 이유와 함께 묻는다"}
     known = inbox.approved_command(run, cmd) or inbox.matches_rule(run, cmd, root)
     if not known and (dk != "allow" or du != "allow"):
+        from beom_workbench.core import tasks
+        task = inbox.task_like(cmd)
+        if task and tasks.available(root, task):
+            inbox.log(settings, run["id"], "permission", tool="mcp:wb_run", permission_kind=kind, decision="redirect",
+                      what=mask_command(cmd[:160]))
+            return {"ok": False, "error": REDIRECT_TASK}
         rule = inbox.command_rule(cmd, root) if kind == "commands" else None
         extra = "" if kind in ("build", "edit") else f" — {inbox.KINDS.get(kind, kind)}"
         ans = inbox.ask(settings, run["id"], "permission", {

@@ -97,6 +97,14 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
 - 언어: 사용자에게 보이는 모든 글(작업 중 한 줄 메시지·보고·질문·요구사항·케이스 설명·인수인계)은 지시의 [언어] 로 쓴다.
   "Now writing…", "Checking…" 같은 영어 혼잣말을 쓰지 않는다 — 코드·명령·파일 이름만 원래대로.
 - 툴킷 도구(mcp__beom-workbench__*)로 원장을 갱신하고, 각 응답의 next_step 을 따른다. 완료 판단은 툴킷이 한다.
+- 역할 — 너는 파일을 만들고 고친다. 절차는 툴킷이 한다. 아래 일은 셸 명령으로 직접 하지 않고 그 도구를 부른다:
+  · 테스트·타입 검사·빌드·린트 → wb_task(task="test"|"typecheck"|"build"|"lint") (일부만: paths·name)
+  · 의존성 설치 → 의존성 파일에 적고 wb_deps · 커버리지 측정 → wb_port_verify 가 한다
+  · 검증용 서버 띄우기·포트 → 검증 도구의 target_cmd + {port} · 화면 확인 → wb_screen_shot·화면 케이스
+  · 파일·폴더 지우기 → wb_remove(paths=[...]) · 검증 찌꺼기(__pycache__·.coverage)·커밋·체크포인트 → 툴킷이 알아서
+  · 라이브러리·코드 동작 알아보기 → python -c 대신 .beom/tmp/test_probe.py 같은 테스트로 적고 wb_task(task="test", paths=[...])
+  셸은 이 도구들로 안 되는 일(파일 내용 살펴보기, 만든 프로그램을 한 번 돌려 보기 등)에만 쓴다. 도구가 실패하면 우회 명령이나
+  스크립트를 만들지 말고, 도구가 돌려준 recovery 를 따르거나 막힌 점을 남긴다. 셸로 돌린 명령이 '도구로 하라'며 돌아오면 그 도구를 쓴다.
 - 사람 승인 항목(요구사항·기대값·차이 허용·생략)은 제안만 한다. 승인은 사람이 앱에서 한다 — 승인 도구를 쓰지 않는다.
 - 기존 자산 맞추기 — 대상 폴더에 이미 코드·문서가 있거나 [넣을 저장소 분석]·[원본 프로젝트]·첨부 문서가 있으면, 새로 만들기 전에
   그것부터 파악해 맞춘다. 새 기능은 '원래 있던 사람이 만든 것처럼' 들어가야 한다.
@@ -171,7 +179,7 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   새 창을 띄우는 명령(Start-Process·start·explorer·브라우저 열기)은 쓰지 않는다 — 사용자 화면에 창이 튀어나온다. 
   의존성은 의존성 파일(package.json·requirements.txt·pyproject.toml)에 적고 mcp__beom-workbench__wb_deps 를 부른다 — 툴킷이
   같은 자리(Node: node_modules · Python: .beom/venv, pytest·coverage 포함)에 설치한다. npm install·pip install·가상 환경 만들기를
-  직접 하지 않는다. 파이썬 테스트는 wb_deps 가 알려 준 python(.beom/venv)으로, 의존성이 없으면 평소 python 으로 돌린다.
+  직접 하지 않는다. 테스트·타입 검사는 wb_task 로 돌린다 (툴킷이 .beom/venv·node_modules/.bin 의 도구로 돌린다).
   src 구조(src/<패키지>) 프로젝트는 툴킷이 .beom/venv 에서 src 를 import 경로에 둔다 — 검증을 위해 pytest pythonpath 설정·
   sys.path 조작·conftest 를 프로젝트에 넣지 않는다 (사용자가 요청한 변경이 아니다).
   커버리지(케이스가 만든 코드를 실행했는지)는 툴킷이 잰다 — wb_port_verify 가 매핑한 파일을 프로젝트의 테스트(pytest·node --test·
@@ -240,16 +248,17 @@ EDIT_TOOLS_RULE = """[파일 쓰기]
 # 에이전트가 헤매며 라운드를 쓰지 않게 처음부터 알려 준다.
 CODEX_OFFLINE_RULE = """[이 실행의 인터넷 — 막힘]
 - 웹 접속을 허용하지 않은 실행이라 Codex 샌드박스 안에서는 인터넷이 막혀 있다 — pip·npm 이 패키지를 내려받지 못한다.
-  의존성 설치는 wb_deps 가 한다 (툴킷이 격리 밖에서 설치). 그 밖에 격리 안에서 안 되는 빌드는 mcp__beom-workbench__wb_run(command=...)
-  으로 돌린다 — 격리 밖에서 돌고, 권한 규칙대로 허용되거나 사용자에게 묻는다. 다른 도구(케이스 명령 등)를 우회로 쓰지 않는다.
+  의존성 설치는 wb_deps 가 한다 (툴킷이 격리 밖에서 설치). 테스트·타입 검사·빌드는 wb_task 로 (격리 밖이 필요하면 툴킷이 정한다).
+  그 밖에 격리 안에서 안 되는 명령만 mcp__beom-workbench__wb_run(command=...) 으로 돌린다 — 격리 밖에서 돌고, 권한 규칙대로 허용되거나
+  사용자에게 묻는다. 다른 도구(케이스 명령 등)를 우회로 쓰지 않는다.
   설치 확인(pip install -e . 등)만을 위해 돌리지는 않는다: 대상 폴더에서 바로 import·실행·테스트로 확인한다."""
 
 
 CODEX_WIN_RULE = """[Windows 격리 실행 — Node 자식 프로세스]
 - 이 격리에서는 Node 가 다른 프로세스를 띄우지 못한다 (spawn EPERM). `node --test`·`npm test` 는 툴킷이 격리용 설정(NODE_OPTIONS)을
   미리 넣어 두어 그대로 돈다 — 옵션을 붙이거나 우회 스크립트를 만들지 않는다. 우회는 결과물(package.json·README)에 넣지 않는다.
-- npm 스크립트·테스트 러너·빌드 도구가 같은 이유로 실패하면 격리 탓이다 — 코드를 고치려 하지 말고 node 로 직접 돌리거나,
-  검증 도구가 있으면(wb_port_verify·target_cmd 등 — 격리 밖에서 돈다) 그것으로 확인한다. 사용자에게는 격리 안에서 못 돌린 명령을 끝에 알린다."""
+- npm 스크립트·테스트 러너·빌드 도구가 같은 이유로 실패하면 격리 탓이다 — 코드를 고치려 하지 말고 wb_task(task="test" 등)로 돌린다
+  (툴킷이 격리 밖에서 돌린다). 사용자에게는 격리 안에서 못 돌린 명령을 끝에 알린다."""
 
 
 FREE_RULES = """너는 사용자의 개발 에이전트다. 사용자가 보낸 요청을 그대로 수행한다 (툴킷의 절차·승인 단계는 쓰지 않는다).
