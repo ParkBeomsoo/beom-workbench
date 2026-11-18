@@ -300,13 +300,15 @@ def slice_(conn, proj: dict, targets: list[str], depth: int = 10, within: list[s
     licenses = {}
     for path in files:
         own = [x for x in lic if x["path"] == path and x["scope"] == "file"]
+        # 가까운 폴더부터, 같은 폴더면 알아본 판정 먼저 — 짧게 줄인 LICENSE(알 수 없음)가 package.json 의 "MIT" 를 가리지 않게
         dirs = sorted([x for x in lic if x["scope"].startswith("dir:") and (x["scope"] == "dir:" or path.startswith(x["scope"][4:] + "/"))],
-                      key=lambda x: len(x["scope"]), reverse=True)
+                      key=lambda x: (-len(x["scope"]), x["category"] == "unknown"))
         pick = own or dirs[:1]
         licenses[path] = [{"license": x["license"], "category": x["category"], "source": x["source"]} for x in pick] or [
             {"license": "unknown", "category": "unknown", "source": "none"}]
     unknown_lic = sorted(p for p, ls in licenses.items() if any(x["category"] == "unknown" for x in ls))
-    notices = _copyright_lines(proj, [x for x in lic if x["source"] == "text" and x["category"] == "permissive"
+    # 저작권 줄은 허용형·알 수 없음(본문을 줄인 LICENSE 등) 라이선스 파일에서 — 제한형은 따로 확인 카드로 막는다
+    notices = _copyright_lines(proj, [x for x in lic if x["source"] == "text" and x["category"] in ("permissive", "unknown")
                                       and any(x["scope"] == "dir:" or p.startswith(x["scope"][4:] + "/") for p in files)])
     restricted = sorted(p for p, ls in licenses.items() if any(x["category"] not in ("permissive", "unknown") for x in ls))
     open_unknowns = [dict(r) for r in conn.execute("SELECT id, question, severity, scope FROM unknown WHERE status != 'resolved'").fetchall()
@@ -926,15 +928,42 @@ class _Side:
         from beom_workbench.core import sandbox
         if run and sandbox.wraps_powershell(run):
             # 자동 실행 중 툴킷이 대신 돌리는 검증 명령도 같은 샌드박스 안에서 (대상 폴더·임시·도구 캐시 밖에는 못 쓴다)
-            return subprocess.run(sandbox.wrap_argv(["cmd", "/d", "/c", cmd], run), cwd=self.cwd, input=stdin,
-                                  capture_output=True, timeout=timeout, env=self.env())
-        return subprocess.run(cmd, shell=True, cwd=self.cwd, input=stdin, capture_output=True, timeout=timeout,
-                              env=self.env())
+            return run_tree(sandbox.wrap_argv(["cmd", "/d", "/c", cmd], run), cwd=self.cwd, stdin=stdin, timeout=timeout, env=self.env())
+        return run_tree(cmd, shell=True, cwd=self.cwd, stdin=stdin, timeout=timeout, env=self.env())
 
     def env(self) -> dict:
         # 파이썬 표준 입출력을 UTF-8 로 — 파이프로 돌리면 Windows 는 cp949 라 한글·✓ 가 깨지거나 쓰다가 죽는다
         # (사용자 터미널은 유니코드로 보여 주므로 이쪽이 실제와 같다). 출력은 UTF-8 로 읽는다.
         return runtime.safe_env({"PYTHONIOENCODING": "utf-8", **runtime.coverage_env(self.cwd)})
+
+
+def run_tree(args, *, shell: bool = False, cwd=None, stdin: bytes = b"", timeout: float = 30, env=None) -> subprocess.CompletedProcess:
+    """subprocess.run(capture_output, timeout) 과 같되, 시간이 넘으면 프로세스 트리 전체를 끝낸다.
+    subprocess.run 은 직접 띄운 프로세스만 끝내서, 그 아래 손자(테스트가 띄운 서버·하위 pytest)가 출력 파이프를 쥐고 있으면
+    손자가 끝날 때까지 기다린다 — 실험에서 검증 도구가 30분 동안 돌아오지 않았다."""
+    kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+    proc = subprocess.Popen(args, shell=shell, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, **kw)
+    try:
+        out, err = proc.communicate(input=stdin, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            out, err = proc.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, ValueError, OSError):
+            out, err = b"", b""  # 트리 밖으로 빠져나간 프로세스가 파이프를 쥐고 있으면 그 출력은 버린다
+        raise subprocess.TimeoutExpired(args, timeout, output=out, stderr=err) from None
+    return subprocess.CompletedProcess(args, proc.returncode, out, err)
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=30)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _auto_run() -> dict | None:

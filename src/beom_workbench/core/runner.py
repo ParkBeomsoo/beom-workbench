@@ -111,9 +111,12 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
      문서, 디자인 토큰·테마, 공용 컴포넌트, 비슷한 기존 화면의 소스, 화면 설계(스토리보드) 문서. 따로 띄워 보여 줄 화면(POC·HTML 미리보기)도
      기존 제품이 있으면 그 톤앤매너로 만든다.
   계획의 design·decisions 에 '기존 것을 따름: (무엇을 어디서 봤는지)'를 근거로 남긴다. 기존과 다르게 할 때만 이유와 함께 decision 으로.
-- '앱'으로 만들어 달라고 하면 자기 창을 가진 데스크톱 앱이다 — 실행 파일(.exe 등)과 바로가기·아이콘, 작업 표시줄에 앱 이름.
-  브라우저(Edge·Chrome 의 --app 창 포함)로 HTML 을 여는 바로가기는 앱이 아니다. 웹 기술로 화면을 만들면 pywebview·Tauri·Electron
-  같은 껍데기로 감싸 실행 파일로 만든다 (가벼운 쪽 우선). 웹으로 충분하다고 보면 decisions 에서 대안으로만 제안한다.
+- 형태는 요청에 적힌 말을 따른다. 웹 기술·웹 형태를 적었으면(웹·웹 페이지·브라우저·HTML·Vite·React·Next 같은 웹 프레임워크·URL 로 연다)
+  '앱'이라는 말이 있어도 웹 앱이다 — 데스크톱 껍데기를 씌우지 않는다 (예: 'Vite + React 로 카운터 앱' → 브라우저에서 여는 웹 앱).
+  '데스크톱 앱'·'설치하는 프로그램'·'실행 파일'·'창 하나로 뜨는 앱'이라고 했거나, 형태를 말하지 않고 '앱'만 말했을 때는 자기 창을 가진
+  데스크톱 앱이다 — 실행 파일(.exe 등)과 바로가기·아이콘, 작업 표시줄에 앱 이름. 브라우저(Edge·Chrome 의 --app 창 포함)로 HTML 을 여는
+  바로가기는 데스크톱 앱이 아니다. 웹 기술로 화면을 만들면 pywebview·Tauri·Electron 같은 껍데기로 감싸 실행 파일로 만든다 (가벼운 쪽 우선).
+  애매하면 decisions 에서 형태를 추천안과 대안으로 낸다.
 - 사전 설계 — 만들기 전에 정해야 결과가 크게 갈리는 것을 먼저 정한다: 형태(웹·데스크톱 앱·모바일·API만·CLI),
   데이터 저장(파일·브라우저 저장소·SQLite·서버 DB — 백업·옮기기가 필요한지까지. 필요하면 사용자가 화면이나 파일 복사로 할 수 있는 방법(내보내기·가져오기 등)으로 정하고, 개발자 도구를 열어 값을 복사하라는 안내는 방법으로 치지 않는다. 요청에 없고 꼭 필요하지 않으면 '두지 않음'을 추천해도 된다), 기술 스택과 실행 방법(설치 없이 바로 열리는지,
   더블클릭 실행 파일·바로가기), 외부 연동, 디자인 방향. 사용자가 이미 정한 것은 그대로 따른다. 나머지는 각각 추천안 하나와
@@ -197,6 +200,7 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
 - 완료 조건을 모두 채우면 wb_handoff 로 인수인계를 남긴다 — summary 는 결과 한두 문장, changes(사용자가 체감하는 변화 3~6개,
   기능으로), how_to_run(실행 단계 목록, 명령은 `백틱`), checked(어떻게 확인했는지 2~4개), risks·follow_ups(한 줄씩 최대 5개).
   사용자가 처음 보는 사람이라 생각하고 쓴다 — 개발 과정 이야기(무엇을 고쳤다가 다시 고쳤는지)는 넣지 않는다.
+  how_to_run 의 명령은 사용자가 평소 치는 모양으로 쓴다 — 이 실행 환경 때문에 쓴 우회(npm.cmd, --test-isolation=none, 격리용 경로·환경 변수)는 쓰지 않는다 (README 와 같게).
   인수인계를 쓰기 직전에 wb_port_status 로 지금 상태를 다시 보고 쓴다 — 이미 승인된 것을 '승인이 필요할 수 있다'처럼 지난 상태로 적지 않는다.
   사용자 확인(승인)이 남아 있으면 인수인계를 쓰지 말고 무엇을 확인받는지만 말하고 라운드를 끝낸다 — 승인 뒤 다음 라운드에서
   인수인계를 쓴다 (먼저 써 두면 승인한 뒤에도 '승인이 남았다'는 지난 내용이 남는다).
@@ -223,6 +227,13 @@ EDIT_TOOLS_RULE = """[파일 쓰기]
 
 # Codex 의 Windows 격리(제한된 토큰)에서는 Node 가 자식 프로세스를 만들지 못한다 (spawn EPERM) — Python 은 된다.
 # 에이전트가 헤매며 라운드를 쓰지 않게 처음부터 알려 준다.
+CODEX_OFFLINE_RULE = """[이 실행의 인터넷 — 막힘]
+- 웹 접속을 허용하지 않은 실행이라 Codex 샌드박스 안에서는 인터넷이 막혀 있다 — pip·npm 이 패키지를 내려받지 못한다.
+  설치 확인(pip install -e . 등)은 하지 않는다: 대상 폴더에서 바로 import·실행·테스트로 확인한다. 이 때문에 못 한 설치를 위험으로 적지 않는다
+  (사용자 PC 는 인터넷이 된다). 의존성이 꼭 필요한 프로젝트(npm 패키지 등)는 설치 명령을 wb_person_ask 로 사용자에게 묻거나,
+  검증 도구의 명령(격리 밖에서 돈다 — 권한 규칙을 거친다)으로 돌린다."""
+
+
 CODEX_WIN_RULE = """[Windows 격리 실행 — Node 자식 프로세스]
 - 이 격리에서는 Node 가 다른 프로세스를 띄우지 못한다 (spawn EPERM). `node --test` 는 `node --test --test-isolation=none` 으로 돌린다.
   이 우회 옵션은 명령을 돌릴 때만 쓰고 package.json 스크립트·README 같은 결과물에는 넣지 않는다 (사용자 PC 에서는 필요 없다).
@@ -797,9 +808,9 @@ AUTO_ACTIVITY = {"wb_make_requirements": "요구사항을 정리했습니다 —
                  "wb_brief_screens": "화면 설계 스크린샷 찍는 중"}
 
 
-# 추가 요청 라운드에서 '손대기 시작했다'로 보는 도구 — 기준·계획을 고치거나 코드를 고치거나 검증을 돌림
-REVISION_WORK = {"wb_make_requirements", "wb_port_capture", "wb_plan_set", "wb_plan_progress", "wb_port_map", "wb_port_verify",
-                 "Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"}
+# 추가 요청 라운드에서 진행 단계를 다시 계산하기 시작하는 도구 — 기준·계획을 고치거나 검증을 돌림.
+# 코드 편집은 넣지 않는다: 코드를 먼저 고친 뒤 요구사항을 더하면 '검증'에서 '구현'으로 뒤로 튀어 보였다 (기준을 고칠 때까지는 처음 단계)
+REVISION_WORK = {"wb_make_requirements", "wb_port_capture", "wb_plan_set", "wb_plan_progress", "wb_port_map", "wb_port_verify"}
 
 
 def auto_activity(tool: str, run: dict) -> str:
@@ -910,7 +921,15 @@ class Runner:
             rules += "\n\n" + EDIT_TOOLS_RULE
         if run.get("agent") == "codex" and sys.platform == "win32":
             rules += "\n\n" + CODEX_WIN_RULE
+        if run.get("agent") == "codex" and (run.get("policy") or {}).get("web") != "allow":
+            rules += "\n\n" + CODEX_OFFLINE_RULE
         wb = run.get("work_branch")
+        sub = next((r for r in (wb or {}).get("repos") or [] if (r.get("path") or ".") != "."), None)
+        if sub:
+            rules += (f"\n\n[저장소의 하위 폴더에서 작업] 작업 폴더는 저장소 {sub['repo']} 의 {sub['path']} 이다. 같은 저장소의 다른 폴더는 "
+                      "묻지 않고 읽을 수 있다(참고). 고치려면 사용자에게 허락을 받는다(권한 카드) — 허락받아 고친 파일도 라운드 커밋에 함께 담긴다. "
+                      "같은 저장소의 다른 폴더까지 함께 테스트·커버리지를 돌릴 때는 저장소 맨 위로 옮겨 돌린다 "
+                      f"(예: `cd \"{sub['repo']}\"; python -m pytest -q`) — '../..' 같은 상위 경로를 쓰면 대상 폴더 밖 명령으로 묻게 된다.")
         if wb:
             where = (f"여러 저장소 작업 공간 — 고친 저장소마다 라운드가 끝나면 앱이 같은 이름의 브랜치({wb['branch']})를 지금 커밋에서 "
                      "만들어 변경을 옮긴다. 고칠 저장소가 main 이 아닌 브랜치에 있으면 고치기 전에 wb_person_ask 로 확인한다"
@@ -980,13 +999,25 @@ class Runner:
                       text=f"{m['name']}: {m['reason']} — 변경은 develop 에 커밋하지 않은 채 그대로 둡니다. main 에서 feature 를 만들어 직접 옮기세요")
         return run
 
+    def _note_outside_edit(self, run: dict, tool: str, inp) -> None:
+        """대상 폴더 밖 파일을 편집 도구로 고치려 할 때 기록한다 — 같은 저장소면 라운드 커밋에 함께 담는다 (거절돼 안 바뀌었으면 담을 것도 없다)."""
+        if tool not in ("Edit", "Write", "MultiEdit", "NotebookEdit") or not isinstance(inp, dict):
+            return
+        path = inp.get("file_path") or inp.get("notebook_path")
+        if not path or inbox._inside(path, Path(run["target_root"])):
+            return
+        p = str(Path(path).resolve())
+        if p not in (run.get("outside_edits") or []):
+            self._set(outside_edits=list(dict.fromkeys((inbox.load_run(self.settings, self.run_id).get("outside_edits") or []) + [p]))[-200:])
+
     def _commit_round(self, run: dict) -> None:
         """라운드에서 바뀐 것을 작업 브랜치에 커밋한다. 훅이 막으면 한 번만 알리고 변경은 그대로 둔다."""
         wb = run.get("work_branch")
         if not wb:
             return
         try:
-            done = workbranch.commit_round(wb, f"beom-workbench: {run.get('name') or '작업'} — 라운드 {run['round']}\n\nrun {self.run_id}")
+            done = workbranch.commit_round(wb, f"beom-workbench: {run.get('name') or '작업'} — 라운드 {run['round']}\n\nrun {self.run_id}",
+                                           extra=run.get("outside_edits") or [])
         except (ToolError, OSError, subprocess.SubprocessError) as e:
             if not run.get("branch_commit_warned"):
                 self._set(branch_commit_warned=True)
@@ -1099,6 +1130,7 @@ class Runner:
                     inbox.log(self.settings, self.run_id, "agent",
                               items=[{"tool": e.get("tool"), "input": mask_command(json.dumps(e.get("input"), ensure_ascii=False)[:300])}])
                     short = str(e.get("tool") or "").split("__")[-1]
+                    self._note_outside_edit(run, short, e.get("input"))
                     if short in REVISION_WORK and run.get("revision_round") == run.get("round") and not run.get("revision_touched"):
                         run = self._set(revision_touched=True)
                     if short in AUTO_ACTIVITY:

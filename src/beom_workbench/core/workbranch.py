@@ -199,11 +199,12 @@ def _identity(top: Path) -> list[str]:
     return ["-c", "user.name=beom-workbench", "-c", "user.email=beom-workbench@localhost"]
 
 
-def _commit(top: Path, message: str, path: str = ".") -> str | None:
-    """path(대상 폴더, 저장소 맨 위 기준) 안에서 바뀐 것이 있으면 커밋하고 짧은 해시를, 없으면 None. 훅이 막으면 ToolError."""
-    add = _git(top, "add", "-A", "--", path, *COMMIT_EXCLUDE, timeout=120)
+def _commit(top: Path, message: str, path: str | list[str] = ".") -> str | None:
+    """path(대상 폴더 — 또는 그 목록, 저장소 맨 위 기준) 안에서 바뀐 것이 있으면 커밋하고 짧은 해시를, 없으면 None. 훅이 막으면 ToolError."""
+    paths = [path] if isinstance(path, str) else list(path)
+    add = _git(top, "add", "-A", "--", *paths, *COMMIT_EXCLUDE, timeout=120)
     if add.returncode == 0:  # 캐시 제외는 새 파일에만 — 저장소가 일부러 추적하는 파일의 변경은 그대로 담는다
-        add = _git(top, "add", "-u", "--", path, *EXCLUDE, timeout=120)
+        add = _git(top, "add", "-u", "--", *paths, *EXCLUDE, timeout=120)
     if add.returncode != 0:
         raise ToolError("engine_error", f"git add 실패: {add.stderr.strip()[-300:]}")
     if _git(top, "diff", "--cached", "--quiet").returncode == 0:
@@ -366,14 +367,26 @@ def ensure(wb: dict) -> list[str]:
     return notes
 
 
-def commit_round(wb: dict, message: str) -> list[tuple[str, str]]:
-    """라운드가 끝나면 바뀐 것을 저장소마다 작업 브랜치에 커밋한다 — 작업 브랜치에 있을 때만. [(저장소 이름, 해시)]"""
+def commit_round(wb: dict, message: str, extra: list[str] | None = None) -> list[tuple[str, str]]:
+    """라운드가 끝나면 바뀐 것을 저장소마다 작업 브랜치에 커밋한다 — 작업 브랜치에 있을 때만. [(저장소 이름, 해시)]
+    extra: 대상 폴더 밖에서 에이전트가 (사람의 허락을 받아) 편집 도구로 고친 파일 — 같은 저장소 안이면 함께 담는다.
+    작업 폴더가 저장소의 하위 폴더일 때 다른 폴더를 고치면 그 변경이 커밋·합치기에서 빠지던 것을 막는다.
+    사용자가 원래 갖고 있던 다른 변경은 섞지 않는다 (에이전트가 고친 파일만)."""
     out = []
     for r in wb.get("repos") or []:
         top = Path(r["repo"])
         if not top.exists() or current(top) != r["branch"]:
             continue
-        sha = _commit(top, message, r.get("path") or ".")
+        paths = [r.get("path") or "."]
+        for f in extra or []:
+            try:
+                rel = Path(f).resolve().relative_to(top.resolve()).as_posix()
+            except (OSError, ValueError):
+                continue
+            # 없는 경로를 git add 에 넘기면 add 전체가 실패한다 — 있는 파일이거나(새로 만든 것 포함) 추적 중인 파일(지운 것)만
+            if rel and not rel.startswith(".git/") and                     ((top / rel).exists() or _git(top, "ls-files", "--error-unmatch", "--", rel).returncode == 0):
+                paths.append(rel)
+        sha = _commit(top, message, list(dict.fromkeys(paths)))
         if sha:
             out.append((top.name, sha))
     return out

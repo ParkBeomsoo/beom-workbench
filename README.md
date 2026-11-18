@@ -247,6 +247,8 @@ Push, publish, deleting outside the folder and system changes are always refused
 (including commands inside case files) go through the same rules. Auth: *my login* (subscription) or *API key* (reads the key from an
 environment variable, billed per use) — both can do the same things.
 
+**A subfolder of a repository** (e.g. `api/search` inside one repository): the agent reads the rest of that repository without asking (to follow other modules), and asks before changing anything outside the folder. Files it changes there with your OK go into the same work-branch commit, so merging brings them along. To change several modules freely, choose the repository's top folder instead. To only look at another repository's structure, add it under *Structure reference*.
+
 **What you decide** — only these appear as cards:
 
 - **Once at the start — Before you start**: the agent drafts requirements, acceptance criteria and the plan in one go (no screens or code

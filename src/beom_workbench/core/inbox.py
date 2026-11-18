@@ -73,6 +73,10 @@ def mode_of(policy: dict) -> str:
 _NODE_TEST_OPT = (r"(?:--test-isolation=none|--experimental-test-coverage|--test-reporter=[\w-]+"
                   r"|--test-reporter-destination=(?!\S*\.\.)[\w./\-]+|--test-name-pattern=[\w.-]+|--test-concurrency=\d+"
                   r"|--test-coverage-(?:include|exclude)=(?!\S*\.\.)[\w./*\-]+|--test-coverage-(?:lines|branches|functions)=\d+)")
+_PY = r"(?:python3?|py)(?: -B| -u| -X utf8)*"
+# 커버리지 옵션 — 고를 파일·기록 위치만 (따옴표로 감싸도 같다). 기록 위치는 상위 경로(..)로 나가지 않는다
+_COV_OPT = (r"(?:\"?--include=[\w./\\*,-]+\"?|\"?--omit=[\w./\\*,-]+\"?|--source=[\w./\\,-]+|--branch|--parallel-mode"
+            r"|--data-file=(?!\S*\.\.)[\w./\\-]+|--rcfile=(?:NUL|/dev/null))")
 BUILD_COMMANDS = re.compile(
     # npm·pnpm·yarn: 출력만 줄이거나 보고·설치 스크립트를 끄는 옵션은 같은 명령이다 (실행하는 것을 바꾸지 않는다)
     r"^((?:npm (ci|install|test|run (build|test|lint))|pnpm (install|test|build)|yarn (install|test|build))"
@@ -80,13 +84,14 @@ BUILD_COMMANDS = re.compile(
     r"cargo (build|test|check|fmt|clippy)|go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
     r"\./gradlew (test|build)|pip install -e \.|dotnet (build|test)|"
     # pytest 는 실행기를 바꾸지 않는 인자만 (출력·멈춤·고르기·테스트 파일) — -p(플러그인)·-c·--rootdir 같은 것은 묻는다
-    r"(?:(?:python3?|py) -m coverage run (?:--include=[\w./\\*,-]+ |--source=[\w./\\,-]+ |--omit=[\w./\\*,-]+ |--branch |--rcfile=(?:NUL|/dev/null) )*"
+    # 파이썬 실행기 옵션 중 실행하는 것을 바꾸지 않는 것(-B 캐시 안 씀 · -u 버퍼 없음 · -X utf8)은 같은 명령이다
+    r"(?:" + _PY + r" -m coverage run (?:" + _COV_OPT + r" )*"
     r"-m (?:pytest|unittest)|"
-    r"pytest|(?:python3?|py) -m pytest|uv run pytest|(?:python3?|py) -m unittest)"
+    r"pytest|" + _PY + r" -m pytest|uv run pytest|" + _PY + r" -m unittest)"
     r"(?: (?:-q|-qq|-v|-vv|-x|-s|-rA|-ra|-b|-f|--no-header|--tb=\w+|--maxfail=\d+|-k [\w.]+|discover|-s [\w./\\-]+|-p no:[\w.-]+"
     # 테스트 파일·폴더 (pricing · tests/unit · test_a.py::test_b) — '-' 로 시작하지 않는 경로 낱말만, .. 는 아니다
     r"|[\w./\\-]+\.py(?:::[\w:\[\]-]+)?|(?!\.\.)(?![\w.\\/-]*[\\/]\.\.)[\w][\w.\\/-]*))*|"
-    r"(?:python3?|py) -m coverage (?:report|json|html|xml)(?: -m| --include=[\w./\\*,-]+| --show-missing| -o (?!\S*\.\.)[\w./\\-]+)*|"
+    r"" + _PY + r" -m coverage (?:report|json|html|xml)(?: -m| " + _COV_OPT + r"| --show-missing| -o (?!\S*\.\.)[\w./\\-]+)*|"
     # Node 내장 테스트 실행기 — 결과·커버리지 출력만 고르는 인자 (--import·--require 처럼 다른 코드를 불러오는 것은 묻는다).
     # 옵션은 --test 앞뒤 어디에 와도 되고, 대상은 테스트 폴더·파일. --test 없이 테스트 파일(*.test.js)을 바로 돌리는 것도 같다
     r"node(?: " + _NODE_TEST_OPT + r")*(?: --test(?: (?:" + _NODE_TEST_OPT + r"|(?!\.\.)(?![\w.\\/-]*[\\/]\.\.)[\w.][\w./\\-]*))*"
@@ -334,8 +339,15 @@ def decide(run: dict, kind: str) -> str:
     return run["policy"].get(kind, "ask")
 
 
-def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Path]) -> str:
-    """권한 요청을 종류로 나눈다. protected: 툴킷 홈·실행 폴더 — 여기 닿으면 system."""
+def repo_roots(run: dict) -> list[str]:
+    """작업 폴더가 저장소의 하위 폴더일 때 그 저장소 맨 위 — 같은 저장소의 다른 폴더는 읽기·저장소 맨 위에서 돌리는 빌드를 묻지 않는다."""
+    return [r["repo"] for r in ((run.get("work_branch") or {}).get("repos") or []) if r.get("repo") and (r.get("path") or ".") != "."]
+
+
+def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Path], read_roots: list | tuple = ()) -> str:
+    """권한 요청을 종류로 나눈다. protected: 툴킷 홈·실행 폴더 — 여기 닿으면 system.
+    read_roots: 대상 폴더를 품은 저장소 — 작업 폴더가 저장소의 하위 폴더일 때 같은 저장소의 다른 폴더는 읽기만 묻지 않는다
+    (예: api/search 를 고치며 api/goods 를 참고). 고치기는 그대로 '대상 폴더 밖'으로 묻는다."""
     path = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("notebook_path")
     if tool == "Read" and path and VERIFY_SHOT.search(os.path.normpath(str(path))) and ".." not in Path(os.path.normpath(str(path))).parts \
             and any(_inside(path, p) for p in protected):
@@ -347,7 +359,9 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
             return "system"
         return "edit" if _inside(path, target_root) or _scratch(path) else "outside"
     if tool in READ_TOOLS:
-        return "edit" if (not path or _inside(path, target_root) or _scratch(path)) else "outside"
+        if not path or _inside(path, target_root) or _scratch(path) or any(_inside(path, Path(r)) for r in read_roots):
+            return "edit"
+        return "outside"
     if tool in ("WebFetch", "WebSearch"):
         return "web"
     if tool in ("Bash", "PowerShell"):
@@ -357,6 +371,8 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
         if PUBLISH.search(cmd):
             return "publish"
         cmd = _strip_cd(_unwrap_shell(_strip_cd(cmd, target_root)), target_root)
+        for r in read_roots:  # 같은 저장소의 맨 위로 옮겨 돌리는 테스트(cd <저장소>; python -m pytest)도 같은 기준으로 본다
+            cmd = _strip_cd(cmd, Path(r))
         if workbranch.moves_branch(cmd):
             return "branch"
         if DELETE_CMD.search(cmd) and not _deletes_inside(cmd, target_root):
@@ -704,7 +720,7 @@ def gate_commands(settings: Settings, commands: dict[str, str | None]) -> None:
     for field, cmd in commands.items():
         if not cmd or cmd in (run.get("approved_cmds") or []):
             continue
-        kind = classify("Bash", {"command": cmd}, Path(run["target_root"]), [settings.home])
+        kind = classify("Bash", {"command": cmd}, Path(run["target_root"]), [settings.home], read_roots=repo_roots(run))
         decision = decide(run, kind)
         if decision == "ask" and kind == "commands" and matches_rule(run, cmd, run["target_root"]):
             # '이 명령은 항상'으로 기억한 꼴 — 에이전트가 셸로 돌릴 때와 같은 규칙

@@ -46,7 +46,8 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
         inbox.log(settings, run["id"], "permission", tool=tool_name, permission_kind="commands", decision="refuse",
                   what=mask_command(str((input or {}).get("command"))[:160]), why="foreground_server")
         return json.dumps({"behavior": "deny", "message": inbox.SERVER_HINT}, ensure_ascii=False)
-    kind = inbox.classify(tool_name, input or {}, root, [settings.home])
+    # 작업 폴더가 저장소의 하위 폴더면 그 저장소 안의 다른 폴더는 읽기만 묻지 않는다 (고치기는 묻는다)
+    kind = inbox.classify(tool_name, input or {}, root, [settings.home], read_roots=inbox.repo_roots(run))
     decision = inbox.decide(run, kind)
     if decision == "ask" and tool_name == "Bash" and inbox.planned_command(run, (input or {}).get("command", "")):
         decision = "allow"  # 사람이 승인한 계획에 그대로 있던 명령 — 다시 묻지 않는다
@@ -231,6 +232,10 @@ def wb_handoff(summary: str, how_to_run: str | list[str], risks: str | list[str]
         chk = brief.check(run["target_root"], _policy_docs(run))
         if not chk["ok"]:
             return {"ok": False, "error": "기획 패키지가 아직 맞물리지 않음 — 고친 뒤 다시 인계한다", "problems": chk["problems"]}
+    if run is not None and run.get("port_id") and run.get("project_id"):
+        notice = _license_notice(run)
+        if notice:  # 허용형 원본도 저작권 표기는 남겨야 한다 — 빠뜨린 채 인계하지 않게
+            return {"ok": False, "error": "원본 저작권 표기가 대상에 없음 — 남긴 뒤 다시 인계한다", **notice}
     data = {"summary": summary.strip()[:1500], "how_to_run": _items(how_to_run), "risks": _items(risks, 6),
             "follow_ups": _items(follow_ups, 6), "at": inbox._now()}
     if changes:
@@ -241,6 +246,15 @@ def wb_handoff(summary: str, how_to_run: str | list[str], risks: str | list[str]
     if out["ok"]:
         inbox.log(settings, os.environ["BEOM_WORKBENCH_RUN"], "handoff")
     return out
+
+
+def _license_notice(run: dict) -> dict | None:
+    from beom_workbench.core import port, project
+    try:
+        conn, _ = project.load(settings, run["project_id"])
+        return port.status_(conn, run["port_id"], brief=True).get("license_notice")
+    except Exception:  # noqa: BLE001 — 원장을 못 읽으면 막지 않는다 (상태 화면이 따로 알린다)
+        return None
 
 
 @mcp.tool()

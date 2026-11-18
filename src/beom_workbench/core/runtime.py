@@ -308,7 +308,8 @@ def run(conn, proj: dict, settings, command: str, *, report: str, trusted: bool 
     env = safe_env()
     try:  # 실패해도 임시 사본은 지운다
         try:
-            proc = subprocess.run(argv, cwd=copy, shell=isinstance(argv, str), capture_output=True, timeout=timeout, env=env)
+            from beom_workbench.core.port import run_tree  # 시간이 넘으면 손자 프로세스까지 끝낸다
+            proc = run_tree(argv, cwd=copy, shell=isinstance(argv, str), timeout=timeout, env=env)
         except subprocess.TimeoutExpired as e:
             raise ToolError("timeout", f"실행이 {timeout}초를 넘김") from e
         out_tail = proc.stdout.decode("utf-8", "replace")[-3000:]
