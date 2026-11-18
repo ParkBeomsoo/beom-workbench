@@ -189,7 +189,7 @@ def ensure(settings, run: dict | None, root: Path, timeout: float = 900) -> dict
         done.append(r)
         if run is not None:
             from beom_workbench.core import inbox
-            inbox.log(settings, run["id"], "deps", kind=item["kind"], ok=r["ok"], files=item["files"])
+            inbox.log(settings, run["id"], "deps", dep=item["kind"], ok=r["ok"], files=item["files"])
     return {"installed": done, **status(root)}
 
 

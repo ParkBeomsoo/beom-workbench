@@ -99,7 +99,7 @@ BUILD_COMMANDS = re.compile(
     r"pytest|" + _PY + r" -m pytest|uv run pytest|" + _PY + r" -m unittest)"
     r"(?: (?:-q|-qq|-v|-vv|-x|-s|-rA|-ra|-b|-f|--no-header|--tb=\w+|--maxfail=\d+|-k [\w.]+|discover|-s [\w./\\-]+|-p no:[\w.-]+"
     # 테스트 파일·폴더 (pricing · tests/unit · test_a.py::test_b) — '-' 로 시작하지 않는 경로 낱말만, .. 는 아니다
-    r"|[\w./\\-]+\.py(?:::[\w:\[\]-]+)?|(?!\.\.)(?![\w.\\/-]*[\\/]\.\.)[\w][\w.\\/-]*))*|"
+    r"|[\w./\\-]+\.py(?:::[\w:\[\]-]+)?|(?!\.\.)(?![\w.\\/-]*[\\/]\.\.)(?:\.[\\/])?[\w][\w.\\/-]*))*|"
     r"" + _PY + r" -m coverage (?:report|json|html|xml)(?: -m| " + _COV_OPT + r"| --show-missing| -o (?!\S*\.\.)[\w./\\-]+)*|"
     # Node 내장 테스트 실행기 — 결과·커버리지 출력만 고르는 인자 (--import·--require 처럼 다른 코드를 불러오는 것은 묻는다).
     # 옵션은 --test 앞뒤 어디에 와도 되고, 대상은 테스트 폴더·파일. --test 없이 테스트 파일(*.test.js)을 바로 돌리는 것도 같다
@@ -382,6 +382,9 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
         cmd = _strip_cd(_unwrap_shell(_strip_cd(cmd, target_root)), target_root)
         # npm.cmd·npx.cmd 는 PowerShell 실행 정책을 피해 같은 프로그램을 부르는 이름이다 — 같은 명령으로 본다
         cmd = re.sub(r"\b(npm|npx|pnpm|yarn)\.cmd\b", r"\1", cmd, flags=re.I)
+        # PowerShell 호출 연산자(& "경로" …)와 빈칸 없는 낱말의 따옴표는 같은 명령이다 — 떼고 본다 (빈칸 있는 따옴표는 그대로)
+        cmd = re.sub(r"^&\s+", "", cmd)
+        cmd = re.sub(r"""(?<![\w=])(["'])([^"'\s;|&<>`$(){}]+)\1""", r"\2", cmd)
         for r in read_roots:  # 같은 저장소의 맨 위로 옮겨 돌리는 테스트(cd <저장소>; python -m pytest)도 같은 기준으로 본다
             cmd = _strip_cd(cmd, Path(r))
         if workbranch.moves_branch(cmd):
