@@ -1049,6 +1049,7 @@ class Runner:
         rules = self._rules(run)
         argv, env = self.agent.command(self.settings, run, prompt, rules)
         from beom_workbench.core import prereqs, runtime
+        (Path(run["target_root"]) / ".beom").mkdir(parents=True, exist_ok=True)  # 첫 라운드에도 커버리지 기록이 .beom 으로 가게
         env = {**env, **prereqs.agent_env(), **runtime.coverage_env(run["target_root"])}  # 설치된 OpenSSL 을 Rust 빌드가 찾게 (Windows)
         inbox.log(self.settings, self.run_id, "round_start", round=run["round"], agent=self.agent.id, prompt=prompt[:3000])
         self._set(activity=None)  # 지난 라운드의 '승인 대기' 같은 한 줄이 새 라운드에 남지 않게 — 에이전트가 새로 알릴 때까지는 '라운드 N 진행 중'

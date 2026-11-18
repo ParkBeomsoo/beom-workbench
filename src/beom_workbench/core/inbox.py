@@ -70,11 +70,12 @@ def mode_of(policy: dict) -> str:
 # 정확히 이 줄만 '빌드'로 바로 허용 — 덧붙인 인자는 실행기를 바꿀 수 있다 (go test -exec, yarn dlx, pytest -p 등).
 # 그 밖의 줄은 '그 밖의 명령'으로 규칙에 따라 묻는다.
 # node 테스트 실행기가 받는 출력·고르기 옵션 (다른 코드를 불러오지 않는 것만)
-_NODE_TEST_OPT = (r"(?:--test-isolation=none|--experimental-test-coverage|--test-reporter=[\w-]+"
+_NODE_TEST_OPT = (r"(?:--test-isolation=none|--experimental-test-coverage|--enable-source-maps|--test-reporter=[\w-]+"
                   r"|--test-reporter-destination=(?!\S*\.\.)[\w./\-]+|--test-name-pattern=[\w.-]+|--test-concurrency=\d+"
                   r"|--test-coverage-(?:include|exclude)=(?!\S*\.\.)[\w./*\-]+|--test-coverage-(?:lines|branches|functions)=\d+)")
 # 대상 폴더 안 가상 환경의 파이썬(.venv\Scripts\python.exe 등)도 같은 실행기다 — 상위 경로(..)로 나가는 것은 아니다
-_PY = r"(?:python3?|py|(?:\.[\\/])?(?!\.\.)[\w.-]*venv[\\/](?:Scripts|bin)[\\/]python(?:3|\.exe)?)(?: -B| -u| -X utf8)*"
+_PY = (r"(?:python3?|py|(?:\.[\\/])?(?!\.\.)(?:[\w.-]+[\\/])*[\w.-]*venv[\\/](?:Scripts|bin)[\\/]python(?:3|\.exe)?)"
+       r"(?: -B| -u| -X utf8)*")
 # 커버리지 옵션 — 고를 파일·기록 위치만 (따옴표로 감싸도 같다). 기록 위치는 상위 경로(..)로 나가지 않는다
 _COV_OPT = (r"(?:\"?--include=[\w./\\*,-]+\"?|\"?--omit=[\w./\\*,-]+\"?|--source=[\w./\\,-]+|--branch|--parallel-mode"
             r"|--data-file=(?!\S*\.\.)[\w./\\-]+|--rcfile=(?:NUL|/dev/null))")
@@ -82,6 +83,10 @@ BUILD_COMMANDS = re.compile(
     # npm·pnpm·yarn: 출력만 줄이거나 보고·설치 스크립트를 끄는 옵션은 같은 명령이다 (실행하는 것을 바꾸지 않는다)
     r"^((?:npm (ci|install|test|run (build|test|lint))|pnpm (install|test|build)|yarn (install|test|build))"
     r"(?: --(?:no-audit|no-fund|silent|prefer-offline|no-progress|ignore-scripts|loglevel=(?:error|warn|silent)))*|"
+    # 빌드 스크립트에 출력 위치만 넘기는 옵션 (npm run build -- --outDir .beom/tmp/build) — 다른 코드를 불러오는 옵션(--require 등)이나
+    # 테스트 실행기에 넘기는 옵션은 아니다. 경로는 상위(..)로 나가지 않는다
+    r"npm run build -- (?:(?:--outDir|--out-dir|--base)(?:=| )(?!\S*\.\.)[\w./\\-]+|--emptyOutDir|--mode [\w-]+)"
+    r"(?: (?:(?:--outDir|--out-dir|--base)(?:=| )(?!\S*\.\.)[\w./\\-]+|--emptyOutDir|--mode [\w-]+))*|"
     r"cargo (build|test|check|fmt|clippy)|go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
     r"\./gradlew (test|build)|pip install -e \.|dotnet (build|test)|"
     # 의존성 설치(requirements 파일·현재 패키지)와 대상 폴더 안 가상 환경 만들기
