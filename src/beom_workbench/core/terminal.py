@@ -126,24 +126,43 @@ class Attendant:
 
     def _approve(self, d: dict, reviews: dict, plan: dict | None) -> None:
         w, t = self.write, self.t
-        w("\n" + t("시작 전 확인" if not (d.get("run") or {}).get("confirm_at") == "end" else "마지막 확인"))
+        reqs = reviews.get("requirements") or []
+        exp = reviews.get("expectations") or []
+        # 앱과 같은 제목 — 계획과 함께 받는 첫 확인은 '시작 전 확인'(끝에 한 번이면 '마지막 확인'), 그 뒤에 다시 받는 확인은 무엇을 받는지로
+        if plan:
+            title = "마지막 확인" if (d.get("run") or {}).get("confirm_at") == "end" else "시작 전 확인"
+        else:
+            title = "요구사항과 합격 기준" if (reqs or exp) else "확인할 항목"
+        w("\n" + t(title))
         if plan and plan.get("summary"):
             w("  " + t(str(plan["summary"])))
-        reqs = reviews.get("requirements") or []
         if reqs:
             w(t("만들 것") + f" ({len(reqs)})")
             for r in reqs[:15]:
                 w(f"  {r.get('id', '')} {t(str(r.get('text') or ''))}")
             if len(reqs) > 15:
                 w(f"  … +{len(reqs) - 15}")
-        exp = reviews.get("expectations") or []
         if exp:
-            w(t("합격 기준 {0}개").replace("{0}", str(len(exp))))
-        for x in (reviews.get("items") or [])[:10]:  # 생략·차이 허용·케이스 변경 같은 사람 확인 항목
-            w(f"  - {t(str(x.get('summary') or x.get('kind') or ''))}")
+            w(t("합격 기준 {0}개").replace("{0}", str(len(exp))) + " — " + t("이것이 모두 되면 완료"))
+            if not plan:  # 나중에 다시 받는 확인은 무엇이 더해지거나 바뀌었는지가 요점 — 하나씩 보여 준다
+                for e in exp[:15]:
+                    w(f"  - {t(str(e.get('description') or e.get('case') or ''))}")
+                if len(exp) > 15:
+                    w(f"  … +{len(exp) - 15}")
+        for x in [c for c in (reviews.get("case_changes") or []) if isinstance(c, dict)][:5]:
+            if x.get("removed"):
+                w("  " + t("빠짐") + f": {', '.join(x['removed'])} — " + t("이전 승인 기준에서 빠진 케이스"))
+            if x.get("changed"):
+                w("  " + t("바뀜") + f": {', '.join(x['changed'])} — " + t("기대값이 이전 승인과 다름"))
+        for x in (reviews.get("divergences") or [])[:10]:  # 사람이 확인할 차이 허용
+            w("  " + t("차이 허용") + f": {t(str(x.get('summary') or ''))}")
+        for x in (reviews.get("omitted") or [])[:10]:  # 옮기지 않는 것
+            w("  " + t("생략") + f": {t(str(x.get('summary') or ''))}")
         if plan:
-            for dd in plan.get("decisions") or []:
-                w(f"  · {t(str(dd.get('topic')))}: {t(str(dd.get('choice')))}")
+            if plan.get("decisions"):
+                w(t("정할 것") + " — " + t("추천이 골라져 있습니다 — 바꾸려면 앱에서 누르세요"))
+                for dd in plan["decisions"]:
+                    w(f"  · {t(str(dd.get('topic')))}: {t(str(dd.get('choice')))}")
             w(t("진행 순서"))
             for i, s in enumerate(plan.get("steps") or [], 1):
                 w(f"  {i}. {t(str(s.get('title') or ''))}")

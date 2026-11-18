@@ -1298,9 +1298,12 @@ class Runner:
                                                            and not (run.get("plan") or {}).get("approved")))
             # 끝난(완료 조건을 다 채운) 작업에 추가 요청이 왔다 — '인수인계만, 코드는 바꾸지 않는다' 지시와 부딪히지 않게 먼저 본다
             follow_up = bool(not revising and self._new_messages() and st and st["complete"])
+            # 사용자의 새 메시지(추가 요청·도중에 보낸 고칠 점·승인 대신 보낸 수정)를 받은 라운드는 새 한 바퀴 — 진행 단계를 처음부터 앞으로만
+            # (도중에 고칠 점을 받고 기준을 고치면 '구현'에서 '확인'으로 뒤로 튀어 보였다)
+            new_pass = bool(self._new_messages())
             nxt = run["round"] + 1
             # 라운드 번호와 '새 한 바퀴' 표시를 한 번에 — 따로 쓰면 그 사이 화면이 새 라운드를 이전 결과의 '검증' 단계로 보여 준다
-            run = self._set(round=nxt, **({"revision_round": nxt, "revision_touched": False} if follow_up else {}))
+            run = self._set(round=nxt, **({"revision_round": nxt, "revision_touched": False} if new_pass else {}))
             prompt = _brief(run, st)
             if revising:
                 prompt += ("\n\n이번 라운드: 사용자가 승인하지 않고 고칠 점을 보냈다. 위 요청대로 요구사항·합격 케이스"

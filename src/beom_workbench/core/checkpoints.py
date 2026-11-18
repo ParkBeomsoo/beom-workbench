@@ -148,11 +148,14 @@ class Checkpoints:
         if checkpoint not in known:
             raise ToolError("not_found", "없는 체크포인트")
         before = self.snapshot("되돌리기 전")
-        added = _git(self.shadow, self.root, "diff", "--name-only", "--no-renames", "--diff-filter=A", checkpoint, before).stdout.splitlines()
+        # 툴킷 작업 폴더(.beom — 합격 케이스·보조 파일)와 커버리지 기록은 되돌리지 않는다 — 변경 탭·파일 되돌리기와 같은 기준
+        added = _git(self.shadow, self.root, "diff", "--name-only", "--no-renames", "--diff-filter=A", checkpoint, before,
+                     "--", ".", *HIDDEN).stdout.splitlines()
+        added = [rel for rel in added if not hidden(rel)]
         for rel in added:
             p = (self.root / rel)
             if p.is_file() and str(p.resolve()).startswith(str(self.root.resolve())):
                 p.unlink()
-        _git(self.shadow, self.root, "checkout", "-q", checkpoint, "--", ".")
+        _git(self.shadow, self.root, "checkout", "-q", checkpoint, "--", ".", *HIDDEN)
         after = self.snapshot("되돌림")
         return {"restored": checkpoint, "removed_files": added, "undo": before, "now": after}
