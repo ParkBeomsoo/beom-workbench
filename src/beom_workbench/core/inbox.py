@@ -73,7 +73,8 @@ def mode_of(policy: dict) -> str:
 _NODE_TEST_OPT = (r"(?:--test-isolation=none|--experimental-test-coverage|--test-reporter=[\w-]+"
                   r"|--test-reporter-destination=(?!\S*\.\.)[\w./\-]+|--test-name-pattern=[\w.-]+|--test-concurrency=\d+"
                   r"|--test-coverage-(?:include|exclude)=(?!\S*\.\.)[\w./*\-]+|--test-coverage-(?:lines|branches|functions)=\d+)")
-_PY = r"(?:python3?|py)(?: -B| -u| -X utf8)*"
+# 대상 폴더 안 가상 환경의 파이썬(.venv\Scripts\python.exe 등)도 같은 실행기다 — 상위 경로(..)로 나가는 것은 아니다
+_PY = r"(?:python3?|py|(?:\.[\\/])?(?!\.\.)[\w.-]*venv[\\/](?:Scripts|bin)[\\/]python(?:3|\.exe)?)(?: -B| -u| -X utf8)*"
 # 커버리지 옵션 — 고를 파일·기록 위치만 (따옴표로 감싸도 같다). 기록 위치는 상위 경로(..)로 나가지 않는다
 _COV_OPT = (r"(?:\"?--include=[\w./\\*,-]+\"?|\"?--omit=[\w./\\*,-]+\"?|--source=[\w./\\,-]+|--branch|--parallel-mode"
             r"|--data-file=(?!\S*\.\.)[\w./\\-]+|--rcfile=(?:NUL|/dev/null))")
@@ -83,6 +84,9 @@ BUILD_COMMANDS = re.compile(
     r"(?: --(?:no-audit|no-fund|silent|prefer-offline|no-progress|ignore-scripts|loglevel=(?:error|warn|silent)))*|"
     r"cargo (build|test|check|fmt|clippy)|go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
     r"\./gradlew (test|build)|pip install -e \.|dotnet (build|test)|"
+    # 의존성 설치(requirements 파일·현재 패키지)와 대상 폴더 안 가상 환경 만들기
+    r"(?:pip|" + _PY + r" -m pip) install(?: -q| --quiet| -U| --upgrade)* (?:-r requirements[\w.-]*\.txt|-e \.(?:\[[\w,-]+\])?)(?: -q| --quiet)*|"
+    r"" + _PY + r" -m venv (?!\S*\.\.)[\w.\\/-]+|"
     # pytest 는 실행기를 바꾸지 않는 인자만 (출력·멈춤·고르기·테스트 파일) — -p(플러그인)·-c·--rootdir 같은 것은 묻는다
     # 파이썬 실행기 옵션 중 실행하는 것을 바꾸지 않는 것(-B 캐시 안 씀 · -u 버퍼 없음 · -X utf8)은 같은 명령이다
     r"(?:" + _PY + r" -m coverage run (?:" + _COV_OPT + r" )*"
@@ -371,6 +375,8 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
         if PUBLISH.search(cmd):
             return "publish"
         cmd = _strip_cd(_unwrap_shell(_strip_cd(cmd, target_root)), target_root)
+        # npm.cmd·npx.cmd 는 PowerShell 실행 정책을 피해 같은 프로그램을 부르는 이름이다 — 같은 명령으로 본다
+        cmd = re.sub(r"\b(npm|npx|pnpm|yarn)\.cmd\b", r"\1", cmd, flags=re.I)
         for r in read_roots:  # 같은 저장소의 맨 위로 옮겨 돌리는 테스트(cd <저장소>; python -m pytest)도 같은 기준으로 본다
             cmd = _strip_cd(cmd, Path(r))
         if workbranch.moves_branch(cmd):

@@ -144,7 +144,7 @@ def wb_run(command: str, timeout: int = 600) -> dict:
         rule = inbox.command_rule(cmd, root) if kind == "commands" else None
         extra = "" if kind in ("build", "edit") else f" — {inbox.KINDS.get(kind, kind)}"
         ans = inbox.ask(settings, run["id"], "permission", {
-            "summary": mask_command(f"{inbox.KINDS['unsandboxed']}{extra}: {cmd[:300]}"),
+            "summary": mask_command(f"격리 밖 실행 (Codex 샌드박스는 인터넷이 막혀 있음){extra}: {cmd[:300]}"),
             "tool": "mcp:wb_run", "input": {"command": cmd}, "permission_kind": "unsandboxed", **({"rule": rule} if rule else {})})
         if not ans.get("allow"):
             return {"ok": False, "error": "사용자가 실행을 거절함: " + cmd[:200],
@@ -154,7 +154,8 @@ def wb_run(command: str, timeout: int = 600) -> dict:
         inbox.update_run(settings, run["id"], lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [cmd]))))
     inbox.log(settings, run["id"], "permission", tool="mcp:wb_run", permission_kind="unsandboxed", decision="allow", what=mask_command(cmd[:160]))
     if sys.platform == "win32":
-        argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+        # 이 프로세스에만 실행 정책을 풀어 npm.ps1 같은 스크립트가 돈다 (시스템 설정은 바꾸지 않는다)
+        argv = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
                 "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; " + cmd]
     else:
         argv = ["sh", "-c", cmd]
