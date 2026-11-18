@@ -323,6 +323,8 @@ asked about again when they run — you saw them when you approved. Commands tha
 approve with the criteria, and agents follow design rules that avoid the generic "AI look". Screen cases open the page in a real browser
 engine, check required text, elements and script errors, and keep a screenshot you can open in the Checks tab. Native desktop apps (Qt · WinForms · WPF · WinUI …, Windows for now) are launched,
 read through UI Automation (text and controls), driven (type values, click buttons) and captured as a window screenshot.
+Agents look at their own screens the same way: a page after typing and clicking, or a page that needs the program's server — the toolkit
+starts it for the shot and stops it, and removes files it created meanwhile.
 
 **Where data lives** — everything stays on your computer. See [Data and storage](#data-and-storage).
 

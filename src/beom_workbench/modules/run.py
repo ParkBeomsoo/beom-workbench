@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from beom_workbench.core import inbox
@@ -287,9 +288,14 @@ def wb_brief_screens(files: list[str] | None = None, mobile: bool = False) -> di
 
 @mcp.tool()
 def wb_screen_shot(files: list[str] | None = None, mobile: bool = False, width: int | None = None, height: int | None = None,
-                   app: list[str] | str | None = None) -> dict:
+                   app: list[str] | str | None = None, url: str | None = None, paths: list[str] | None = None,
+                   cmd: str | None = None, actions: list[dict] | None = None) -> dict:
     """화면을 찍어 .beom/shots/ 에 남긴다 — 디자인을 스스로 검토할 때. 결과의 shot 경로를 직접 열어 보고 정렬·간격·위계·잘림을 고친다.
     HTML: files=["index.html"] — 브라우저 엔진으로 연다 (권한을 묻지 않는다, 대상 폴더만 127.0.0.1 로). mobile=true 면 390×844.
+    서버가 있어야 보이는 화면: url="http://127.0.0.1:8000", paths=["/", "/t/abc"], cmd="python server.py" — 툴킷이 서버를 잠깐 띄워
+    찍고 끈다 (cmd 는 내 코드를 돌리는 명령이라 권한 규칙을 거친다, 이미 떠 있으면 cmd 없이). 이 PC(localhost) 주소만.
+    actions=[{"fill": "#name", "value": "점심"}, {"click": "#add"}, {"press": "Enter"}, {"wait_ms": 300}] — 누르고 입력한 뒤의 화면을
+    찍는다 (files·url 모두). 눌러 본 뒤의 모습을 확인할 때 쓴다 — '클릭은 확인 못 함'으로 남기기 전에.
     데스크톱 앱(Windows, tkinter·Qt·WinForms·WPF 등): app=["python", "main.py"] 또는 "dist/App.exe" — 앱을 띄워 창을 찍고 닫는다.
     앱 실행은 내 코드를 돌리는 명령이라 권한 규칙을 거친다. tkinter 는 창 안 글자를 읽어 주지 않으니 모습은 그림으로 확인한다."""
     from beom_workbench.core import screens
@@ -299,8 +305,10 @@ def wb_screen_shot(files: list[str] | None = None, mobile: bool = False, width: 
         return {"ok": False, "error": "자동 실행 밖"}
     if app:
         return _native_shot(run, app, width, height)
+    if url:
+        return _url_shot(run, url, paths or ["/"], cmd, mobile, width, height, actions)
     if not files:
-        return {"ok": False, "error": "files(HTML) 또는 app(데스크톱 앱 실행 명령)이 필요함"}
+        return {"ok": False, "error": "files(HTML), url(서버 주소) 또는 app(데스크톱 앱 실행 명령)이 필요함"}
     if not screens.available():
         return {"ok": False, "error": "이 설치에는 화면 엔진(PySide6)이 없음"}
     root = Path(run["target_root"]).resolve()
@@ -315,7 +323,7 @@ def wb_screen_shot(files: list[str] | None = None, mobile: bool = False, width: 
     with screens.serve_folder(root) as srv:
         pages = []
         for p in picks:
-            spec = {"file": p.relative_to(root).as_posix(), "mobile": mobile, "wait_ms": 700}
+            spec = {"file": p.relative_to(root).as_posix(), "mobile": mobile, "wait_ms": 700, "actions": list(actions or [])}
             if width and height:
                 spec.update(width=int(width), height=int(height))
             name = p.relative_to(root).as_posix().replace("/", "_").rsplit(".", 1)[0] + ("-mobile" if mobile else "")
@@ -324,4 +332,39 @@ def wb_screen_shot(files: list[str] | None = None, mobile: bool = False, width: 
     shots = [{"file": p.relative_to(root).as_posix(), "ok": bool(r.get("ok")), "shot": r.get("out") if r.get("ok") else None,
               "errors": (r.get("errors") or [])[:3]} for p, r in zip(picks, got)]
     inbox.log(settings, run["id"], "screen_shots", shots=[s["shot"] for s in shots if s["shot"]])
+    return {"ok": True, "shots": shots}
+
+
+def _url_shot(run: dict, url: str, paths: list[str], cmd: str | None, mobile: bool, width, height, actions) -> dict:
+    """서버 화면 — cmd 가 있으면 검증과 같은 방식으로 잠깐 띄워 찍고 끈다. 그동안 프로그램이 만든 파일(데이터 등)은 치운다."""
+    from beom_workbench.core import port, screens
+    if not screens.available():
+        return {"ok": False, "error": "이 설치에는 화면 엔진(PySide6)이 없음"}
+    port.check_url(url)
+    if cmd:
+        inbox.gate_commands(settings, {"screen_server": cmd})
+    root = Path(run["target_root"]).resolve()
+    out_dir = root / ".beom" / "shots"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pages = []
+    for pth in paths[:12]:
+        pth = "/" + str(pth).lstrip("/")
+        name = "url" + (re.sub(r"[^\w-]+", "_", pth).strip("_")[:60] or "") + ("-mobile" if mobile else "")
+        spec = {"path": pth, "mobile": mobile, "wait_ms": 700, "actions": list(actions or [])}
+        if width and height:
+            spec.update(width=int(width), height=int(height))
+        pages.append((pth, screens.page_spec(spec, url, root, str(out_dir / f"{name or 'url'}.png"))))
+    before = port._files(root)
+    server = None
+    try:
+        if cmd:
+            server = port._Server(port._Side("target", root, root / ".beom"), cmd, url)
+        got = screens.capture([pg for _, pg in pages])
+    finally:
+        if server:
+            server.close()
+        port._drop_new(root, before, keep=set())
+    shots = [{"path": pth, "ok": bool(r.get("ok")), "shot": r.get("out") if r.get("ok") else None, "errors": (r.get("errors") or [])[:3]}
+             for (pth, _), r in zip(pages, got)]
+    inbox.log(settings, run["id"], "screen_shots", shots=[x["shot"] for x in shots if x["shot"]])
     return {"ok": True, "shots": shots}
