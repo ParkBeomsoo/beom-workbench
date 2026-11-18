@@ -274,9 +274,39 @@ def quiet_env(base: dict | None = None) -> dict:
     return {**(base if base is not None else os.environ), **QUIET_ENV}
 
 
+# 자동 실행에서 Claude 가 쓰는 기본 도구 — 그 밖(게시·예약·원격 실행·알림·작업 흐름·스킬 등)은 일과 상관없고, 지시문에 실려
+# 요청마다 토큰을 쓴다 (사용자 스킬·도구 목록만으로 요청당 2만 토큰 남짓). 우리 도구(MCP)는 --strict-mcp-config 로 따로 붙는다
+CLAUDE_TOOLS = ["Task", "Bash", "PowerShell", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit", "TodoWrite",
+                "WebFetch", "WebSearch", "ToolSearch"]
+
+
+def _claude_flags(exe) -> set[str]:
+    """설치된 Claude Code 가 아는 옵션 — 옛 버전에 없는 옵션을 넘기면 실행이 바로 실패한다. 실행 파일이 바뀔 때만 다시 본다."""
+    last = exe[-1] if isinstance(exe, list) and exe else exe
+    if not last or not Path(str(last)).name.lower().startswith("claude"):
+        return set()  # Claude Code 실행 파일이 아니면(시험용 대역 등) 묻지 않는다 — --help 로 그 프로그램을 돌리게 된다
+    key = str(exe)
+    try:
+        stamp = Path(exe[-1] if isinstance(exe, list) else exe).stat().st_mtime_ns
+    except (OSError, TypeError):
+        stamp = 0
+    hit = _CLAUDE_FLAGS.get(key)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    proc = _run_quiet([*(exe if isinstance(exe, list) else [exe]), "--help"], timeout=30)
+    text = (proc.stdout + proc.stderr).decode("utf-8", "replace") if proc else ""
+    flags = set(re.findall(r"(--[a-z][a-z-]+)", text))
+    _CLAUDE_FLAGS[key] = (stamp, flags)  # 못 읽었어도 기억한다 — 라운드마다 다시 돌리지 않게 (실행 파일이 바뀌면 다시 본다)
+    return flags
+
+
+_CLAUDE_FLAGS: dict[str, tuple[int, set[str]]] = {}
+
+
 def _run_quiet(argv: list[str], timeout: int = 60) -> subprocess.CompletedProcess | None:
     try:
-        return subprocess.run(argv, capture_output=True, timeout=timeout, env=quiet_env())
+        # 표준 입력은 닫는다 — 물려받으면 입력을 기다리는 프로그램(옛 버전·대화형 프롬프트)이 멈춘다
+        return subprocess.run(argv, capture_output=True, timeout=timeout, env=quiet_env(), stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return None
 
@@ -370,6 +400,11 @@ class ClaudeCode(Agent):
                                                *(["Bash"] if sandboxed else []),  # 격리 실행: Git Bash 는 샌드박스에서 못 돈다 → PowerShell
                                                *([] if needs_analysis(run) else [self.TOOL_PREFIX + t for t in analysis_tools()])]),
                 "--append-system-prompt-file", str(rules_file), "--max-turns", str(run.get("max_turns", 60))]
+        known = _claude_flags(self.exe)
+        if "--tools" in known:  # 일에 쓰는 기본 도구만 — 게시(Artifact)·예약·원격 실행 같은 도구는 싣지도 않는다
+            argv += ["--tools", ",".join(CLAUDE_TOOLS)]
+        if "--disable-slash-commands" in known:  # 사용자 스킬·명령 목록이 지시문에 실리지 않게 (이 실행에 쓰지 않는다)
+            argv.append("--disable-slash-commands")
         if run.get("model"):
             argv += ["--model", run["model"]]
         if run.get("effort"):
@@ -446,6 +481,9 @@ class ClaudeCode(Agent):
             env.pop("ANTHROPIC_API_KEY", None)  # 키가 있으면 -p 는 항상 키를 쓴다 — 구독 로그인으로 돌게 뺀다
         env.setdefault("MCP_TIMEOUT", str(MCP_STARTUP_SEC * 1000))
         env.setdefault("MCP_TOOL_TIMEOUT", str(MCP_TOOL_SEC * 1000))
+        from beom_workbench.core import sandbox
+        if sandbox.wraps_powershell(run):
+            sandbox.node_test_env(env)  # 격리 안 node --test 가 그대로 돌게 — 셸 명령이 이 환경을 물려받는다
         return env
 
     def parse(self, ev):
@@ -595,6 +633,9 @@ class Codex(Agent):
         if run.get("auth") != "api_key":
             env.pop("CODEX_API_KEY", None)
             env.pop("OPENAI_API_KEY", None)
+        if sys.platform == "win32":  # Codex 의 Windows 격리도 Node 하위 프로세스를 막는다 — node --test 가 그대로 돌게
+            from beom_workbench.core import sandbox
+            sandbox.node_test_env(env)
         return env
 
     def parse(self, ev):
@@ -643,9 +684,19 @@ def codex_isolation(policy: dict, home: Path | None = None) -> list[str]:
         # 이름에 점이 있으면 -c 경로로 쓸 수 없다 (따옴표로 감싼 키는 codex 가 받지 않는다 — 0.167 에서 확인)
         if re.fullmatch(r"[\w@-]+", name) and (not isinstance(v, dict) or v.get("enabled", True)):
             out.append(f"plugins.{name}.enabled=false")
+    # 설정 파일에 없어도 따라오는 기능들 — 원격·추천 플러그인과 연결 앱(그 스킬 수십 개가 지시문에 실린다), 이미지 생성,
+    # 플러그인 설치 제안, 브라우저·컴퓨터 사용, 목표 기록. 권한 규칙을 거치지 않거나 이 실행에 쓰지 않는다. 모르는 이름은 codex 가 무시한다
+    for feat in CODEX_FEATURES_OFF:
+        out.append(f"features.{feat}=false")
+    # 사용자·기본 스킬 목록도 싣지 않는다 — 요청마다 토큰을 쓰고, 에이전트가 그 스킬 파일을 찾아 사용자 폴더를 뒤진다
+    out += ["skills.include_instructions=false", "skills.bundled.enabled=false"]
     if (policy or {}).get("web") != "allow":
         out.append('web_search="disabled"')
     return out
+
+
+CODEX_FEATURES_OFF = ["plugins", "remote_plugin", "apps", "image_generation", "tool_suggest", "skill_search",
+                      "browser_use", "browser_use_external", "computer_use", "in_app_browser", "goals"]
 
 
 # ---------------------------------------------------------------- Gemini — Antigravity CLI (agy) · 예전 Gemini CLI (실험적)

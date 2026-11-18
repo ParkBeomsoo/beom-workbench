@@ -474,8 +474,29 @@ def foreground_server(tool_input: dict) -> bool:
 _INLINE = {"-c", "-e", "--eval", "-p", "--print", "-Command", "-EncodedCommand", "/c"}
 
 
+def command_key(cmd: str, root) -> str:
+    """같은 명령의 다른 표기를 하나로 — 허락한 명령과 견줄 때만 쓴다 (돌리는 명령은 그대로).
+    대상 폴더 절대 경로·.\\·역슬래시·빈칸 없는 낱말의 따옴표·& 호출 연산자: 'C:\\…\\proj\\.beom\\venv\\Scripts\\python.exe app.py'
+    와 '.beom/venv/Scripts/python.exe app.py' 는 같은 명령이다 (실험에서 같은 서버 명령을 표기만 바꿔 두 번 물었다)."""
+    s = _unquote(re.sub(r"^&\s+", "", str(cmd or "").strip())).replace("\\", "/")
+    for r in {str(Path(root)), str(Path(root).resolve())}:
+        s = re.sub(re.escape(r.replace("\\", "/").rstrip("/") + "/"), "", s, flags=re.I)
+    s = re.sub(r"(?<![\w.])\./", "", s)
+    return " ".join(s.split())
+
+
+def approved_command(run: dict, cmd: str) -> bool:
+    """이 실행에서 사람이 이미 허락한 명령인가 — 표기가 달라도 같은 명령이면."""
+    seen = run.get("approved_cmds") or []
+    if cmd in seen:
+        return True
+    key = command_key(cmd, run["target_root"])
+    return any(command_key(x, run["target_root"]) == key for x in seen)
+
+
 def command_rule(cmd: str, root: Path) -> str | None:
     core = OUTPUT_FILTER.sub("", _strip_cd(_unwrap_shell(_strip_cd(str(cmd or "").strip(), root)), root)).strip()
+    core = command_key(core.replace("{port}", "0"), root)  # 표기가 달라도 같은 규칙 · 포트 자리는 툴킷이 채운다
     if not core or CHAINING.search(core) or re.search(r"[$`{}()]", core):  # 치환·스크립트 블록이 있으면 기억하지 않는다
         return None
     words = core.split()
@@ -493,7 +514,8 @@ def command_rule(cmd: str, root: Path) -> str | None:
 
 def matches_rule(run: dict, cmd: str, root: Path) -> bool:
     rule = command_rule(cmd, root)
-    return bool(rule) and rule in (run.get("cmd_rules") or [])
+    stored = run.get("cmd_rules") or []
+    return bool(rule) and (rule in stored or rule in {command_key(x, root) for x in stored})
 
 
 def _unwrap_shell(cmd: str) -> str:
@@ -737,7 +759,7 @@ def gate_commands(settings: Settings, commands: dict[str, str | None]) -> None:
     run = load_run(settings, run_id)
     todo = []
     for field, cmd in commands.items():
-        if not cmd or cmd in (run.get("approved_cmds") or []):
+        if not cmd or approved_command(run, cmd):
             continue
         kind = classify("Bash", {"command": cmd}, Path(run["target_root"]), [settings.home], read_roots=repo_roots(run))
         decision = decide(run, kind)

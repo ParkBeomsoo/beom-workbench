@@ -113,6 +113,32 @@ def plan(root: Path) -> list[dict]:
     return out
 
 
+USER_VENVS = (".venv", "venv", "env")
+
+
+def user_venv(root: Path) -> Path | None:
+    """사용자가 프로젝트에 만들어 둔 가상 환경 (.venv·venv·env) — 있으면 그 패키지를 다시 내려받지 않고 빌려 쓴다."""
+    for n in USER_VENVS:
+        v = Path(root) / n
+        py = v / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        if (v / "pyvenv.cfg").is_file() and py.is_file():
+            return v
+    return None
+
+
+def _site_packages(v: Path) -> Path | None:
+    hits = [v / "Lib" / "site-packages"] if os.name == "nt" else sorted(v.glob("lib/python*/site-packages"))
+    return next((p for p in hits if p.is_dir()), None)
+
+
+def _borrow(root: Path, user: Path) -> None:
+    """.beom/venv 에서 사용자 가상 환경의 패키지가 보이게 (.pth 한 줄) — 이미 깔린 것은 pip 가 '있음'으로 건너뛰어 다시 내려받지 않고,
+    빠진 것(pytest·coverage 등)만 .beom/venv 에 깐다. 사용자 가상 환경은 건드리지 않는다."""
+    mine, theirs = _site_packages(venv_dir(root)), _site_packages(user)
+    if mine and theirs:
+        (mine / "_beom_user_venv.pth").write_text(str(theirs.resolve()) + "\n", encoding="utf-8")
+
+
 def _base_python() -> str:
     """가상 환경을 만들 파이썬 — 사용자가 쓰는 python (Windows 스토어 바로가기는 아니다), 없으면 툴킷의 파이썬."""
     p = shutil.which("python") or shutil.which("python3")
@@ -138,10 +164,15 @@ def _install(item: dict, root: Path, timeout: float) -> dict:
         code, out = _run(argv, root, timeout)
     else:
         py = venv_python(root)
+        user = user_venv(root)
         if not py.is_file():
-            code, out = _run([_base_python(), "-m", "venv", str(venv_dir(root))], root, 300)
+            # 사용자 가상 환경이 있으면 그 파이썬으로 만든다 — 같은 버전이라야 그 패키지(컴파일된 확장 포함)를 빌려 쓸 수 있다
+            base = str(user / ("Scripts/python.exe" if os.name == "nt" else "bin/python")) if user else _base_python()
+            code, out = _run([base, "-m", "venv", str(venv_dir(root))], root, 300)
             if code != 0:
                 return {"kind": "python", "ok": False, "output_tail": out}
+            if user:
+                _borrow(root, user)
         args = [str(py), "-m", "pip", "install", "-q"]
         for f in item["files"]:
             if f != "pyproject.toml":

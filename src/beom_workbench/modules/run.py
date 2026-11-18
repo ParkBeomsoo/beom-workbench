@@ -154,7 +154,7 @@ def wb_run(command: str, timeout: int = 600) -> dict:
                   decision="refuse", what=mask_command(cmd[:160]))
         return {"ok": False, "error": f"규칙상 허용되지 않음 ({inbox.KINDS.get(kind if dk == 'refuse' else 'unsandboxed')}): {cmd[:200]}",
                 "recovery": "다른 방법을 쓰거나 wb_person_ask 로 사용자에게 이유와 함께 묻는다"}
-    known = cmd in (run.get("approved_cmds") or []) or inbox.matches_rule(run, cmd, root)
+    known = inbox.approved_command(run, cmd) or inbox.matches_rule(run, cmd, root)
     if not known and (dk != "allow" or du != "allow"):
         rule = inbox.command_rule(cmd, root) if kind == "commands" else None
         extra = "" if kind in ("build", "edit") else f" — {inbox.KINDS.get(kind, kind)}"
@@ -444,10 +444,10 @@ def _url_shot(run: dict, url: str, paths: list[str], cmd: str | None, mobile: bo
     from beom_workbench.core import port, screens
     if not screens.available():
         return {"ok": False, "error": "이 설치에는 화면 엔진(PySide6)이 없음"}
+    if cmd:  # 포트를 채우기 전의 명령으로 묻는다 — 채운 뒤에 물으면 찍을 때마다 포트가 달라 같은 명령을 매번 다시 묻는다
+        inbox.gate_commands(settings, {"screen_server": cmd})
     cmd, url = port.fill_port(cmd, url)
     port.check_url(url)
-    if cmd:
-        inbox.gate_commands(settings, {"screen_server": cmd})
     root = Path(run["target_root"]).resolve()
     out_dir = root / ".beom" / "shots"
     out_dir.mkdir(parents=True, exist_ok=True)

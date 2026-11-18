@@ -173,9 +173,11 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   직접 하지 않는다. 파이썬 테스트는 wb_deps 가 알려 준 python(.beom/venv)으로, 의존성이 없으면 평소 python 으로 돌린다.
   커버리지(케이스가 만든 코드를 실행했는지)는 툴킷이 잰다 — wb_port_verify 가 매핑한 파일을 프로젝트의 테스트(pytest·node --test)로
   돌려 잰다. 측정 명령(target_coverage_cmd)을 짜거나 커버리지 도구를 깔거나 변환 스크립트를 만들지 않는다 (테스트를 만들면 된다).
-  격리 실행 안에서 node --test 가 하위 프로세스를 못 띄우면 `node --test --test-isolation=none` 으로 돌린다 — 이것은 이 실행 환경
-  때문의 우회라 명령을 돌릴 때만 붙이고, package.json 의 test 스크립트·README·CI 같은 결과물에는 넣지 않는다.
-  검증용 서버 주소는 포트 자리에 {port} 를 쓰면 툴킷이 빈 포트를 골라 넣는다 (예: target_cmd="python app.py --port {port}",
+  격리 실행 안의 node --test(npm test)는 툴킷이 격리용 설정을 미리 넣어 두어 그대로 돈다 — --test-isolation 같은 옵션을 붙이거나
+  우회 스크립트(.cmd 등)를 만들지 않는다. 툴킷이 돌리는 명령(target_cmd·cmd)은 평소처럼 python·npm 으로 쓴다 — 준비한 .beom/venv 와
+  node_modules/.bin 이 PATH 앞에 있다 (.beom/venv/Scripts/python.exe 처럼 경로를 적지 않는다).
+  검증용 서버 주소는 포트 자리에 {port} 를 쓰면 툴킷이 빈 포트를 골라 넣고 서버에 PORT 환경 변수로도 준다 — PORT 를 읽는 서버는
+  target_cmd="npm start", target_url="http://127.0.0.1:{port}" 처럼 명령에 포트를 안 적어도 된다 (예: target_cmd="python app.py --port {port}",
   target_url="http://127.0.0.1:{port}"). 검증 중 생긴 데이터 파일과 테스트 찌꺼기(.coverage·__pycache__·.pytest_cache)는 툴킷이 치운다 —
   지우는 명령을 따로 돌리지 않는다. 브라우저에서만 도는 화면 코드는 로직을 따로 .js 파일로 두어 Node
   테스트로 부를 수 있게 만든다 (HTML 안 스크립트를 계측하려고 jsdom·c8 등을 새로 깔지 않는다).
@@ -239,8 +241,8 @@ CODEX_OFFLINE_RULE = """[이 실행의 인터넷 — 막힘]
 
 
 CODEX_WIN_RULE = """[Windows 격리 실행 — Node 자식 프로세스]
-- 이 격리에서는 Node 가 다른 프로세스를 띄우지 못한다 (spawn EPERM). `node --test` 는 `node --test --test-isolation=none` 으로 돌린다.
-  이 우회 옵션은 명령을 돌릴 때만 쓰고 package.json 스크립트·README 같은 결과물에는 넣지 않는다 (사용자 PC 에서는 필요 없다).
+- 이 격리에서는 Node 가 다른 프로세스를 띄우지 못한다 (spawn EPERM). `node --test`·`npm test` 는 툴킷이 격리용 설정(NODE_OPTIONS)을
+  미리 넣어 두어 그대로 돈다 — 옵션을 붙이거나 우회 스크립트를 만들지 않는다. 우회는 결과물(package.json·README)에 넣지 않는다.
 - npm 스크립트·테스트 러너·빌드 도구가 같은 이유로 실패하면 격리 탓이다 — 코드를 고치려 하지 말고 node 로 직접 돌리거나,
   검증 도구가 있으면(wb_port_verify·target_cmd 등 — 격리 밖에서 돈다) 그것으로 확인한다. 사용자에게는 격리 안에서 못 돌린 명령을 끝에 알린다."""
 

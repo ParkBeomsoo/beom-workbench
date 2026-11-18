@@ -166,6 +166,30 @@ def active(run: dict) -> bool:
     return run.get("sandbox", True) is not False and available()
 
 
+_NODE_ISO: dict[str, bool] = {}
+
+
+def node_test_env(env: dict) -> dict:
+    """격리 안에서는 Node 가 하위 프로세스를 띄우지 못해(spawn EPERM) node --test 가 테스트 파일마다 실패한다 — 한 프로세스에서
+    돌게(--test-isolation=none) NODE_OPTIONS 에 넣는다. 에이전트가 명령마다 옵션을 붙이거나 우회 스크립트를 만들지 않아도 된다.
+    이 옵션을 모르는 Node 는 NODE_OPTIONS 에 있으면 아예 뜨지 않으므로, 이 PC 의 node 가 받는지 한 번 확인하고 넣는다."""
+    if "ok" not in _NODE_ISO:
+        import subprocess
+        probe = {k: v for k, v in os.environ.items() if k.upper() != "NODE_OPTIONS"}
+        probe["NODE_OPTIONS"] = "--test-isolation=none"
+        try:
+            _NODE_ISO["ok"] = subprocess.run(["node", "-e", "0"], capture_output=True, timeout=20, env=probe).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            _NODE_ISO["ok"] = False
+    if not _NODE_ISO["ok"]:
+        return env
+    key = next((k for k in env if k.upper() == "NODE_OPTIONS"), "NODE_OPTIONS")
+    cur = env.get(key) or ""
+    if "--test-isolation" not in cur:
+        env[key] = (cur + " --test-isolation=none").strip()
+    return env
+
+
 def wraps_powershell(run: dict) -> bool:
     """Windows: Claude 의 PowerShell 명령을 Codex 샌드박스로 감싼다 (Claude 자체 샌드박스가 Windows 에서 꺼져 있어서)."""
     return sys.platform == "win32" and active(run)
@@ -281,4 +305,5 @@ RULE = ("[격리 실행] 이 PC 에서는 셸 명령이 운영체제 샌드박�
         "cd·환경 변수는 다음 명령에 이어지지 않는다 — 경로를 명령마다 적는다. "
         "npm·npx·node·vite 같은 Node 도구는 이 격리 안에서 자식 프로세스를 띄우지 못해(spawn EPERM) 실패하므로, 앱이 격리 밖에서 "
         "실행할지 사용자에게 묻는다. 거절되어 EPERM 이 나면 코드를 고치려 하지 말고 자식 프로세스를 띄우지 않는 방법"
-        "(node --test --test-isolation=none 등)을 쓰거나, 그 명령을 돌리지 못했다고 사용자에게 알린다. 이런 우회 옵션은 명령을 돌릴 때만 쓰고 package.json 스크립트·README 같은 결과물에는 넣지 않는다.")
+        "을 쓰거나, 그 명령을 돌리지 못했다고 사용자에게 알린다. node --test(npm test)는 툴킷이 이 격리용 설정(NODE_OPTIONS)을 미리 넣어 두어 "
+        "그대로 돈다 — --test-isolation 같은 옵션을 붙이거나 우회 스크립트를 만들지 않는다. 우회는 결과물(package.json·README)에 넣지 않는다.")

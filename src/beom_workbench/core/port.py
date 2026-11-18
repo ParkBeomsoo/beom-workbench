@@ -935,7 +935,10 @@ class _Side:
         # 파이썬 표준 입출력을 UTF-8 로 — 파이프로 돌리면 Windows 는 cp949 라 한글·✓ 가 깨지거나 쓰다가 죽는다
         # (사용자 터미널은 유니코드로 보여 주므로 이쪽이 실제와 같다). 출력은 UTF-8 로 읽는다.
         env = runtime.safe_env({"PYTHONIOENCODING": "utf-8", **runtime.coverage_env(self.cwd)})
-        from beom_workbench.core import deps
+        from beom_workbench.core import deps, sandbox
+        run = _auto_run()
+        if run and sandbox.wraps_powershell(run):
+            sandbox.node_test_env(env)  # 격리 안에서 도는 검증 명령의 node --test 도 한 프로세스로
         extra = deps.env_paths(self.cwd)  # 툴킷이 준비한 의존성 — 'python app.py' 가 .beom/venv 의 파이썬으로 돈다
         if extra:
             key = next((k for k in env if k.upper() == "PATH"), "PATH")
@@ -1357,9 +1360,14 @@ class _Server:
             argv = side.docker_base() + ["--name", self.container, "-p", f"127.0.0.1:{port}:{port}", side.image, "sh", "-c", inner]
             self.proc = subprocess.Popen(argv, stdout=self.log, stderr=subprocess.STDOUT)
         else:
-            args, shell = _direct_argv(cmd)
             kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
-            self.proc = subprocess.Popen(args, shell=shell, cwd=side.cwd, env=side.env(), stdout=self.log,
+            env = side.env()
+            args, shell = _direct_argv(cmd, env)
+            if urllib.parse.urlparse(url).port:
+                # 기다리는 주소의 포트를 PORT 로도 — PORT 를 읽는 서버는 명령에 포트를 적지 않아도 그 주소에 뜬다
+                # (실험에서 Codex 가 node -e "process.env.PORT=…" 같은 우회 명령을 짰다)
+                env["PORT"] = str(urllib.parse.urlparse(url).port)
+            self.proc = subprocess.Popen(args, shell=shell, cwd=side.cwd, env=env, stdout=self.log,
                                          stderr=subprocess.STDOUT, **kw)
         self.graceful: bool | None = None
         try:
@@ -1432,8 +1440,10 @@ class _Server:
             pass
 
 
-def _direct_argv(cmd: str) -> tuple[str | list[str], bool]:
-    """셸 없이 바로 띄울 수 있으면 그렇게 — 종료 신호가 셸이 아니라 서버 프로세스에 바로 간다."""
+def _direct_argv(cmd: str, env: dict | None = None) -> tuple[str | list[str], bool]:
+    """셸 없이 바로 띄울 수 있으면 그렇게 — 종료 신호가 셸이 아니라 서버 프로세스에 바로 간다.
+    실행 파일은 띄울 환경의 PATH 로 찾는다 — 툴킷 자신의 PATH 로 찾으면 준비한 .beom/venv 대신 PC 에 전역으로 깔린 python·flask 가
+    잡힌다 (실험에서 전역 flask 로 떠서 새로 넣은 패키지를 못 찾고, 에이전트가 명령을 세 번 바꿨다)."""
     if re.search(r"[|&<>;^`$()]", cmd):
         return cmd, True
     try:
@@ -1442,7 +1452,8 @@ def _direct_argv(cmd: str) -> tuple[str | list[str], bool]:
         return cmd, True
     if not parts:
         return cmd, True
-    exe = shutil.which(parts[0].strip('"'))
+    path = next((v for k, v in (env or {}).items() if k.upper() == "PATH"), None)
+    exe = shutil.which(parts[0].strip('"'), path=path)
     if not exe or (os.name == "nt" and not exe.lower().endswith(".exe")):
         return cmd, True  # .cmd/.bat(npx 등)은 셸이 필요
     if os.name == "nt":
