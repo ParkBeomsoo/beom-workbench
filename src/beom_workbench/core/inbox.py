@@ -609,12 +609,16 @@ READ_ONLY_WORDS = {
 }
 _RO_BAD = re.compile(r"[>`]|\$\(|@\(|&|::|\$env:|\$home\b|(?:^|[\s'\"(])~(?:[\\/]|$)|\\\\\\\\|-(?:delete|exec|execdir|ok)\b|\b(?:iex|icm)\b", re.I)
 _RO_SPLIT = re.compile(r"\|\||[|;{}()\n=]")
+# 검색 결과를 줄 번호와 함께 찍기만 하는 꼴 — | ForEach-Object { "$($_.LineNumber): $($_.Line)" }. 블록 안이 문자열 하나뿐이고 그 안에
+# $_ 와 그 속성만 있을 때만 (다른 변수·하위 식·명령·`는 안 된다). 그 밖의 스크립트 블록은 그대로 묻는다
+_FORMAT_EACH = re.compile(r'\s*\|\s*(?:ForEach-Object|foreach|%)\s*\{\s*"(?:[^"$`\\]|\$\(\$_\.\w+\)|\$_\.\w+\b|\$_\b)*"\s*\}', re.I)
 _RO_ABS = re.compile(r"(?<![\w$])(?:[A-Za-z]:[\\/][^\s'\"`;|(){}]*|/(?:[\w.-]+/)*[\w.-]+)")
 
 
 def _read_only_shell(cmd: str, root: Path) -> bool:
     """명령 전체가 읽기만 하는가 — 쓰기·실행으로 이어질 수 있는 것(리다이렉트, 하위 식, 호출 연산자, .NET 정적 호출,
     목록에 없는 명령)이 하나라도 있으면 아니다. 절대 경로는 모두 대상 폴더(또는 에이전트 임시 폴더) 안이어야 한다."""
+    cmd = _FORMAT_EACH.sub("", cmd or "")
     if not cmd or len(cmd) > 4000 or _RO_BAD.search(cmd):
         return False
     bare = re.sub(r"'[^']*'|\"[^\"$`]*\"", "''", cmd)  # 따옴표 안의 | ; ( 는 명령 구분이 아니다 (-Pattern '^(a|b)')
