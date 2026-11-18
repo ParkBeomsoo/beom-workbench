@@ -113,6 +113,63 @@ def _native_shot(run: dict, app, width, height) -> dict:
 
 
 @mcp.tool()
+def wb_run(command: str, timeout: int = 600) -> dict:
+    """격리 밖에서 명령 하나를 돌린다 — 자체 샌드박스에서 인터넷이 막힌 에이전트(Codex)가 패키지 설치(npm install·pip install 등)나
+    격리 안에서 안 되는 빌드를 돌릴 때. 권한 규칙을 그대로 거친다: 명령의 종류(빌드·명령 실행 등)와 '격리 없이 실행'이 모두 허용이면
+    바로 돌고, 아니면 사용자에게 카드로 묻는다 (시스템 변경·게시·브랜치 바꾸기는 거절). 대상 폴더에서 PowerShell(Windows)·sh 로
+    돌리고 종료 코드와 끝 출력을 돌려준다. 시간이 넘으면 끝낸다 (기본 600초, 최대 1800초).
+    결과물(README·스크립트)에는 이 도구 이야기를 쓰지 않는다 — 사용자는 평소처럼 npm install 을 친다."""
+    import subprocess
+    import sys
+    from beom_workbench.core import port, runtime
+
+    run = _run()
+    if run is None:
+        return {"ok": False, "error": "자동 실행 밖"}
+    if run.get("agent", "claude") != "codex":
+        return {"ok": False, "error": "셸 도구로 실행한다 — 이 도구는 자체 샌드박스에서 인터넷이 막힌 에이전트(Codex)용"}
+    cmd = (command or "").strip()
+    if not cmd:
+        return {"ok": False, "error": "command 가 비어 있음"}
+    root = Path(run["target_root"])
+    kind = inbox.classify("PowerShell", {"command": cmd}, root, [settings.home], read_roots=inbox.repo_roots(run))
+    dk, du = inbox.decide(run, kind), inbox.decide(run, "unsandboxed")
+    if "refuse" in (dk, du):
+        inbox.log(settings, run["id"], "permission", tool="mcp:wb_run", permission_kind=kind if dk == "refuse" else "unsandboxed",
+                  decision="refuse", what=mask_command(cmd[:160]))
+        return {"ok": False, "error": f"규칙상 허용되지 않음 ({inbox.KINDS.get(kind if dk == 'refuse' else 'unsandboxed')}): {cmd[:200]}",
+                "recovery": "다른 방법을 쓰거나 wb_person_ask 로 사용자에게 이유와 함께 묻는다"}
+    known = cmd in (run.get("approved_cmds") or []) or inbox.matches_rule(run, cmd, root)
+    if not known and (dk != "allow" or du != "allow"):
+        rule = inbox.command_rule(cmd, root) if kind == "commands" else None
+        extra = "" if kind in ("build", "edit") else f" — {inbox.KINDS.get(kind, kind)}"
+        ans = inbox.ask(settings, run["id"], "permission", {
+            "summary": mask_command(f"{inbox.KINDS['unsandboxed']}{extra}: {cmd[:300]}"),
+            "tool": "mcp:wb_run", "input": {"command": cmd}, "permission_kind": "unsandboxed", **({"rule": rule} if rule else {})})
+        if not ans.get("allow"):
+            return {"ok": False, "error": "사용자가 실행을 거절함: " + cmd[:200],
+                    "recovery": "다른 방법을 쓰거나 wb_person_ask 로 사용자에게 이유와 함께 묻는다"}
+        if ans.get("always"):  # '이 프로젝트에서 항상' — 격리 밖 실행을 허용으로 (명령 종류의 규칙은 그대로)
+            inbox.update_run(settings, run["id"], lambda r: r["policy"].__setitem__("unsandboxed", "allow"))
+        inbox.update_run(settings, run["id"], lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [cmd]))))
+    inbox.log(settings, run["id"], "permission", tool="mcp:wb_run", permission_kind="unsandboxed", decision="allow", what=mask_command(cmd[:160]))
+    if sys.platform == "win32":
+        argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; " + cmd]
+    else:
+        argv = ["sh", "-c", cmd]
+    env = runtime.safe_env({"PYTHONIOENCODING": "utf-8", **runtime.coverage_env(root)})
+    try:
+        cp = port.run_tree(argv, cwd=str(root), timeout=max(10, min(int(timeout or 600), 1800)), env=env)
+    except subprocess.TimeoutExpired as e:
+        tail = ((e.output or b"") + (e.stderr or b"")).decode("utf-8", "replace")[-3000:]
+        return {"ok": False, "error": f"{timeout}초 안에 끝나지 않아 멈췄다", "output_tail": tail}
+    out = (cp.stdout + cp.stderr).decode("utf-8", "replace")
+    inbox.log(settings, run["id"], "unsandboxed_run", command=mask_command(cmd[:300]), exit_code=cp.returncode)
+    return {"ok": cp.returncode == 0, "exit_code": cp.returncode, "output_tail": out[-4000:]}
+
+
+@mcp.tool()
 def wb_person_ask(question: str, choices: list[str] | None = None) -> dict:
     """사용자에게 묻고 답을 기다린다(앱의 질문 카드). 요구사항이 애매하거나 결정이 필요할 때. 답이 없으면 timeout."""
     run = _run()
