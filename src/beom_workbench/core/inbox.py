@@ -382,9 +382,8 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
         cmd = _strip_cd(_unwrap_shell(_strip_cd(cmd, target_root)), target_root)
         # npm.cmd·npx.cmd 는 PowerShell 실행 정책을 피해 같은 프로그램을 부르는 이름이다 — 같은 명령으로 본다
         cmd = re.sub(r"\b(npm|npx|pnpm|yarn)\.cmd\b", r"\1", cmd, flags=re.I)
-        # PowerShell 호출 연산자(& "경로" …)와 빈칸 없는 낱말의 따옴표는 같은 명령이다 — 떼고 본다 (빈칸 있는 따옴표는 그대로)
+        # PowerShell 호출 연산자(& "경로" …)는 같은 명령이다 — 떼고 본다 (낱말의 따옴표는 빌드 명령인지 볼 때만 뗀다: _unquote)
         cmd = re.sub(r"^&\s+", "", cmd)
-        cmd = re.sub(r"""(?<![\w=])(["'])([^"'\s;|&<>`$(){}]+)\1""", r"\2", cmd)
         for r in read_roots:  # 같은 저장소의 맨 위로 옮겨 돌리는 테스트(cd <저장소>; python -m pytest)도 같은 기준으로 본다
             cmd = _strip_cd(cmd, Path(r))
         if workbranch.moves_branch(cmd):
@@ -395,7 +394,7 @@ def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Pat
         # 다만 끝에 붙인 출력 거르기(2>&1 | Select-Object -Last 8)는 떼고 보고, ; · && 로 이은 조각이 하나하나 모두 빌드·확인
         # 명령이면 빌드로 본다 (조각마다 따로 검사 — 거르기 말고 다른 연결이 남아 있으면 그대로 묻는다)
         core = OUTPUT_FILTER.sub("", cmd).strip()
-        if BUILD_COMMANDS.match(core) and not CHAINING.search(core):
+        if BUILD_COMMANDS.match(_unquote(core)) and not CHAINING.search(core):
             return "build"
         parts = [x.strip() for x in re.split(r"\s*(?:;|&&)\s*", cmd) if x.strip()]
         if len(parts) > 1 and all(_safe_piece(x, target_root) for x in parts) and not _read_only_shell(cmd, target_root):
@@ -502,13 +501,19 @@ def _unwrap_shell(cmd: str) -> str:
     return m.group(1).strip() if m else cmd
 
 
+def _unquote(cmd: str) -> str:
+    """빈칸 없는 낱말의 따옴표를 뗀다 — 빌드 명령인지 볼 때만 (".\\.beom\\venv\\Scripts\\python.exe" -m pytest ".\\tests").
+    읽기 전용 판정에는 쓰지 않는다 ($p = '경로' 의 따옴표는 문자열이라는 표시다)."""
+    return re.sub(r"""(?<![\w=])(["'])([^"'\s;|&<>`$(){}]+)\1""", r"\2", cmd)
+
+
 def _safe_piece(piece: str, root: Path) -> bool:
     """; · && 로 이은 조각 하나 — 끝의 출력 거르기를 떼고 빌드·확인·읽기만 하는 명령인가.
     (프로젝트 코드를 직접 돌리는 명령은 여기 들지 않는다 — 편집 자동 허용에서는 그 밖의 명령으로 묻는다)"""
-    core = OUTPUT_FILTER.sub("", piece).strip()
+    core = OUTPUT_FILTER.sub("", re.sub(r"^&\s+", "", piece.strip())).strip()
     if not core:
         return False
-    if BUILD_COMMANDS.match(core) and not CHAINING.search(core):
+    if BUILD_COMMANDS.match(_unquote(core)) and not CHAINING.search(core):
         return True
     return _inspect_only(core) or _read_only_shell(piece, root) or _mkdir_inside(core, root)
 
