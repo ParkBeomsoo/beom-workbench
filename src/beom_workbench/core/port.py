@@ -1020,7 +1020,9 @@ def auto_coverage(conn, port: dict, root: Path) -> tuple[str, str] | None:
             return None
         exe = deps.venv_python(root) if deps.venv_python(root).is_file() else Path(sys.executable)
         q = lambda s: '"' + str(s) + '"'  # noqa: E731
-        cmd = (f"{q(exe)} -m coverage run --data-file=.beom/tmp/.autocov --include={','.join(py)} -m pytest -q -p no:cacheprovider"
+        # 대상 파일은 절대 경로로 — 'main.py' 처럼 이름만 주면 같은 이름의 라이브러리 파일까지 잰다
+        inc = ",".join(str((root / f).resolve()) for f in py)
+        cmd = (f"{q(exe)} -m coverage run --data-file=.beom/tmp/.autocov --include={q(inc)} -m pytest -q -p no:cacheprovider"
                f" && {q(exe)} -m coverage json --data-file=.beom/tmp/.autocov -o .beom/tmp/autocov.json")
         return cmd, ".beom/tmp/autocov.json"
     if js:
@@ -2119,9 +2121,18 @@ def _target_adequacy(conn, port: dict, report: Path, fp: str) -> dict:
     norm = {k.replace("\\", "/").lower(): v for k, v in data.items()}
 
     def find(rel: str):
+        # 정확히 같은 경로가 먼저 — 이름 끝만 맞추면 같은 이름의 다른 파일(unittest/main.py·pydantic/main.py)을 고르게 된다.
+        # 끝만 맞는 것은 대상 폴더 안의 파일이 하나뿐일 때만 (가상 환경·라이브러리 폴더는 빼고)
         rel_l = rel.replace("\\", "/").lower()
         full = str((root / rel).resolve()).replace("\\", "/").lower()
-        return next((v for k, v in norm.items() if k == rel_l or k == full or k.endswith("/" + rel_l)), None)
+        for k, v in norm.items():
+            if k == rel_l or k == full or k == "./" + rel_l:
+                return v
+        root_l = str(root.resolve()).replace("\\", "/").lower().rstrip("/") + "/"
+        skip = ("/site-packages/", "/node_modules/", "/.beom/", "/lib/python", "/venv/", "/.venv/")
+        tails = [v for k, v in norm.items() if k.endswith("/" + rel_l) and (k.startswith(root_l) or not re.match(r"[a-z]:/|/", k))
+                 and not any(x in "/" + k for x in skip)]
+        return tails[0] if len(tails) == 1 else None
 
     rows = []
     for r in conn.execute("SELECT * FROM port_map WHERE port_id = ? AND status = 'ported' AND kind IN ('symbol', 'requirement') "
