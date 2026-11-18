@@ -154,9 +154,11 @@ def wb_run(command: str, timeout: int = 600) -> dict:
         inbox.update_run(settings, run["id"], lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [cmd]))))
     inbox.log(settings, run["id"], "permission", tool="mcp:wb_run", permission_kind="unsandboxed", decision="allow", what=mask_command(cmd[:160]))
     if sys.platform == "win32":
-        # 이 프로세스에만 실행 정책을 풀어 npm.ps1 같은 스크립트가 돈다 (시스템 설정은 바꾸지 않는다)
-        argv = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
-                "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; " + cmd]
+        # 실행 정책은 건드리지 않는다 — PowerShell 에서 npm 이 npm.ps1(스크립트)로 연결돼 기본 정책(Restricted)에 막히는 것이 원인이라,
+        # npm·npx·pnpm·yarn 을 같은 이름의 실행 파일(.cmd)로 부르게 한다 (함수가 외부 명령보다 먼저 — 그룹 정책 PC 에서도 같다)
+        from beom_workbench.core import sandbox
+        argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; " + sandbox.ps_script(cmd)]
     else:
         argv = ["sh", "-c", cmd]
     env = runtime.safe_env({"PYTHONIOENCODING": "utf-8", **runtime.coverage_env(root)})

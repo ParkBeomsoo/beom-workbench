@@ -88,8 +88,10 @@ def capture(spec: dict, cwd: Path, out: str, *, visible=(), selectors=(), timeou
     Path(spec_file).write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
     got: dict = {}
     try:
-        p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(PROBE),
-                            "-SpecFile", spec_file], capture_output=True, timeout=timeout)
+        from beom_workbench.core.sandbox import _ps_quote, ps_run_file
+        # 툴킷의 스크립트도 실행 정책을 풀지 않고 '친 명령'처럼 돌린다 (-ExecutionPolicy Bypass 를 쓰지 않는다)
+        p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                            ps_run_file(str(PROBE)) + " -SpecFile " + _ps_quote(spec_file)], capture_output=True, timeout=timeout)
         for line in reversed(p.stdout.decode("utf-8", "replace").splitlines()):
             if line.strip().startswith("{"):
                 try:

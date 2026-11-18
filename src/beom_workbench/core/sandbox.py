@@ -224,17 +224,37 @@ def _win_prefix(run: dict) -> list[str]:
     return out + ["--"]
 
 
+# PowerShell 에서 npm·npx·pnpm·yarn 은 .ps1 스크립트로 먼저 연결돼 기본 실행 정책(Restricted)에 막힌다 — 같은 이름의 실행 파일(.cmd)로 부른다
+NPM_SHIMS = "".join(f"function {n} {{ & {n}.cmd @args }}; " for n in ("npm", "npx", "pnpm", "yarn"))
+# 마지막 문장이 실패했으면 그 종료 코드(없으면 1)로 — 셸처럼 마지막 명령이 결과를 정한다
+EXIT_TRAILER = "if ($?) { exit 0 } elseif ($LASTEXITCODE) { exit $LASTEXITCODE } else { exit 1 }"
+
+
+def ps_script(command: str) -> str:
+    """에이전트 명령 하나를 담는 PowerShell 본문 — npm 실행 파일 연결과 마지막 명령 기준 종료 코드."""
+    return ("$global:LASTEXITCODE = 0; $ErrorActionPreference = 'Continue'\r\n" + NPM_SHIMS + "\r\n"
+            + command + "\r\n" + EXIT_TRAILER + "\r\n")
+
+
+def ps_run_file(path: str) -> str:
+    """스크립트 파일을 실행 정책과 상관없이 '친 명령'처럼 돌리는 한 줄 — -ExecutionPolicy Bypass 를 쓰지 않는다.
+    Bypass 는 그 안에서 부르는 다른 .ps1 까지 사용자 정책을 무시하게 하고, 그룹 정책으로 정한 PC 에서는 듣지도 않는다.
+    이렇게 하면 명령 본문은 사용자가 직접 친 것과 같고, 그 안에서 부르는 .ps1 파일에는 사용자 정책이 그대로 적용된다."""
+    return "& ([scriptblock]::Create([IO.File]::ReadAllText(" + _ps_quote(path) + ")))"
+
+
 def wrap_powershell(command: str, run: dict) -> str:
     """Claude 의 PowerShell 명령을 샌드박스 안에서 돌리는 한 줄로 — 원래 명령은 대상 폴더의 .beom/tmp/sbx/ 에 스크립트로 둔다."""
     d = Path(run["target_root"]) / ".beom" / "tmp" / "sbx"
     d.mkdir(parents=True, exist_ok=True)
     script = d / f"cmd-{os.getpid()}-{next(_COUNTER)}.ps1"
     # 스크립트는 BOM 있는 UTF-8 — Windows PowerShell 5 가 한글 경로·문자열을 깨뜨리지 않게
-    script.write_text("$ErrorActionPreference = 'Continue'\r\n" + command + "\r\n", encoding="utf-8-sig")
+    script.write_text(ps_script(command), encoding="utf-8-sig")
     pre = _win_prefix(run)
-    # 끝나면 스크립트를 지운다 — 명령마다 하나씩 대상 폴더에 쌓이지 않게 (종료 코드는 그대로 돌려준다)
+    # 끝나면 스크립트를 지운다 — 명령마다 하나씩 대상 폴더에 쌓이지 않게 (종료 코드는 그대로 돌려준다).
+    # 예전에는 -File 로 돌려 마지막 명령이 실패해도(예: npm test) 종료 코드가 0 으로 나갔다
     return (f"& {_ps_quote(pre[0])} " + " ".join(_ps_quote(a) for a in pre[1:])
-            + f" powershell -NoProfile -ExecutionPolicy Bypass -File {_ps_quote(str(script))}; $__c = $LASTEXITCODE; "
+            + f" powershell -NoProfile -Command {_ps_quote(ps_run_file(str(script)))}; $__c = $LASTEXITCODE; "
             + f"Remove-Item -LiteralPath {_ps_quote(str(script))} -Force -ErrorAction SilentlyContinue; if ($__c) {{ exit $__c }}")
 
 
