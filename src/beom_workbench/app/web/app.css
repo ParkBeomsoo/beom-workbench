@@ -124,15 +124,23 @@ kbd { font-family: var(--sans); font-size: 10.5px; font-weight: 500; color: var(
 .agent.ok i { background: var(--ok); }
 .agent .an { color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent .as { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }  /* 번역이 길면 상태 쪽을 줄인다 — 이름이 먼저 보이게 */
-.agent:has(button) .as { display: none; }  /* 설치·로그인 단추가 있으면 그 단추가 상태를 말해 준다 */
+.agent:has(button) .as { display: none; }
+.agent button { grid-column: 4; justify-self: end; }  /* 상태 칸이 숨어도 단추는 늘 오른쪽 끝 */  /* 설치·로그인 단추가 있으면 그 단추가 상태를 말해 준다 */
 .agent button { border: none; background: var(--panel); color: var(--text); cursor: pointer; font-size: 11px; font-weight: 600; padding: 1px 7px;
   border-radius: 6px; box-shadow: inset 0 0 0 1px var(--line); }
 .databtn { display: flex; align-items: center; gap: 8px; margin: 6px 4px 0; border: none; background: transparent; color: var(--muted); border-radius: 8px;
   padding: 7px 8px; font-size: 12px; cursor: pointer; text-align: left; }
 .databtn svg { width: 15px; height: 15px; }
-.sidefoot { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.sidefoot { display: flex; align-items: center; justify-content: space-between; gap: 2px; }
 .sidefoot #langbtn { margin-left: auto; }
-.sidefoot .databtn { white-space: nowrap; }
+.sidefoot .databtn { white-space: nowrap; gap: 6px; margin: 6px 0 0; padding: 7px 6px; min-width: 0; }
+.agent.toolsrow { cursor: pointer; }
+.agent.toolsrow:hover { background: var(--panel); }
+.toolpop .orow b { display: flex; align-items: center; gap: 7px; }
+.toolpop .tdot { width: 6px; height: 6px; border-radius: 50%; background: var(--line3); display: inline-block; }
+.toolpop .tdot.ok { background: var(--signal); }
+.toolpop .tnote { display: block; margin-top: 3px; color: var(--faint); }
+.toolpop .tstat { font-size: 11.5px; color: var(--faint); white-space: nowrap; }
 .ustats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0 6px; }
 .ustat { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; background: var(--sunk); border-radius: 10px; }
 .ustat > span:first-child { font-size: 11.5px; color: var(--muted); }

@@ -1534,5 +1534,9 @@
 "기대값이 이전 승인과 다름": "expected value differs from the earlier approval",
 "추천이 골라져 있습니다 — 바꾸려면 앱에서 누르세요": "The recommendation is selected — change it in the app",
 "차이 허용": "Allowed difference",
-"생략": "Omitted"
+"생략": "Omitted",
+"눌러서 항목별로 보기": "Click to see each item",
+"{0}개 설치 필요": "{0} to install",
+"에이전트가 실행하는 명령을 운영체제 샌드박스 안에서 돌립니다 — 대상 폴더·임시 폴더·도구 캐시 밖에는 쓰지 못합니다": "Runs the agents' commands inside the operating system sandbox — they cannot write outside the target folder, temp folder and tool caches",
+"레퍼런스 모드에서 원본 저장소를 분석해 옮길 범위를 찾습니다": "Analyzes the original repository in reference mode to find what to port"
 }

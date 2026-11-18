@@ -126,7 +126,8 @@ function applyLang(info) {
   for (const el of document.querySelectorAll("[data-t]")) { el.dataset.src = el.dataset.src || el.textContent; el.textContent = t(el.dataset.src); }
   for (const el of document.querySelectorAll("[data-tp]")) el.placeholder = t(el.dataset.tp);
   const names = (info && info.languages) || {};
-  const lab = $("#langlabel"); if (lab) lab.textContent = names[I18N.lang] || I18N.lang;
+  // 사이드바 아래 줄에 세 단추가 들어가게 — 언어는 코드로 짧게, 이름은 말풍선으로
+  const lab = $("#langlabel"); if (lab) { lab.textContent = String(I18N.lang || "ko").toUpperCase(); lab.parentElement.title = names[I18N.lang] || I18N.lang; }
 }
 function langPop(anchor) {
   const info = I18N.info || {}, names = info.languages || { ko: "한국어" };
@@ -428,13 +429,31 @@ function renderSide() {
       !a.ready && a.login ? h("button", { onclick: () => call("loginAgent", a.id).then((r) => r.ok && toast("터미널에서 로그인을 마쳐 주세요")) }, "로그인") : null,
       !a.ready && !a.exe && a.install ? h("button", { title: a.install, onclick: () => call("installAgent", a.id).then((r) => r.ok && toast("터미널에서 설치가 끝나면 창으로 돌아오세요 — 자동으로 다시 확인합니다", 6000)) }, "설치") : null));
   }
-  // 격리 실행 — 처음 설정의 한 항목 (Windows 는 Codex 실행 파일의 샌드박스, Linux 는 bubblewrap, macOS 는 기본 내장)
-  ag.append(h("div", { class: "agent" + (sb.ready ? " ok" : ""), title: [sb.how, sb.note, sb.install].filter(Boolean).join("\n") }, h("i"),
-    h("span", { class: "an", text: "격리 실행" }), h("span", { class: "as", text: sb.ready ? "준비됨" : "구성 필요" }),
-    !sb.ready && sb.install ? h("button", { title: sb.install, onclick: () => call("installSandbox").then((r) => r.ok && toast("터미널에서 설치가 끝나면 창으로 돌아오세요 — 자동으로 다시 확인합니다", 6000)) }, "구성") : null));
-  if (S.engines) ag.append(h("div", { class: "agent" + (en.ready ? " ok" : ""), title: en.ready ? "레퍼런스 모드의 원본 분석 엔진 — 준비됨" : [en.note, en.install].filter(Boolean).join("\n") }, h("i"),
-    h("span", { class: "an", text: "분석 엔진" }), h("span", { class: "as", text: en.ready ? "준비됨" : "설치 필요" }),
-    !en.ready && en.install ? h("button", { title: en.install, onclick: () => call("installEngines").then((r) => r.ok && toast("터미널에서 설치가 끝나면 창으로 돌아오세요 — 자동으로 다시 확인합니다", 6000)) }, "설치") : null));
+  // 도구 — 에이전트 말고 툴킷이 쓰는 것(격리 실행·분석 엔진)을 한 줄로. 없는 것이 있으면 [설치] 한 번, 누르면 항목별로
+  const tools = toolList(sb, en);
+  const need = tools.filter((x) => !x.ready), canInstall = need.filter((x) => x.install);
+  ag.append(h("div", { class: "agent toolsrow" + (need.length ? "" : " ok"), title: t("눌러서 항목별로 보기"), onclick: (e) => toolsPop(e.currentTarget, tools) }, h("i"),
+    h("span", { class: "an", text: "도구" }),
+    h("span", { class: "as", text: need.length ? t("{0}개 설치 필요").replace("{0}", need.length) : t("준비됨") }),
+    canInstall.length ? h("button", { onclick: (e) => { e.stopPropagation(); canInstall.forEach((x) => x.install()); } }, "설치") : null));
+}
+function toolList(sb, en) {
+  const done = (r) => r.ok && toast("터미널에서 설치가 끝나면 창으로 돌아오세요 — 자동으로 다시 확인합니다", 6000);
+  const out = [{ name: "격리 실행", ready: !!sb.ready, what: "에이전트가 실행하는 명령을 운영체제 샌드박스 안에서 돌립니다 — 대상 폴더·임시 폴더·도구 캐시 밖에는 쓰지 못합니다",
+    note: [sb.how, sb.note].filter(Boolean).join(" "), cmd: sb.install, install: !sb.ready && sb.install ? () => call("installSandbox").then(done) : null }];
+  if (S.engines) out.push({ name: "분석 엔진", ready: !!en.ready, what: "레퍼런스 모드에서 원본 저장소를 분석해 옮길 범위를 찾습니다",
+    note: en.ready ? "" : en.note || "", cmd: en.install, install: !en.ready && en.install ? () => call("installEngines").then(done) : null });
+  return out;
+}
+function toolsPop(anchor, tools) {
+  popover(anchor, { width: 340, content: h("div", { class: "toolpop" },
+    h("div", { class: "pt", text: "도구" }),
+    ...tools.map((x) => h("div", { class: "orow" },
+      h("div", {}, h("b", {}, h("i", { class: "tdot" + (x.ready ? " ok" : "") }), x.name), h("span", { text: x.what }),
+        x.note ? h("span", { class: "tnote", text: x.note }) : null),
+      x.ready ? h("span", { class: "tstat", text: "준비됨" })
+        : x.install ? h("button", { class: "btn sm", title: x.cmd || "", onclick: (e) => { e.stopPropagation(); x.install(); closePop(); } }, "설치")
+          : h("span", { class: "tstat", text: "설치 필요" })))) });
 }
 
 // ---------------------------------------------------------------- 홈
