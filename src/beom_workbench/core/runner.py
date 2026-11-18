@@ -168,12 +168,16 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
 - 효율 — 토큰과 시간을 아낀다: 파일은 필요한 부분만 읽고, 같은 파일을 되풀이해 읽지 않는다. 명령은 한 번에 끝나는 형태로
   (테스트는 감시 모드 없이 — vitest run·jest --watchAll=false, 서버·앱을 앞에 띄워 두고 기다리지 않는다, 긴 sleep 금지).
   새 창을 띄우는 명령(Start-Process·start·explorer·브라우저 열기)은 쓰지 않는다 — 사용자 화면에 창이 튀어나온다. 
-  커버리지(케이스가 만든 코드를 실행했는지)는 새 도구를 깔거나 변환 스크립트를 짜지 말고, 측정 명령을 wb_port_verify 의
-  target_coverage_cmd·target_coverage_report 로 넘겨 툴킷이 돌리게 한다 — 파이썬: `python -m coverage run --include=<파일> -m pytest -q`
-  다음 `python -m coverage json -o .beom/tmp/cov.json` / Node: `node --test --test-isolation=none --experimental-test-coverage
-  --test-reporter=lcov --test-reporter-destination=.beom/tmp/lcov.info` (설치 없음. 격리 실행 안에서는 테스트 파일마다 하위 프로세스를
-  띄우지 못해 --test-isolation=none 을 쓴다 — 이것은 이 실행 환경 때문의 우회라 명령을 돌릴 때만 붙이고, package.json 의
-  test 스크립트·README·CI 같은 결과물에는 넣지 않는다: 사용자는 평소 명령(`node --test`, `npm test`)으로 돌린다). 브라우저에서만 도는 화면 코드는 로직을 따로 .js 파일로 두어 Node
+  의존성은 의존성 파일(package.json·requirements.txt·pyproject.toml)에 적고 mcp__beom-workbench__wb_deps 를 부른다 — 툴킷이
+  같은 자리(Node: node_modules · Python: .beom/venv, pytest·coverage 포함)에 설치한다. npm install·pip install·가상 환경 만들기를
+  직접 하지 않는다. 파이썬 테스트는 wb_deps 가 알려 준 python(.beom/venv)으로, 의존성이 없으면 평소 python 으로 돌린다.
+  커버리지(케이스가 만든 코드를 실행했는지)는 툴킷이 잰다 — wb_port_verify 가 매핑한 파일을 프로젝트의 테스트(pytest·node --test)로
+  돌려 잰다. 측정 명령(target_coverage_cmd)을 짜거나 커버리지 도구를 깔거나 변환 스크립트를 만들지 않는다 (테스트를 만들면 된다).
+  격리 실행 안에서 node --test 가 하위 프로세스를 못 띄우면 `node --test --test-isolation=none` 으로 돌린다 — 이것은 이 실행 환경
+  때문의 우회라 명령을 돌릴 때만 붙이고, package.json 의 test 스크립트·README·CI 같은 결과물에는 넣지 않는다.
+  검증용 서버 주소는 포트 자리에 {port} 를 쓰면 툴킷이 빈 포트를 골라 넣는다 (예: target_cmd="python app.py --port {port}",
+  target_url="http://127.0.0.1:{port}"). 검증 중 생긴 데이터 파일과 테스트 찌꺼기(.coverage·__pycache__·.pytest_cache)는 툴킷이 치운다 —
+  지우는 명령을 따로 돌리지 않는다. 브라우저에서만 도는 화면 코드는 로직을 따로 .js 파일로 두어 Node
   테스트로 부를 수 있게 만든다 (HTML 안 스크립트를 계측하려고 jsdom·c8 등을 새로 깔지 않는다).
   화면 확인은 브라우저 자동화 스크립트를 새로 짜지 말고 툴킷의 화면 케이스·wb_screen_shot 을 쓴다. 같은 명령이 같은 이유로
   두 번 실패하면 세 번째로 되풀이하지 말고 원인을 바꿔 보거나 막힌 점을 남기고 넘어간다.
@@ -229,8 +233,8 @@ EDIT_TOOLS_RULE = """[파일 쓰기]
 # 에이전트가 헤매며 라운드를 쓰지 않게 처음부터 알려 준다.
 CODEX_OFFLINE_RULE = """[이 실행의 인터넷 — 막힘]
 - 웹 접속을 허용하지 않은 실행이라 Codex 샌드박스 안에서는 인터넷이 막혀 있다 — pip·npm 이 패키지를 내려받지 못한다.
-  의존성 설치(npm install·pip install 등)나 격리 안에서 안 되는 빌드는 mcp__beom-workbench__wb_run(command=...) 으로 돌린다 —
-  격리 밖에서 돌고, 권한 규칙대로 허용되거나 사용자에게 묻는다. 다른 도구(케이스 명령 등)를 설치 우회로 쓰지 않는다.
+  의존성 설치는 wb_deps 가 한다 (툴킷이 격리 밖에서 설치). 그 밖에 격리 안에서 안 되는 빌드는 mcp__beom-workbench__wb_run(command=...)
+  으로 돌린다 — 격리 밖에서 돌고, 권한 규칙대로 허용되거나 사용자에게 묻는다. 다른 도구(케이스 명령 등)를 우회로 쓰지 않는다.
   설치 확인(pip install -e . 등)만을 위해 돌리지는 않는다: 대상 폴더에서 바로 import·실행·테스트로 확인한다."""
 
 
@@ -1012,6 +1016,10 @@ class Runner:
 
     def _commit_round(self, run: dict) -> None:
         """라운드에서 바뀐 것을 작업 브랜치에 커밋한다. 훅이 막으면 한 번만 알리고 변경은 그대로 둔다."""
+        from beom_workbench.core import deps
+        gone = deps.clean_junk(Path(run["target_root"]), getattr(self, "_junk_before", None))
+        if gone:
+            inbox.log(self.settings, self.run_id, "junk_cleaned", paths=gone[:30])
         wb = run.get("work_branch")
         if not wb:
             return
@@ -1046,6 +1054,8 @@ class Runner:
             self._commit_round(run)
 
     def _turn_agent(self, run: dict, prompt: str) -> dict:
+        from beom_workbench.core import deps
+        self._junk_before = deps.junk(Path(run["target_root"]))  # 라운드가 끝나면 이번에 생긴 테스트 찌꺼기만 치운다
         rules = self._rules(run)
         argv, env = self.agent.command(self.settings, run, prompt, rules)
         from beom_workbench.core import prereqs, runtime

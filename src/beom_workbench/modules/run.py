@@ -113,6 +113,21 @@ def _native_shot(run: dict, app, width, height) -> dict:
 
 
 @mcp.tool()
+def wb_deps() -> dict:
+    """의존성 준비 — package.json·requirements.txt·pyproject.toml 을 쓰거나 고친 뒤 부른다. 툴킷이 같은 자리에 설치한다
+    (Node: 프로젝트 node_modules · Python: .beom/venv 에 의존성과 pytest·coverage). 내용이 바뀔 때만 다시 설치하고, 권한 규칙대로
+    한 번 묻는다. npm install·pip install·가상 환경 만들기를 직접 하지 않는다. 결과의 python 으로 파이썬 테스트를 돌린다.
+    검증(wb_port_verify)·화면 찍기는 돌기 전에 스스로 이것을 부른다."""
+    from beom_workbench.core import deps
+    run = _run()
+    if run is None:
+        return {"ok": False, "error": "자동 실행 밖"}
+    out = deps.ensure(settings, run, Path(run["target_root"]))
+    failed = [x for x in out["installed"] if not x["ok"]]
+    return {"ok": not failed, **out}
+
+
+@mcp.tool()
 def wb_run(command: str, timeout: int = 600) -> dict:
     """격리 밖에서 명령 하나를 돌린다 — 자체 샌드박스에서 인터넷이 막힌 에이전트(Codex)가 패키지 설치(npm install·pip install 등)나
     격리 안에서 안 되는 빌드를 돌릴 때. 권한 규칙을 그대로 거친다: 명령의 종류(빌드·명령 실행 등)와 '격리 없이 실행'이 모두 허용이면
@@ -293,6 +308,9 @@ def wb_handoff(summary: str, how_to_run: str | list[str], risks: str | list[str]
         if not chk["ok"]:
             return {"ok": False, "error": "기획 패키지가 아직 맞물리지 않음 — 고친 뒤 다시 인계한다", "problems": chk["problems"]}
     if run is not None and run.get("port_id") and run.get("project_id"):
+        pending = _pending_approvals(run)
+        if pending:  # 승인 뒤에 쓰면 '승인이 남았다'는 지난 내용이 인수인계에 남는다 — 무엇을 확인받는지 말하고 라운드를 끝낸다
+            return {"ok": False, "error": f"사용자 확인이 {pending}건 남아 있음 — 인수인계는 승인 뒤에 쓴다. 무엇을 확인받는지 말하고 라운드를 끝낸다"}
         notice = _license_notice(run)
         if notice:  # 허용형 원본도 저작권 표기는 남겨야 한다 — 빠뜨린 채 인계하지 않게
             return {"ok": False, "error": "원본 저작권 표기가 대상에 없음 — 남긴 뒤 다시 인계한다", **notice}
@@ -306,6 +324,15 @@ def wb_handoff(summary: str, how_to_run: str | list[str], risks: str | list[str]
     if out["ok"]:
         inbox.log(settings, os.environ["BEOM_WORKBENCH_RUN"], "handoff")
     return out
+
+
+def _pending_approvals(run: dict) -> int:
+    from beom_workbench.core import port, project
+    try:
+        conn, _ = project.load(settings, run["project_id"])
+        return int((port.status_(conn, run["port_id"], brief=True).get("approvals") or {}).get("pending") or 0)
+    except Exception:  # noqa: BLE001 — 원장을 못 읽으면 막지 않는다
+        return 0
 
 
 def _license_notice(run: dict) -> dict | None:
@@ -377,6 +404,9 @@ def wb_screen_shot(files: list[str] | None = None, mobile: bool = False, width: 
     run = _run()
     if run is None:
         return {"ok": False, "error": "자동 실행 밖"}
+    if app or url:
+        from beom_workbench.core import deps
+        deps.ensure(settings, run, Path(run["target_root"]))  # 앱·서버가 쓰는 의존성을 먼저 (바뀐 것이 없으면 바로 지나간다)
     if app:
         return _native_shot(run, app, width, height)
     if url:
@@ -414,6 +444,7 @@ def _url_shot(run: dict, url: str, paths: list[str], cmd: str | None, mobile: bo
     from beom_workbench.core import port, screens
     if not screens.available():
         return {"ok": False, "error": "이 설치에는 화면 엔진(PySide6)이 없음"}
+    cmd, url = port.fill_port(cmd, url)
     port.check_url(url)
     if cmd:
         inbox.gate_commands(settings, {"screen_server": cmd})

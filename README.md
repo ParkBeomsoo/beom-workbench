@@ -249,6 +249,8 @@ environment variable, billed per use) — both can do the same things.
 
 **A subfolder of a repository** (e.g. `api/search` inside one repository): the agent reads the rest of that repository without asking (to follow other modules), and asks before changing anything outside the folder. Files it changes there with your OK go into the same work-branch commit, so merging brings them along. To change several modules freely, choose the repository's top folder instead. To only look at another repository's structure, add it under *Structure reference*.
 
+**The toolkit runs the process steps, the agent writes files.** Steps whose result used to depend on how an agent chose to do them are done by the toolkit: it installs the project's dependencies from the files the agent writes (`package.json` → the project's `node_modules`, `requirements.txt`/`pyproject.toml` → `.beom/venv` with pytest and coverage; again only when those files change, one permission card), measures coverage by running the project's tests on the mapped files, picks a free port for `{port}` in verification server commands, and removes test leftovers (`__pycache__`, `.pytest_cache`, `.coverage`) created during a round. A handoff is not accepted while approvals remain.
+
 **What you decide** — only these appear as cards:
 
 - **Once at the start — Before you start**: the agent drafts requirements, acceptance criteria and the plan in one go (no screens or code

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from mcp.server.mcpserver import Context
 from pydantic import BaseModel, Field
@@ -144,6 +145,10 @@ def wb_port_verify(project_id: str, port_id: str, target_url: str | None = None,
                                    "source_cli": source_cli, "target_coverage_cmd": target_coverage_cmd,
                                    **port.commands_in_cases(settings, project_id, port_id, cases_file)})
     conn, proj = project.load(settings, project_id)
+    run = inbox.load_run(settings, os.environ["BEOM_WORKBENCH_RUN"]) if os.environ.get("BEOM_WORKBENCH_RUN") else None
+    if run is not None:
+        from beom_workbench.core import deps
+        deps.ensure(settings, run, Path(run["target_root"]))  # 대상이 쓰는 의존성을 먼저 — 바뀐 것이 없으면 바로 지나간다
     return port.verify(conn, proj, settings, port_id, target_url=target_url, target_cmd=target_cmd, target_cli=target_cli,
                        cases_file=cases_file, source_url=source_url, source_cmd=source_cmd, source_cli=source_cli,
                        trusted=trusted, source_image=source_image, concurrency=concurrency,

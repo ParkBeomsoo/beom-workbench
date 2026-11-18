@@ -934,7 +934,15 @@ class _Side:
     def env(self) -> dict:
         # 파이썬 표준 입출력을 UTF-8 로 — 파이프로 돌리면 Windows 는 cp949 라 한글·✓ 가 깨지거나 쓰다가 죽는다
         # (사용자 터미널은 유니코드로 보여 주므로 이쪽이 실제와 같다). 출력은 UTF-8 로 읽는다.
-        return runtime.safe_env({"PYTHONIOENCODING": "utf-8", **runtime.coverage_env(self.cwd)})
+        env = runtime.safe_env({"PYTHONIOENCODING": "utf-8", **runtime.coverage_env(self.cwd)})
+        from beom_workbench.core import deps
+        extra = deps.env_paths(self.cwd)  # 툴킷이 준비한 의존성 — 'python app.py' 가 .beom/venv 의 파이썬으로 돈다
+        if extra:
+            key = next((k for k in env if k.upper() == "PATH"), "PATH")
+            env[key] = os.pathsep.join(extra + [env.get(key, "")])
+            if deps.venv_python(self.cwd).is_file():
+                env["VIRTUAL_ENV"] = str(deps.venv_dir(self.cwd))
+        return env
 
 
 def run_tree(args, *, shell: bool = False, cwd=None, stdin: bytes = b"", timeout: float = 30, env=None) -> subprocess.CompletedProcess:
@@ -964,6 +972,66 @@ def _kill_tree(proc: subprocess.Popen) -> None:
             os.killpg(proc.pid, signal.SIGKILL)
     except (OSError, subprocess.SubprocessError):
         pass
+
+
+def free_port() -> int:
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def fill_port(cmd: str | None, url: str | None) -> tuple[str | None, str | None]:
+    """명령·주소의 {port} 를 이 PC 의 빈 포트로 — 포트를 에이전트가 고르면 다른 서버와 겹쳐 실패하고 다시 묻게 된다."""
+    if not ((cmd and "{port}" in cmd) or (url and "{port}" in url)):
+        return cmd, url
+    p = str(free_port())
+    return (cmd.replace("{port}", p) if cmd else cmd), (url.replace("{port}", p) if url else url)
+
+
+def _node_major() -> int:
+    try:
+        out = subprocess.run(["node", "--version"], capture_output=True, timeout=20).stdout.decode().strip().lstrip("v")
+        return int(out.split(".")[0])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 0
+
+
+def auto_coverage(conn, port: dict, root: Path) -> tuple[str, str] | None:
+    """매핑한 대상 파일(파이썬·JS)을 그 프로젝트의 테스트로 돌려 커버리지를 재는 명령과 리포트 경로 — 테스트가 없거나 다른 언어면 None.
+    파이썬은 툴킷이 준비한 .beom/venv(없으면 툴킷 자신의 파이썬 — pytest·coverage 가 들어 있다), Node 는 내장 테스트 실행기."""
+    from beom_workbench.core import deps
+    run = _auto_run()
+    if run is not None:
+        from beom_workbench.core import inbox
+        if inbox.decide(run, "build") != "allow":
+            return None  # 테스트를 돌리는 것도 빌드 — 묻거나 막는 규칙이면 툴킷이 혼자 돌리지 않는다
+    files = sorted({m.group(1).replace("\\", "/") for r in conn.execute(
+        "SELECT target_ref FROM port_map WHERE port_id = ? AND status = 'ported'", (port["id"],)).fetchall()
+        if (m := re.fullmatch(r"(.+?):\d+", r["target_ref"] or ""))})
+    files = [f for f in files if not f.startswith(".beom/") and (root / f).is_file()]
+    py = [f for f in files if f.endswith(".py")]
+    js = [f for f in files if f.endswith((".js", ".mjs", ".cjs"))]
+    tmp = root / ".beom" / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    if py:
+        tests = (root / "tests").is_dir() or (root / "test").is_dir() or any(root.glob("test_*.py")) or any(root.glob("*_test.py"))
+        if not tests:
+            return None
+        exe = deps.venv_python(root) if deps.venv_python(root).is_file() else Path(sys.executable)
+        q = lambda s: '"' + str(s) + '"'  # noqa: E731
+        cmd = (f"{q(exe)} -m coverage run --data-file=.beom/tmp/.autocov --include={','.join(py)} -m pytest -q -p no:cacheprovider"
+               f" && {q(exe)} -m coverage json --data-file=.beom/tmp/.autocov -o .beom/tmp/autocov.json")
+        return cmd, ".beom/tmp/autocov.json"
+    if js:
+        tests = (root / "test").is_dir() or (root / "tests").is_dir() or any(root.rglob("*.test.js")) or any(root.rglob("*.test.mjs"))
+        major = _node_major()
+        if not tests or major < 20:
+            return None
+        iso = " --test-isolation=none" if major >= 22 else ""  # 격리 실행 안에서는 테스트 파일마다 하위 프로세스를 못 띄운다
+        return (f"node --test{iso} --experimental-test-coverage --test-reporter=lcov --test-reporter-destination=.beom/tmp/autocov.info",
+                ".beom/tmp/autocov.info")
+    return None
 
 
 def _auto_run() -> dict | None:
@@ -1798,6 +1866,7 @@ def capture(conn, proj: dict, settings: Settings, port_id: str, cases_file: str,
             coverage_cmd: str | None = None, coverage_report: str | None = None) -> dict:
     """원본에 케이스를 돌려 골든 파일로 저장 — 이후 원본 없이 대상만 검증하거나, 대상 언어의 테스트로 변환.
     explore_n: 입력 변형 케이스를 추가 생성. coverage_report: 원본 커버리지로 케이스 충분성 확인."""
+    source_cmd, source_url = fill_port(source_cmd, source_url)
     port = _port(conn, port_id)
     defaults, cases = _load_cases(Path(cases_file))
     request_mode = make_mod.is_request(port)
@@ -1894,6 +1963,7 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
     """대상(내 코드)을 원본과 비교. 원본 쪽은 골든(기본) 또는 실시간(source_*).
     concurrency>1 이면 케이스마다 대상에 동시 요청을 보내 결과가 흔들리지 않는지도 본다.
     target_coverage_report(+cmd): 대상을 커버리지로 돌린 리포트 — ported 대상이 케이스로 모두 실행됐는지(원본 계측이 안 될 때)."""
+    target_cmd, target_url = fill_port(target_cmd, target_url)
     port = _port(conn, port_id)
     root = Path(port["target_root"])
     golden_file = project_mod.workspace(settings, proj["id"]) / "ports" / port_id / "golden.json"
@@ -1932,6 +2002,11 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
                                allowed=_accepted(conn, port_id))
         if server:
             server.close()  # 커버리지 도구는 정상 종료 때 기록을 쓴다
+        if not target_coverage_cmd and not target_coverage_report:
+            # 측정 명령을 받지 않았으면 툴킷이 잰다 — 매핑한 파일을 그 프로젝트의 테스트로 돌린다 (에이전트가 명령을 짤 일이 없다)
+            auto = auto_coverage(conn, port, root)
+            if auto:
+                target_coverage_cmd, target_coverage_report = auto
         if target_coverage_cmd:
             side.shell(target_coverage_cmd, timeout=600)
     finally:
