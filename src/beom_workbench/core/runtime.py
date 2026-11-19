@@ -46,6 +46,8 @@ def _blank() -> dict:
 
 def parse(text: str) -> tuple[str, dict[str, dict]]:
     s = text.lstrip()
+    if not s or re.fullmatch(r"(?:TN:[^\n]*\s*)+", s):
+        return "lcov", {}  # 측정은 돌았지만 잰 파일이 없다 (빈 LCOV) — 형식 오류로 검증 전체를 멈추지 않는다
     if s.startswith("{"):
         data = json.loads(s)
         if isinstance(data.get("files"), dict) and "meta" in data:

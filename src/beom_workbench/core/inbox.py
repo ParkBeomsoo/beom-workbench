@@ -396,6 +396,20 @@ def read_roots(run: dict, settings=None) -> list[str]:
     return roots
 
 
+def action_label(kind: str, tool: str, tool_input: dict, target_root: Path) -> str:
+    """카드에 적을 말 — 종류(규칙)는 같아도 읽기는 읽기로. 'edit' 규칙은 대상 폴더 안 읽기·같은 저장소 읽기도 따르는데,
+    카드에 '대상 폴더 안 파일 수정: Read …' 로 적혀 사람이 무엇을 허락하는지 헷갈렸다."""
+    if kind == "edit":
+        path = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("notebook_path")
+        if tool in READ_TOOLS:
+            return "대상 폴더 안 파일 읽기" if not path or _inside(path, target_root) else "같은 저장소·원본 파일 읽기 (대상 폴더 밖)"
+        if tool in ("Bash", "PowerShell"):
+            cmd = _strip_cd(_unwrap_shell(_strip_cd(str(tool_input.get("command", "")).strip(), target_root)), target_root)
+            if _read_only_shell(cmd, target_root):
+                return "대상 폴더 안 읽기 (목록·내용·검색 명령)"
+    return KINDS.get(kind, kind)
+
+
 def classify(tool: str, tool_input: dict, target_root: Path, protected: list[Path], read_roots: list | tuple = ()) -> str:
     """권한 요청을 종류로 나눈다. protected: 툴킷 홈·실행 폴더 — 여기 닿으면 system.
     read_roots: 대상 폴더를 품은 저장소 — 작업 폴더가 저장소의 하위 폴더일 때 같은 저장소의 다른 폴더는 읽기만 묻지 않는다

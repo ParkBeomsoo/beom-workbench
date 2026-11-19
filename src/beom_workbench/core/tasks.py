@@ -44,6 +44,63 @@ def _has_files(root: Path, suffixes: tuple[str, ...], limit: int = 4000) -> bool
     return False
 
 
+# node 내장 실행기가 인자 없이 찾는 테스트 파일 (node 의 기본 규칙) — 파이썬 tests/ 폴더는 여기에 들지 않는다
+_NODE_TEST = re.compile(r"(?:^|/)test/.+\.[cm]?js$|[.\-_]test\.[cm]?js$|(?:^|/)test-[^/]*\.[cm]?js$|(?:^|/)test\.[cm]?js$")
+
+
+def node_test_args(root: Path) -> str:
+    """package.json 의 test 가 'node --test <경로…>' 면 그 경로들 (없으면 '') — 툴킷의 측정도 같은 테스트를 돌린다."""
+    s = _scripts(Path(root)).get("test") or ""
+    m = re.search(r"\bnode(?:\.exe)?\b[^&|;]*?--test\b([^&|;]*)", s)
+    if not m:
+        return ""
+    return " ".join(t for t in m.group(1).split() if not t.startswith("-"))
+
+
+def node_tests(root: Path, limit: int = 4000) -> bool:
+    """node 내장 실행기가 돌릴 테스트 파일이 있나 — package.json 이 경로를 주면 그것, 아니면 node 의 기본 규칙
+    (*.test.js · *-test.js · *_test.js · test-*.js · test.js · test/ 아래). 예전에는 tests/ 폴더만 있어도 JS 테스트로 보아,
+    파이썬 서버 + 화면 JS 프로젝트에서 빈 측정을 돌리고 검증 전체가 '커버리지 형식을 알 수 없음' 으로 실패했다."""
+    root = Path(root)
+    args = node_test_args(root)
+    if args:
+        return any((root / t.strip("\"'")).exists() or any(root.glob(t.strip("\"'"))) for t in args.split())
+    seen = 0
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in _WALK_SKIP]
+        rel = Path(dirpath).relative_to(root).as_posix()
+        if any(_NODE_TEST.search(f if rel == "." else f"{rel}/{f}") for f in files):
+            return True
+        seen += len(files)
+        if seen > limit:
+            return False
+    return False
+
+
+def repo_top(path: Path) -> Path | None:
+    """이 폴더를 품은 git 저장소의 맨 위 (없으면 None)."""
+    p = Path(path).resolve()
+    return next((q for q in (p, *p.parents) if (q / ".git").exists()), None)
+
+
+def project_root(target: Path) -> Path:
+    """테스트·실행 범위 측정을 돌릴 자리. 대상 폴더에 프로젝트 파일이 없고 저장소의 하위 폴더면, 저장소 안에서 가장 가까운
+    프로젝트 폴더 (예: api/search 를 고치는데 tests/ 는 저장소 맨 위). 예전에는 대상 폴더에서만 찾아 테스트를 못 돌렸고,
+    에이전트가 측정을 맞추려 대상 폴더에 테스트 파일을 하나 더 만들었다."""
+    t = Path(target).resolve()
+    if kinds(t):
+        return t
+    top = repo_top(t)
+    if top is None or top == t:
+        return t
+    for p in t.parents:
+        if kinds(p):
+            return p
+        if p == top:
+            break
+    return t
+
+
 def _bin(root: Path, name: str) -> bool:
     b = root / "node_modules" / ".bin"
     return any((b / (name + ext)).is_file() for ext in ("", ".cmd", ".ps1"))
@@ -246,6 +303,8 @@ def run_task(settings, run: dict, task: str, *, path: str = "", paths: list[str]
     if bad or (name and not _SAFE_NAME.match(name)):
         raise ToolError("invalid_request", "paths 는 대상 폴더 안의 상대 경로, name 은 글자·숫자·공백·._-:[] 만",
                         recovery="거르지 않고 전체를 돌리거나 이름을 간단히")
+    if not kinds(root):
+        root = project_root(root)  # 저장소의 하위 폴더 — 그 저장소의 프로젝트(테스트가 있는 자리)에서 돌린다
     found = kinds(root)
     if not any(command(root, k, task, paths, name) for k in found):
         why = (f"이 폴더의 프로젝트({', '.join(found)})에 '{task}' 작업이 없음" if found else "프로젝트 파일(package.json·pyproject.toml·"

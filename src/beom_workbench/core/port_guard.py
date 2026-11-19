@@ -103,16 +103,25 @@ def _file_digest(p: Path, st) -> bytes:
 _FP: dict[str, tuple[float, str]] = {}
 
 
-def target_fingerprint(root: str | Path, fresh: bool = False, max_age: float = 0) -> str:
+def target_fingerprint(root: str | Path, fresh: bool = False, max_age: float = 0, extra: list | tuple = ()) -> str:
     """대상 저장소의 파일 목록·내용 지문 (git 이면 추적+미추적(무시 제외) 파일, 아니면 흔한 빌드 폴더 제외).
     max_age: 화면 표시용 — 그 초 안에 잰 값이 있으면 다시 걷지 않는다 (검증·완료 판정은 언제나 새로)."""
     # 파일 목록은 매번 새로 (다른 프로세스 — 에이전트의 MCP 서버 — 가 남긴 지문과 맞아야 한다). 내용은 _file_digest 캐시로.
     import time
-    key = str(Path(root).resolve())
+    key = str(Path(root).resolve()) + "|" + "|".join(str(x) for x in extra)
     hit = _FP.get(key)
     if max_age and not fresh and hit and time.monotonic() - hit[0] < max_age:
         return hit[1]
     value = _fingerprint(Path(root))
+    if extra:  # 대상 폴더 밖(같은 저장소)에 매핑한 구현 파일 — 바뀌면 검증이 낡았다
+        h = hashlib.sha256(value.encode())
+        for p in extra:
+            p = Path(p)
+            try:
+                h.update(str(p).encode() + b"\0" + _file_digest(p, p.stat()))
+            except OSError:
+                h.update(str(p).encode() + b"\0missing")
+        value = h.hexdigest()
     _FP[key] = (time.monotonic(), value)
     return value
 
@@ -261,9 +270,22 @@ def local_bin(root: Path, name: str) -> bool:
 
 
 def measurable(root: Path, rel: str) -> bool:
-    """툴킷이 이 파일의 실행 범위를 스스로 잴 수 있나 (port.auto_coverage 와 같은 기준)."""
-    if rel.endswith((".py", ".js", ".mjs", ".cjs")):
+    """툴킷이 이 파일의 실행 범위를 스스로 잴 수 있나 (port.auto_coverage 와 같은 기준). root 는 테스트를 돌리는 프로젝트 자리.
+    JS 는 그 프로젝트의 테스트 실행기로 잴 수 있을 때만 — jest(설치됨) · vitest(v8 커버리지 패키지) · node 내장(테스트 파일 있음).
+    mocha 나 테스트 없는 화면 JS(브라우저에서만 도는 app.js)는 잴 길이 없다 — 사람 확인 카드로 넘긴다."""
+    if rel.endswith(".py"):
         return True
+    if rel.endswith((".js", ".mjs", ".cjs")):
+        from beom_workbench.core import tasks
+        runner = tasks._node_runner(Path(root))
+        if runner == "jest":
+            return local_bin(root, "jest")
+        if runner == "vitest":
+            return (Path(root) / "node_modules" / "@vitest" / "coverage-v8").is_dir() and local_bin(root, "vitest")
+        if runner == "mocha":
+            return False
+        from beom_workbench.core import port
+        return port._node_major() >= 20 and tasks.node_tests(Path(root))
     if rel.endswith(TS_EXTS):  # vitest 프로젝트에 v8 커버리지 패키지가 깔려 있을 때
         return (Path(root) / "node_modules" / "@vitest" / "coverage-v8").is_dir() and local_bin(root, "vitest")
     if rel.endswith(".rs"):
@@ -292,7 +314,9 @@ def coverage_gap(conn, port_id: str) -> dict | None:
         "SELECT target_ref FROM port_map WHERE port_id = ? AND status = 'ported'", (port_id,)).fetchall()
         if (m := re.fullmatch(r"(.+?):\d+", r["target_ref"] or ""))})
     files = [f for f in files if not f.startswith(".beom/")]
-    if not files or any(measurable(root, f) for f in files):
+    from beom_workbench.core import tasks
+    proot = tasks.project_root(root)  # 테스트를 돌리는 자리 기준 (저장소의 하위 폴더면 저장소의 프로젝트)
+    if not files or any(measurable(proot, f) for f in files):
         return None
     return {"files": files, "exts": sorted({PurePosixPath(f).suffix or PurePosixPath(f).name for f in files})}
 
