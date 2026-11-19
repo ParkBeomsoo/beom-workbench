@@ -401,6 +401,11 @@ class ClaudeCode(Agent):
                                                *([] if needs_analysis(run) else [self.TOOL_PREFIX + t for t in analysis_tools()])]),
                 "--append-system-prompt-file", str(rules_file), "--max-turns", str(run.get("max_turns", 60))]
         known = _claude_flags(self.exe)
+        if "--permission-mode" in known and inbox.native_permissions(run):
+            # 편집 자동 허용 → acceptEdits, 자동 → auto: 무엇을 물을지는 Claude Code 가 자기 모드대로 정한다
+            pm = inbox.CLAUDE_PERMISSION_MODE.get(inbox.mode_of(run.get("policy") or {}))
+            if pm:
+                argv += ["--permission-mode", pm]
         if "--tools" in known:  # 일에 쓰는 기본 도구만 — 게시(Artifact)·예약·원격 실행 같은 도구는 싣지도 않는다
             argv += ["--tools", ",".join(CLAUDE_TOOLS)]
         if "--disable-slash-commands" in known:  # 사용자 스킬·명령 목록이 지시문에 실리지 않게 (이 실행에 쓰지 않는다)

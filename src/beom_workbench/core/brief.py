@@ -164,16 +164,25 @@ def screens(target_root: str | Path, files: list[str] | None = None, mobile: boo
 SCRIPT_EXT = {".py", ".js", ".mjs", ".cjs", ".ts", ".ps1", ".sh", ".bat", ".cmd", ".json", ".log"}  # 작성용 스크립트·점검 결과
 
 
-def tidy(target_root: str | Path) -> list[str]:
-    """기획 패키지 폴더에 남은 작성용 스크립트(문서·화면을 만들려고 짠 것)와 점검 결과(json·log)를 .beom/tmp/brief-tools 로 옮긴다 — 사용자에게 넘기는
-    폴더에는 문서·와이어프레임·스크린샷만. 와이어프레임 HTML 안의 스크립트와 하위 폴더는 건드리지 않는다."""
+EXTRA_EXT = {".pdf", ".html", ".htm", ".md"}
+
+
+def tidy(target_root: str | Path, existed=None) -> list[str]:
+    """기획 패키지 폴더를 정해진 결과물만 남게 — 작성용 스크립트·점검 결과(json·log)와, 정해진 문서가 아닌데 이번 실행에서 생긴
+    PDF·HTML·문서(한 파일 프로토타입·화면 모음 PDF·검증 기록·인계 문서 등)를 .beom/tmp/brief-tools 로 옮긴다.
+    프로토타입은 앱이 와이어프레임으로 보여 주고, 공유용 HTML·PDF 는 사용자가 앱에서 내보낸다 — 에이전트가 따로 만들면 겹치고,
+    정해지지 않은 .md 는 앱에서 사용자 첨부처럼 보인다. existed(rel) 이 참인 것(실행 전부터 있던 첨부·지난 기획)은 그대로 둔다.
+    하위 폴더(wireframes·shots·export)는 건드리지 않는다."""
     d = folder(target_root)
     if not d.is_dir():
         return []
     dest = Path(target_root) / WORK / "tmp" / "brief-tools"
     moved = []
     for p in sorted(d.iterdir()):
-        if p.is_file() and p.suffix.lower() in SCRIPT_EXT:
+        ext = p.suffix.lower()
+        extra = ext in EXTRA_EXT and p.name not in DOCS and existed is not None and \
+            existed(f"{WORK}/brief/{p.name}") is False
+        if p.is_file() and (ext in SCRIPT_EXT or extra):
             dest.mkdir(parents=True, exist_ok=True)
             target = dest / p.name
             if target.exists():

@@ -59,6 +59,19 @@ PERMISSION_MODES = {
 }
 
 
+# 에이전트 자체 권한 모드 — 편집 자동 허용·모두 묻기에서 어떤 셸 명령을 물을지는 에이전트(Claude Code)가 자기 모드대로 정하고,
+# 에이전트가 요청한 것만 사용자에게 묻는다 (툴킷이 명령 문자열을 분류해 허용하지 않는다). 사용자 설정의 거절과 사용자가
+# '항상'으로 허락한 규칙만 그대로 쓴다. BEOM_WORKBENCH_PERMISSION_STYLE=toolkit 이면 예전처럼 툴킷 규칙이 정한다 (비교 실험: 묻는 수는 같고, 편집마다 처리기를 거치지 않아 더 빠르다).
+CLAUDE_PERMISSION_MODE = {"edits": "acceptEdits", "auto": "auto"}  # 모두 묻기는 기본 모드 (옵션 없음)
+
+
+def native_permissions(run: dict) -> bool:
+    """이 실행의 권한을 에이전트 자체 모드가 정하나 — 편집 자동 허용·모두 묻기·자동 (직접 설정한 규칙은 툴킷 규칙 그대로)."""
+    if os.environ.get("BEOM_WORKBENCH_PERMISSION_STYLE", "native") == "toolkit":
+        return False
+    return mode_of(run.get("policy") or {}) in ("edits", "ask", "auto")
+
+
 def mode_of(policy: dict) -> str:
     """규칙이 어느 모드와 같은지 — 어느 것과도 다르면 custom."""
     for k, m in PERMISSION_MODES.items():
@@ -85,20 +98,6 @@ _CARGO_OPT = (r"(?: (?:-q|--quiet|--release|--offline|--locked|--frozen|--all-ta
               r"|--(?:test|bin|example) [\w-]+))*"
               # -- 뒤는 테스트 실행 파일에 넘기는 것 — 출력·고르기만
               r"(?: --(?: (?:--nocapture|--quiet|--test-threads=\d+|--include-ignored|--ignored|--exact|--show-output|[\w:]+))+)?")
-# 저장소 상태를 읽기만 하는 git — 읽기(READ_ONLY_WORDS)가 아니라 빌드로 본다: 저장소 설정(fsmonitor·필터·diff 드라이버)이 git status
-# 조차 다른 프로그램을 돌리게 할 수 있어서, 프로젝트 코드를 돌리는 테스트와 같은 무게다 (편집 자동 허용이면 바로, 모두 묻기면 묻는다).
-# 브랜치·파일을 바꾸거나 출력을 파일로 쓰는 옵션은 없다. -C 는 대상 폴더(또는 그 안)만 — 절대 경로는 _rel_root 가 .\ 로 바꿔 둔다
-_GIT_PATH = r"(?!\S*\.\.)(?:\.[\\/]?|[\w][\w.\\/-]*)"
-_GIT_READ = (r"git(?:\.exe)?(?: -C " + _GIT_PATH + r")?(?: --no-pager)? (?:"
-             r"status(?: (?:-s|--short|-b|--branch|--porcelain(?:=v[12])?|-uno|--untracked-files=\w+|--ignored))*"
-             r"|diff(?: (?:--stat|--cached|--staged|--name-only|--name-status|--check|--no-color|--no-ext-diff|-U\d+|"
-             r"HEAD(?:~\d+)?|--|" + _GIT_PATH + r"))*"
-             r"|log(?: (?:--oneline|-n ?\d+|-\d+|--stat|--name-only|--graph|--decorate|--no-color|--format=[\w%:\-]+|"
-             r"--pretty=[\w%:\-]+|HEAD(?:~\d+)?|--|" + _GIT_PATH + r"))*"
-             r"|show(?: (?:--stat|--name-only|--no-color|HEAD(?:~\d+)?|[0-9a-f]{7,40}))*"
-             r"|branch(?: (?:--show-current|-a|-v|-vv|--list))*"
-             r"|rev-parse(?: (?:--abbrev-ref|--show-toplevel|--short|HEAD))*"
-             r"|ls-files(?: (?:--others|--exclude-standard|-m|-o|" + _GIT_PATH + r"))*)|")
 # TypeScript 타입 검사·빌드, vitest 한 번 실행 — npm test 와 같은 '프로젝트 빌드·테스트' (npx 는 프로젝트에 깔린 것일 때만: _is_build)
 _TS_TOOLS = (r"(?:npx )?tsc(?: (?:--noEmit|--pretty(?: false)?|(?:-p|--project) (?!\S*\.\.)[\w./\\-]+))*|"
              r"(?:npx )?vitest (?:run|--run)(?: (?:--reporter(?:=| )[\w-]+|--silent|--passWithNoTests|--run"
@@ -111,7 +110,7 @@ BUILD_COMMANDS = re.compile(
     # 테스트 실행기에 넘기는 옵션은 아니다. 경로는 상위(..)로 나가지 않는다
     r"npm run build -- (?:(?:--outDir|--out-dir|--base)(?:=| )(?!\S*\.\.)[\w./\\-]+|--emptyOutDir|--mode [\w-]+)"
     r"(?: (?:(?:--outDir|--out-dir|--base)(?:=| )(?!\S*\.\.)[\w./\\-]+|--emptyOutDir|--mode [\w-]+))*|"
-    r"cargo (build|test|check|fmt|clippy)" + _CARGO_OPT + r"|" + _TS_TOOLS + _GIT_READ + r"go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
+    r"cargo (build|test|check|fmt|clippy)" + _CARGO_OPT + r"|" + _TS_TOOLS + r"go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
     r"\./gradlew (test|build)|pip install -e \.|dotnet (build|test)|"
     # 의존성 설치(requirements 파일·현재 패키지)와 대상 폴더 안 가상 환경 만들기
     r"(?:pip|" + _PY + r" -m pip) install(?: -q| --quiet| -U| --upgrade)* (?:-r requirements[\w.-]*\.txt|-e \.(?:\[[\w,-]+\])?)(?: -q| --quiet)*|"

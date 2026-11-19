@@ -49,7 +49,13 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
     # 작업 폴더가 저장소의 하위 폴더면 그 저장소 안의 다른 폴더는 읽기만 묻지 않는다 (고치기는 묻는다)
     kind = inbox.classify(tool_name, input or {}, root, [settings.home], read_roots=inbox.read_roots(run, settings))
     decision = inbox.decide(run, kind)
-    redirect = _redirect(run, tool_name, input or {}, kind, decision)
+    native = inbox.native_permissions(run)
+    mode = inbox.mode_of(run.get("policy") or {})
+    if native and mode in ("edits", "ask") and decision == "allow" and tool_name not in inbox.READ_TOOLS:
+        # 에이전트가 자기 모드에서 물어본 것 — 툴킷이 분류해 대신 허용하지 않고 사용자에게 묻는다 (아래에서 사용자가 이미
+        # '항상'으로 허락한 규칙·승인한 계획의 명령이면 그대로 허용). 읽기는 원본·툴킷이 찍은 화면 같은 정해진 자리만 허용된다
+        decision = "ask"
+    redirect = None if native else _redirect(run, tool_name, input or {}, kind, decision)
     if redirect:
         inbox.log(settings, run["id"], "permission", tool=tool_name, permission_kind=kind, decision="redirect",
                   what=mask_command(str((input or {}).get("command"))[:160]))
@@ -385,7 +391,9 @@ def wb_handoff(summary: str, how_to_run: str | list[str], risks: str | list[str]
     if run is not None and run.get("mode") == "plan":
         from beom_workbench.core import brief
 
-        tidied = brief.tidy(run["target_root"])  # 작성용 스크립트는 사용자에게 넘기는 기획 폴더에 두지 않는다 — 툴킷이 옮긴다
+        from beom_workbench.core import tasks
+        # 사용자에게 넘기는 기획 폴더는 정해진 결과물만 — 작성용 스크립트·따로 만든 PDF·HTML·문서는 툴킷이 옮긴다
+        tidied = brief.tidy(run["target_root"], existed=lambda rel: tasks._existed(settings, run, rel))
         if tidied:
             inbox.log(settings, run["id"], "brief_tidy", moved=tidied[:20])
         chk = brief.check(run["target_root"], _policy_docs(run))
