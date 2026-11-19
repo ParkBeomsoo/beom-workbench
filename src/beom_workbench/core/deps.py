@@ -103,6 +103,13 @@ def src_layout(root: Path) -> Path | None:
         return None
 
 
+def _extra_tools(pkgs: list[str]) -> list[str]:
+    """검증용으로 더 깔 것 — 프로젝트가 이미 적은 것(pytest>=8 등)은 빼고 (같은 패키지를 두 번 적지 않게)."""
+    import re
+    named = {re.split(r"[<>=!~\[; ]", p.strip(), 1)[0].lower() for p in pkgs if p.strip()}
+    return [t for t in VERIFY_TOOLS if t not in named]
+
+
 def _stamp(root: Path, files: list[str], extra: list[str] = ()) -> str:
     h = hashlib.sha256()
     for n in files:
@@ -137,9 +144,9 @@ def plan(root: Path) -> list[dict]:
         sig = _stamp(root, files, pkgs + list(VERIFY_TOOLS) + ([f"src:{src.resolve()}"] if src else []))
         done = _stamp_file(root, "python")
         if not venv_python(root).is_file() or not done.is_file() or done.read_text().strip() != sig:
-            what = " ".join([*(f"-r {f}" for f in files), *pkgs, *(["(src 폴더를 import 경로에)"] if src else [])])
+            what = " ".join([*(f"-r {f}" for f in files), *pkgs, *_extra_tools(pkgs), *(["(src 폴더를 import 경로에)"] if src else [])])
             out.append({"kind": "python", "files": files + (["pyproject.toml"] if pkgs else []), "sig": sig, "pkgs": pkgs,
-                        "command": f"pip install {what} pytest coverage  (.beom/venv)"})
+                        "command": f"pip install {what}  (.beom/venv)"})
     return out
 
 
@@ -191,7 +198,8 @@ def _base_python() -> str:
 
 def _run(argv: list[str], root: Path, timeout: float) -> tuple[int, str]:
     from beom_workbench.core import port, runtime
-    env = runtime.safe_env({"PYTHONIOENCODING": "utf-8", "PIP_DISABLE_PIP_VERSION_CHECK": "1"})
+    # PYTHONUTF8: pip 가 requirements.txt 를 UTF-8 로 읽게 — Windows 기본(cp949)으로 읽다가 한글 주석 한 줄에 설치가 통째로 깨졌다
+    env = runtime.safe_env({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1"})
     try:
         cp = port.run_tree(argv, cwd=str(root), timeout=timeout, env=env)
     except subprocess.TimeoutExpired as e:
@@ -222,7 +230,7 @@ def _install(item: dict, root: Path, timeout: float) -> dict:
         for f in item["files"]:
             if f != "pyproject.toml":
                 args += ["-r", f]
-        args += [*item.get("pkgs", []), *VERIFY_TOOLS]
+        args += [*item.get("pkgs", []), *_extra_tools(item.get("pkgs", []))]
         code, out = _run(args, root, timeout)
     ok = code == 0
     if ok:

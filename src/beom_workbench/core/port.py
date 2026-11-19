@@ -1087,8 +1087,25 @@ def _node_major() -> int:
 
 
 def auto_coverage(conn, port: dict, root: Path, allowed: bool | None = None) -> tuple[str, str] | None:
-    """매핑한 대상 파일(파이썬·JS)을 그 프로젝트의 테스트로 돌려 커버리지를 재는 명령과 리포트 경로 — 테스트가 없거나 다른 언어면 None.
+    """첫 번째 측정 (예전 호출부용) — auto_coverages 참고."""
+    got = auto_coverages(conn, port, root, allowed=allowed)
+    return got[0] if got else None
+
+
+def auto_coverages(conn, port: dict, root: Path, allowed: bool | None = None) -> list[tuple[str, str]]:
+    """매핑한 대상 파일을 그 프로젝트의 테스트로 돌려 커버리지를 재는 (명령, 리포트 경로) — 언어마다 하나씩 (파이썬 서버 + JS 화면
+    같은 섞인 프로젝트는 둘 다). 예전에는 파이썬을 보면 거기서 돌아가 JS 를 재지 않아, 에이전트가 측정에 맞추려 매핑·코드를 바꿨다.
     파이썬은 툴킷이 준비한 .beom/venv(없으면 툴킷 자신의 파이썬 — pytest·coverage 가 들어 있다), Node 는 내장 테스트 실행기."""
+    out: list[tuple[str, str]] = []
+    one = _auto_coverage_one
+    for lang in ("py", "node", "ts", "rs"):
+        got = one(conn, port, root, allowed, lang)
+        if got:
+            out.append(got)
+    return out
+
+
+def _auto_coverage_one(conn, port: dict, root: Path, allowed: bool | None, lang: str) -> tuple[str, str] | None:
     from beom_workbench.core import deps
     run = _auto_run()
     if allowed is False:
@@ -1107,6 +1124,17 @@ def auto_coverage(conn, port: dict, root: Path, allowed: bool | None = None) -> 
     rs = [f for f in files if f.endswith(".rs")]
     tmp = root / ".beom" / "tmp"
     tmp.mkdir(parents=True, exist_ok=True)
+    # 이 갈래가 재는 파일만 남긴다 — py: 파이썬 · node: JS(node 내장 실행기) · ts: TS 와 vitest 프로젝트의 JS · rs: Rust
+    runner = tasks_mod()._node_runner(root) if js or ts else None
+    vitest = runner == "vitest"
+    py = py if lang == "py" else []
+    rs = rs if lang == "rs" else []
+    if lang == "node":
+        js, ts = ([] if vitest else js), []
+    elif lang == "ts":
+        js, ts = (js if vitest else []), ts
+    else:
+        js, ts = [], []
     if py:
         tests = (root / "tests").is_dir() or (root / "test").is_dir() or any(root.glob("test_*.py")) or any(root.glob("*_test.py"))
         if not tests:
@@ -1118,10 +1146,9 @@ def auto_coverage(conn, port: dict, root: Path, allowed: bool | None = None) -> 
         cmd = (f"{q(exe)} -m coverage run --data-file=.beom/tmp/.autocov --include={q(inc)} -m pytest -q -p no:cacheprovider"
                f" && {q(exe)} -m coverage json --data-file=.beom/tmp/.autocov -o .beom/tmp/autocov.json")
         return cmd, ".beom/tmp/autocov.json"
-    runner = tasks_mod()._node_runner(root) if js or ts else None
-    if js and runner in ("vitest",) and guard.measurable(root, "x.ts"):
+    if lang == "ts" and js:
         ts, js = ts + js, []  # vitest 로 재는 JS 프로젝트 — 아래 vitest 갈래로
-    if js and runner in ("jest", "mocha", "vitest"):
+    if js and runner in ("jest", "mocha"):
         return None  # node 내장 실행기로는 그 테스트를 못 돌린다 (vitest 는 커버리지 패키지가 없을 때) — 테스트는 project_checks 가 돌린다
     if js:
         tests = (root / "test").is_dir() or (root / "tests").is_dir() or tasks_mod()._has_files(root, (".test.js", ".test.mjs", ".test.cjs"))
@@ -1129,9 +1156,9 @@ def auto_coverage(conn, port: dict, root: Path, allowed: bool | None = None) -> 
         if not tests or major < 20:
             return None
         iso = " --test-isolation=none" if major >= 22 else ""  # 격리 실행 안에서는 테스트 파일마다 하위 프로세스를 못 띄운다
-        return (f"node --test{iso} --experimental-test-coverage --test-reporter=lcov --test-reporter-destination=.beom/tmp/autocov.info",
-                ".beom/tmp/autocov.info")
-    if ts and all(guard.measurable(root, f) for f in ts[:1]):
+        return (f"node --test{iso} --experimental-test-coverage --test-reporter=lcov --test-reporter-destination=.beom/tmp/autocov-node.info",
+                ".beom/tmp/autocov-node.info")
+    if ts and guard.measurable(root, "x.ts"):  # vitest 와 그 v8 커버리지 패키지가 준비돼 있을 때
         # vitest 프로젝트 — 그 테스트를 v8 커버리지로 한 번 (리포트는 .beom/tmp 에, 프로젝트의 coverage/ 는 건드리지 않는다)
         inc = " ".join(f"--coverage.include={f}" for f in ts)
         return (f"vitest run --coverage.enabled=true --coverage.provider=v8 --coverage.reporter=json "
@@ -1139,7 +1166,7 @@ def auto_coverage(conn, port: dict, root: Path, allowed: bool | None = None) -> 
     if rs and guard.measurable(root, rs[0]) and (root / "Cargo.toml").is_file():
         from beom_workbench.core import deps
         # 툴킷 자리에 깐 것도 쓰게 실행 파일을 직접 부른다 (cargo 하위 명령은 'cargo-llvm-cov llvm-cov …' 로도 돈다)
-        return (f'"{deps.cargo_llvm_cov()}" llvm-cov --lcov --output-path .beom/tmp/autocov.info', ".beom/tmp/autocov.info")
+        return (f'"{deps.cargo_llvm_cov()}" llvm-cov --lcov --output-path .beom/tmp/autocov-rust.info', ".beom/tmp/autocov-rust.info")
     return None
 
 
@@ -2216,18 +2243,23 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
             allowed = tasks_mod().permit_build(
                 settings, run_now, ["task:test"], "검증 때 프로젝트 테스트 실행 (케이스가 구현 코드를 거쳤는지 실행 범위도 함께 잰다)"
             ) if run_now is not None and tasks_mod().available(root, "test") else None
-            auto = auto_coverage(conn, port, root, allowed=allowed)
-            if auto:
-                target_coverage_cmd, target_coverage_report = auto
-                outside = _outside_ok(settings, target_coverage_cmd)
-                auto_used = True
+            measures = auto_coverages(conn, port, root, allowed=allowed)
+            auto_used = bool(measures)
+        else:
+            measures = [(target_coverage_cmd, target_coverage_report)] if target_coverage_cmd or target_coverage_report else []
         done = {}
-        if target_coverage_cmd:
-            cov = side.shell(target_coverage_cmd, timeout=600, outside=outside)
-            if auto_used and (outside or not inbox_needs_outside(target_coverage_cmd)):
+        reports = []
+        for m_cmd, m_report in measures:
+            if m_report:
+                reports.append(m_report)
+            if not m_cmd:
+                continue
+            outside = _outside_ok(settings, m_cmd) if auto_used else False
+            cov = side.shell(m_cmd, timeout=600, outside=outside)
+            if auto_used and (outside or not inbox_needs_outside(m_cmd)):
                 # 툴킷이 고른 측정 명령은 그 프로젝트의 테스트를 돌린 것 — 테스트 결과로 쓴다 (다시 돌리지 않는다)
-                kind = "python" if " -m coverage " in target_coverage_cmd else ("rust" if "cargo llvm-cov" in target_coverage_cmd else "node")
-                done[kind] = tasks_mod().result_of(kind, "test", f"{target_coverage_cmd} (커버리지 측정과 함께)", cov.returncode,
+                kind = "python" if " -m coverage " in m_cmd else ("rust" if "llvm-cov" in m_cmd else "node")
+                done[kind] = tasks_mod().result_of(kind, "test", f"{m_cmd} (커버리지 측정과 함께)", cov.returncode,
                                                    (cov.stdout + cov.stderr).decode("utf-8", "replace"))
         project = tasks_mod().project_checks(settings, _auto_run(), root, done) if root.is_dir() else []
     finally:
@@ -2236,16 +2268,16 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
         if static:
             static.__exit__(None, None, None)
         # 케이스를 돌리며 프로그램이 새로 만든 파일(데이터 파일 등)은 치운다 — 결과물에 검증 찌꺼기가 남지 않게
-        cleaned = _drop_new(root, before, keep={target_coverage_report} if target_coverage_report else set())
+        cleaned = _drop_new(root, before, keep=set(reports))
     fp = guard.target_fingerprint(root, fresh=True)
     tgt_adq = None
-    if target_coverage_report:
-        rp = root / target_coverage_report
-        if not rp.exists():
+    if reports:
+        have = [root / r for r in reports if (root / r).exists()]
+        if not have:
             hint = "" if not server or server.graceful else " — 서버가 정상 종료되지 않아 커버리지가 기록되지 않았을 수 있음"
-            tgt_adq = {"error": f"대상 커버리지 리포트 {target_coverage_report} 가 생기지 않음{hint}"}
+            tgt_adq = {"error": f"대상 커버리지 리포트 {', '.join(reports)} 가 생기지 않음{hint}"}
         else:
-            tgt_adq = _target_adequacy(conn, port, rp, fp)
+            tgt_adq = _target_adequacy(conn, port, have if len(have) > 1 else have[0], fp)
 
     allowed = _accepted(conn, port_id)
     rows, passed, accepted = [], 0, []
@@ -2356,7 +2388,12 @@ def _target_adequacy(conn, port: dict, report: Path, fp: str) -> dict:
     """대상(내 코드)을 케이스로 돌린 커버리지에서, ported 로 매핑한 함수가 모두 실행됐는지.
     원본을 계측할 수 없을 때(릴리스 빌드 바이너리 등)의 대안 — 원본 쪽 분기를 다 거쳤다는 뜻은 아니다."""
     root = Path(port["target_root"])
-    fmt, data = runtime.parse(report.read_text(encoding="utf-8-sig", errors="replace"))
+    data, fmts = {}, []
+    for rp in (report if isinstance(report, list) else [report]):  # 언어마다 하나씩 잰 리포트를 합친다 (파이썬 + JS)
+        fmt, part = runtime.parse(rp.read_text(encoding="utf-8-sig", errors="replace"))
+        fmts.append(fmt)
+        data.update(part)
+    fmt = "+".join(dict.fromkeys(fmts))
     norm = {k.replace("\\", "/").lower(): v for k, v in data.items()}
 
     def find(rel: str):
