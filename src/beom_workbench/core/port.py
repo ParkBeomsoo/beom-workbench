@@ -1977,7 +1977,9 @@ def _load_cases(path: Path) -> tuple[dict, list[dict]]:
     cases = data["cases"] if isinstance(data, dict) else data
     if not cases:
         raise ToolError("invalid_request", "cases 가 비어 있음")
-    out = [{**defaults, **c} for c in cases]
+    # 케이스 값 도우미($repeat)는 읽을 때 한 번 펼친다 — 입력뿐 아니라 기대값·화면 동작 어디서나 같은 값이 되게
+    # (예전에는 실행할 입력만 펼쳐서, 기대값에 쓴 $repeat 가 펼쳐지지 않은 채 비교되어 맞는 결과도 실패했다)
+    out = [_expand({**defaults, **c}) if isinstance(c, dict) else c for c in cases]
     for i, c in enumerate(out):
         name = c.get("name") or f"#{i + 1}"
         if not isinstance(c, dict):
