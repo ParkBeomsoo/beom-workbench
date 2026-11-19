@@ -294,16 +294,30 @@ def _execute(settings, run: dict | None, root: Path, plan: list[tuple], timeout:
     return results
 
 
-def project_checks(settings, run: dict | None, root: Path, done: dict | None = None) -> list[dict]:
+def _test_kind(path: str) -> str | None:
+    return "python" if path.endswith(".py") else "node" if re.search(r"\.[cm]?[jt]sx?$", path) else None
+
+
+def project_checks(settings, run: dict | None, root: Path, done: dict | None = None, tests_only: set | None = None) -> list[dict]:
     """검증 때 툴킷이 함께 돌리는 프로젝트 테스트·타입 검사 — 에이전트가 따로 돌리지 않아도 완료 판정에 들어간다.
-    done: 이미 돈 테스트 결과 (커버리지 측정이 그 테스트를 돌렸으면 다시 돌리지 않는다). 규칙상 빌드가 '묻기'면 한 번 묻는다."""
+    done: 이미 돈 테스트 결과. tests_only: 돌릴 테스트 파일(절대 경로) — 이번 작업에서 새로 만든 테스트만. 원래 있던 테스트는 예전
+    동작을 기대해서 바뀐 기능의 기준이 되지 못한다 (바뀐 기능은 합격 케이스로, 영향이 닿는 곳은 연관된 곳 분석으로 확인).
+    None 이면 프로젝트의 테스트 전체. 규칙상 빌드가 '묻기'면 한 번 묻는다."""
     from beom_workbench.core import inbox, layout
     root = Path(root)
     done = done or {}
     plan = []
     for k, r in layout.projects(root):  # 이 폴더가 속한 프로젝트마다 그 자리에서 (저장소의 하위 폴더면 그 프로젝트의 자리)
-        if k not in done and (c := command(r, k, "test", [], "")):
-            plan.append((k, "test", c, r))
+        if k in done:
+            pass
+        elif tests_only is None:
+            if c := command(r, k, "test", [], ""):
+                plan.append((k, "test", c, r))
+        else:
+            mine = sorted(os.path.relpath(f, r).replace("\\", "/") for f in tests_only
+                          if Path(f).resolve().is_relative_to(r) and _test_kind(f) == k)
+            if mine and (c := command(r, k, "test", mine, "")):
+                plan.append((k, "test", c, r))
         if k in ("node", "python") and (c := command(r, k, "typecheck", [], "")):
             plan.append((k, "typecheck", c, r))  # 다른 언어는 테스트가 컴파일까지 한다
     results = list(done.values())

@@ -54,7 +54,8 @@ def create(settings: Settings, *, name: str, request: str, target_root: str, con
                      (port_id, name, ledger.dumps([]), "", str(root), ledger.dumps({"symbols": [], "entries": []}), author, _now(),
                       MODE, request.strip(), context))
     guard.record(conn, port_id, "create", {"mode": MODE, "author": author})
-    guard.record_baseline(conn, port_id, root)  # 코드를 고치기 전 — 원래 있던 테스트 (처음 한 번만)
+    # 코드를 고치기 전 — 원래 있던 테스트와 소스 (처음 한 번만). 소스는 바꾼 함수를 부르는 기존 코드(연관된 곳)를 찾을 때 쓴다
+    guard.record_baseline(conn, port_id, root, store=project_mod.workspace(settings, pid) / "ports" / port_id / "baseline-sources.json")
     return {"project_id": pid, "port_id": port_id, "mode": MODE, "target_root": str(root),
             "next_step": "make-req 로 요구사항 목록 작성 → 요구사항마다 합격 케이스(expect + req) 작성 → port-capture"}
 

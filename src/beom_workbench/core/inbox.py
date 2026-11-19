@@ -396,7 +396,7 @@ def read_roots(run: dict, settings=None) -> list[str]:
     return roots
 
 
-def action_label(kind: str, tool: str, tool_input: dict, target_root: Path) -> str:
+def action_label(kind: str, tool: str, tool_input: dict, target_root: Path, read_roots: list | tuple = ()) -> str:
     """카드에 적을 말 — 종류(규칙)는 같아도 읽기는 읽기로. 'edit' 규칙은 대상 폴더 안 읽기·같은 저장소 읽기도 따르는데,
     카드에 '대상 폴더 안 파일 수정: Read …' 로 적혀 사람이 무엇을 허락하는지 헷갈렸다."""
     if kind == "edit":
@@ -407,6 +407,10 @@ def action_label(kind: str, tool: str, tool_input: dict, target_root: Path) -> s
             cmd = _strip_cd(_unwrap_shell(_strip_cd(str(tool_input.get("command", "")).strip(), target_root)), target_root)
             if _read_only_shell(cmd, target_root):
                 return "대상 폴더 안 읽기 (목록·내용·검색 명령)"
+    if kind == "commands" and tool in ("Bash", "PowerShell"):
+        cmd = str(tool_input.get("command", "")).strip()
+        if any(_read_only_shell(_strip_cd(_unwrap_shell(cmd), Path(r)), Path(r)) for r in read_roots):
+            return "같은 저장소·원본 읽기 (목록·내용·검색 명령, 대상 폴더 밖)"
     return KINDS.get(kind, kind)
 
 

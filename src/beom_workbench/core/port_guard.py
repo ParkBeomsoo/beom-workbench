@@ -265,10 +265,11 @@ def is_approved(conn, port_id: str, item_id: str, fp: str) -> bool:
 BASELINE_FILE_MAX, BASELINE_TOTAL_MAX = 100_000, 2_000_000
 
 
-def record_baseline(conn, port_id: str, root: Path) -> None:
+def record_baseline(conn, port_id: str, root: Path, store: Path | None = None) -> None:
     """작업을 시작할 때(첫 요구사항·슬라이스 단계, 코드를 고치기 전) 원래 있던 테스트 파일을 기록 사슬에 남긴다 — 한 번만.
     원래 테스트는 '예전 동작' 을 기대한다. 요청으로 동작이 바뀌면 고쳐야 하지만, 맞추려고 고치거나 지우면 회귀를 가린다.
-    바뀐 것은 사람이 차이를 보고 확인한다 (tests_changed)."""
+    바뀐 것은 사람이 차이를 보고 확인한다 (tests_changed).
+    store: 원래 소스를 둘 파일 (원장 폴더) — 바꾼 함수를 부르는 기존 코드(연관된 곳)를 찾을 때 쓴다 (impact). 사슬에는 지문만."""
     if any(lg["action"] == "baseline_tests" for lg in _logs(conn, port_id)):
         return
     from beom_workbench.core import layout
@@ -284,13 +285,36 @@ def record_baseline(conn, port_id: str, root: Path) -> None:
             ent["text"] = data.decode("utf-8", "replace")
             total += len(data)
         files[os.path.relpath(f, root).replace("\\", "/")] = ent
-    record(conn, port_id, "baseline_tests", {"files": files})
+    extra = {}
+    if store is not None:
+        from beom_workbench.core import impact
+        text = json.dumps(impact.snapshot(root), ensure_ascii=False)
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(text, encoding="utf-8")
+        extra = {"sources_file": store.name, "sources_sha": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+    record(conn, port_id, "baseline_tests", {"files": files, **extra})
+
+
+def baseline(conn, port_id: str) -> dict | None:
+    return next((lg["payload"] for lg in _logs(conn, port_id) if lg["action"] == "baseline_tests"), None)
+
+
+def baseline_sources(conn, port_id: str, folder: Path) -> dict:
+    """작업을 시작할 때 기록한 원래 소스 {경로: {sha, text?}} — 기록이 없거나 파일이 기록 뒤에 바뀌었으면 {}."""
+    b = baseline(conn, port_id) or {}
+    f = Path(folder) / b["sources_file"] if b.get("sources_file") else None
+    if not f or not f.is_file():
+        return {}
+    text = f.read_text(encoding="utf-8")
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != b.get("sources_sha"):
+        return {}  # 툴킷 밖에서 바뀐 기록 — 쓰지 않는다
+    return json.loads(text)
 
 
 def tests_changed(conn, port_id: str, root: Path) -> list[dict] | None:
     """원래 있던 테스트 중 바뀌거나 지워진 것 — [{file, state, diff}] (없으면 None)."""
     import difflib
-    base = next((lg["payload"] for lg in _logs(conn, port_id) if lg["action"] == "baseline_tests"), None)
+    base = baseline(conn, port_id)
     if not base:
         return None
     out = []
@@ -401,6 +425,16 @@ def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | Non
                       "summary": f"원래 있던 테스트 {len(changed)}개를 바꾸거나 지움 — 원래 테스트는 예전 동작을 기대합니다. "
                                  "요청으로 동작이 바뀐 만큼만 고쳤는지 차이를 보고 승인하세요",
                       "detail": [{"case": c["file"], "diff": c["diff"]} for c in changed[:20]]})
+    imp = conn.execute("SELECT detail FROM port_check WHERE port_id = ? AND kind = 'impact' ORDER BY rowid DESC LIMIT 1",
+                       (port_id,)).fetchone()
+    if imp:
+        d = json.loads(imp["detail"]) if isinstance(imp["detail"], str) else imp["detail"] or {}
+        left = [c for c in d.get("callers") or [] if c.get("executed") is not True]
+        if left:
+            items.append({"item_id": "impact", "kind": "impact", "fingerprint": _sha(left),
+                          "summary": f"바꾼 함수를 부르는 기존 코드 {len(left)}곳을 합격 케이스가 거치지 않음 — 이 동작들이 그대로인지 "
+                                     "확인되지 않았습니다. 영향이 없거나 따로 확인했으면 승인하세요",
+                          "detail": {"files": [f"{c['target']} {c['caller']} → {', '.join(c['calls'])}" for c in left[:20]]}})
     gap = coverage_gap(conn, port_id)
     if gap:
         items.append({"item_id": "coverage", "kind": "coverage_unmeasured", "fingerprint": _sha(gap),

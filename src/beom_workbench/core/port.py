@@ -419,6 +419,19 @@ def _ref_roots(root: Path) -> list[Path]:
     return [root.resolve()] + ([top] if top and top != root.resolve() and root.resolve().is_relative_to(top) else [])
 
 
+def _normalize_ref(root: Path, ref: str) -> str:
+    """대상 폴더 기준으로 없는 경로가 같은 저장소 맨 위 기준으로는 있으면 대상 폴더 기준으로 바꾼다 ('api/search/search.py:6' →
+    'search.py:6'). 저장소의 하위 폴더가 대상일 때 에이전트가 저장소 기준으로 적으면 거절되어 매핑을 다시 했다."""
+    m = re.fullmatch(r"(.+?):(\d+)", (ref or "").strip())
+    if not m or (root / m.group(1)).is_file():
+        return ref
+    for base in _ref_roots(root)[1:]:
+        f = (base / m.group(1)).resolve()
+        if f.is_file() and f.is_relative_to(base):
+            return os.path.relpath(f, root.resolve()).replace("\\", "/") + ":" + m.group(2)
+    return ref
+
+
 def _check_ref(root: Path, ref: str) -> str | None:
     m = re.fullmatch(r"(.+?):(\d+)", ref.strip())
     if not m:
@@ -518,6 +531,7 @@ def map_items(conn, port_id: str, updates: list[dict], actor: str = "agent") -> 
             elif status == "ported" and not u.get("target"):
                 err = "ported 는 target(대상 저장소 '경로:줄')이 필요함"
             elif status == "ported":
+                u = {**u, "target": _normalize_ref(root, u["target"])}
                 err = _check_ref(root, u["target"])
             elif not u.get("note"):
                 err = f"{status} 는 note(사유)가 필요함"
@@ -580,7 +594,7 @@ GATE_HUMAN = "사람 확인 항목 모두 승인됨 (차이 허용·생략·케�
 GATE_INTEGRITY = "기록 무결 (툴킷 밖에서 원장·골든을 고치지 않음)"
 GATE_LICENSE = "라이선스 확인 필요 없음"
 GATE_REQ_CASES = "요구사항마다 합격 케이스가 있음 (expect + req)"
-GATE_PROJECT = "프로젝트 테스트·타입 검사 통과 (툴킷이 검증 때 함께 돌림)"
+GATE_PROJECT = "새로 만든 테스트·타입 검사 통과 (툴킷이 검증 때 함께 돌림)"
 
 
 def _diff_state(last: dict | None, capture: dict | None, fp_now: str) -> dict:
@@ -748,10 +762,13 @@ def status_(conn, port_id: str, brief: bool = False, fp_max_age: float = 0) -> d
     adequacy = _adequacy_state(src_adq, tgt_adq, fp_now)
     human = guard.reviews(conn, port_id, last, capture_)
     card = next((h for h in human if h["kind"] == "coverage_unmeasured"), None)
-    if card and not adequacy["ok"]:
-        adequacy = ({"ok": True, "basis": "사용자 확인 (툴킷이 잴 수 없는 언어)"} if card["approved"] else
-                    {"ok": False, "basis": None, "user_card": True,
-                     "why": "툴킷이 이 언어의 실행 범위를 재지 못함 — 사용자 확인 카드로 넘겼다 (도구를 설치하거나 측정 명령을 짤 일 아님)"})
+    measured_ok = adequacy["ok"] or adequacy.get("basis") is None  # 잰 것은 다 거쳤다 (또는 잴 수 있는 것이 없었다)
+    if card and card["approved"] and measured_ok:
+        adequacy = {"ok": True, "basis": (adequacy.get("basis") + " + " if adequacy["ok"] else "") + "사용자 확인 (툴킷이 재지 못한 파일)"}
+    elif card and not card["approved"] and measured_ok:
+        # 잰 것이 통과여도 못 잰 파일이 남았다 — 이 관문은 사용자 확인 뒤에 통과 (예전에는 잰 부분만 보고 통과로 보였다)
+        adequacy = {"ok": False, "basis": adequacy.get("basis"), "user_card": True,
+                    "why": "툴킷이 일부 파일의 실행 범위를 재지 못함 — 사용자 확인 카드로 넘겼다 (도구를 설치하거나 측정 명령을 짤 일 아님)"}
     integ = guard.integrity(conn, port_id)
     gates = {
         GATE_MAPPED: counts.get("pending", 0) == 0,
@@ -1226,6 +1243,12 @@ class _CaseCoverage:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.py = [f for f in files if f.suffix == ".py"]
         self.js = [f for f in files if f.suffix in NODE_RUN_EXTS]
+        # 매핑한 파일만이 아니라 프로젝트 소스 전체 — 바꾼 함수를 부르는 기존 코드(연관된 곳)를 케이스가 거쳤는지도 보려고
+        from beom_workbench.core import impact
+        project_src = impact.source_files(root)
+        self.js += [f for f in project_src if f.suffix in NODE_RUN_EXTS and f not in self.js]
+        self.py += [f for f in project_src if f.suffix == ".py" and f not in self.py]
+        py_dirs = sorted({str(r) for r in impact.scan_roots(root)} | {str(f.parent) for f in self.py})
         self.env: dict[str, str] = {}
         self.stop_file = self.dir / "stop"
         if self.py:
@@ -1233,8 +1256,10 @@ class _CaseCoverage:
             site.mkdir()
             (site / "sitecustomize.py").write_text(CASECOV_SITE, encoding="utf-8")
             rc = self.dir / "coveragerc"
-            rc.write_text("[run]\nparallel = True\ndata_file = " + str(self.dir / ".cov") + "\ninclude =\n"
-                          + "".join(f"    {f}\n" for f in self.py), encoding="utf-8")
+            rc.write_text("[run]\nparallel = True\ndata_file = " + str(self.dir / ".cov") + "\nsource =\n"
+                          + "".join(f"    {d}\n" for d in py_dirs)
+                          + "omit =\n    */.beom/*\n    */node_modules/*\n    */site-packages/*\n    */venv/*\n    */.venv/*\n",
+                          encoding="utf-8")
             import coverage
             self.env.update(BEOM_CASECOV_STOP=str(self.stop_file))
             self.env.update(PYTHONPATH=str(site), COVERAGE_PROCESS_START=str(rc), COVERAGE_FILE=str(self.dir / ".cov"),
@@ -2422,7 +2447,14 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
                 side.shell(target_coverage_cmd, timeout=600)
             if target_coverage_report:
                 reports.append(target_coverage_report)
-        project = tasks_mod().project_checks(settings, _auto_run(), root) if root.is_dir() else []
+        # 이번 작업에서 새로 만든 테스트만 — 원래 있던 테스트는 예전 동작을 기대한다 (기록이 없는 예전 원장은 전체)
+        base = guard.baseline(conn, port_id)
+        tests_only = None
+        if base is not None and root.is_dir():
+            from beom_workbench.core import layout
+            pre = {str((root / rel).resolve()) for rel in base.get("files") or {}}
+            tests_only = layout.test_files(root) - pre
+        project = tasks_mod().project_checks(settings, _auto_run(), root, tests_only=tests_only) if root.is_dir() else []
     finally:
         if server:
             server.close()
@@ -2432,11 +2464,13 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
         cleaned = _drop_new(root, before, keep=set(reports))
     fp = guard.target_fingerprint(root, fresh=True, extra=_outside_refs(conn, port_id, root))
     tgt_adq = None
+    impact_res = None
     if cov_state is not None and side.casecov is not None and (side.casecov.py or side.casecov.js):
         from beom_workbench.core import layout
         cov_state["forced_stop"] = bool(server and server.graceful is False)
-        tgt_adq = _target_adequacy(conn, port, [root / r for r in reports], fp, browser=layout.browser_files(root),
-                                   state=cov_state)
+        browser = layout.browser_files(root)
+        tgt_adq = _target_adequacy(conn, port, [root / r for r in reports], fp, browser=browser, state=cov_state)
+        impact_res = _impact(conn, settings, proj, port_id, root, [root / r for r in reports], browser, cov_state, fp)
     elif reports:
         have = [root / r for r in reports if (root / r).exists()]
         if not have:
@@ -2532,7 +2566,7 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
             "failures_by_origin": _group_failures(fails), "concurrency": conc,
             "latency_ms": {"source": _latency(src), "target": _latency(dst),
                            "note": "참고값 — 골든 기준이면 원본 시간은 capture 시점"},
-            "accepted_unapproved": unapproved, "target_adequacy": tgt_adq,
+            "accepted_unapproved": unapproved, "target_adequacy": tgt_adq, **({"impact": impact_res} if impact_res else {}),
             "project_checks": [{k: v for k, v in r.items() if k != "output_tail" or not r.get("ok")} for r in project],
             **({"cleaned": cleaned[:20], "cleaned_note": "케이스를 돌리는 동안 프로그램이 새로 만든 파일이라 지웠다 — 직접 지울 필요 없다"}
                if cleaned else {}),
@@ -2551,6 +2585,88 @@ VIEW_CODE = re.compile(r"\.(?:jsx|tsx|vue|svelte)$", re.I)
 # 설정·문서 파일 — 'npm test 로 돈다'·'README 에 사용법' 같은 요구사항의 위치. 실행되는 코드가 아니라 프로젝트 검사(테스트·타입
 # 검사)와 인수인계로 확인한다. 실패로 두면 에이전트가 미확인 항목을 올리고 매핑을 '대체' 로 돌려 적었다
 CONFIG_DOC = re.compile(r"(?:\.(?:json|jsonc|toml|ya?ml|ini|cfg|lock|md|markdown|txt|rst)|(?:^|/)(?:Dockerfile|Makefile|\.gitignore))$", re.I)
+
+
+def _py_enclosing(path: Path, line: int) -> tuple[int, ...]:
+    """파이썬 파일에서 그 줄을 품은 가장 안쪽 함수의 시작 줄 (ast — 정확한 끝 줄까지). 여러 줄에 걸친 문장은 커버리지에 시작 줄만
+    기록되므로, 그 안의 줄(리스트 컴프리헨션 중간 등)을 매핑해도 품은 함수로 판정한다 (예전에는 '측정 줄 없음' 으로 에이전트가 줄
+    번호를 바꿔 가며 검증을 되풀이했다)."""
+    import ast
+    try:
+        tree = ast.parse(Path(path).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError, ValueError):
+        return ()
+    best = None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.lineno <= line <= (node.end_lineno or node.lineno):
+            if best is None or node.lineno > best.lineno:
+                best = node
+    if best is None:
+        return ()
+    # 장식자(@app.get …)가 있으면 측정 도구가 그 줄을 함수의 시작으로 적을 수 있다 — 둘 다 후보로
+    return tuple(dict.fromkeys([best.lineno, *(dec.lineno for dec in best.decorator_list)]))
+
+
+def _fn_count(d: dict, path: Path, line: int, near: int) -> int | None:
+    """그 줄 근처(±near)에서 시작하는 함수, 아니면 (파이썬) 그 줄을 품은 함수의 호출 수 — 없으면 None."""
+    fns = [n for _, fl, n in d["functions"] if fl and abs(fl - line) <= near]
+    if fns:
+        return max(fns)
+    if str(path).endswith(".py"):
+        starts = _py_enclosing(path, line)
+        hit = [n for _, fl, n in d["functions"] if fl in starts]
+        if hit:
+            return max(hit)
+    return None
+
+
+def _measured_fn(reports: list[Path], root: Path, browser: set, state: dict):
+    """(절대 경로, 줄) → 케이스 실행이 그 함수를 거쳤나: True·False, 잴 수 없으면 None."""
+    data = {}
+    for rp in reports:
+        try:
+            _, part = runtime.parse(rp.read_text(encoding="utf-8-sig", errors="replace"))
+        except (OSError, ToolError):
+            continue
+        data.update({os.path.normcase(os.path.abspath(k)): v for k, v in part.items()})
+
+    def measured(path: str, line: int) -> bool | None:
+        d = data.get(os.path.normcase(os.path.abspath(path)))
+        rel = os.path.relpath(path, root).replace("\\", "/")
+        if d is None:
+            if not guard.measurable(root, rel, browser) or state.get("forced_stop") or (path.endswith(".py") and state.get("python_nocov")):
+                return None
+            return False
+        cnt = _fn_count(d, Path(path), line, 1)
+        if cnt is not None:
+            return cnt > 0
+        near = [d["lines"][x] for x in range(line, line + 9) if x in d["lines"]]
+        return any(c > 0 for c in near) if near else None
+    return measured
+
+
+def _impact(conn, settings, proj: dict, port_id: str, root: Path, reports: list[Path], browser: set, state: dict, fp: str) -> dict | None:
+    """연관된 곳 — 바꾼 기존 함수를 부르는 기존 코드를 케이스가 거쳤나 (impact 모듈). 원래 소스 기록이 없으면(새 프로젝트) None."""
+    from beom_workbench.core import impact
+    base = guard.baseline_sources(conn, port_id, _port_dir(settings, proj, port_id))
+    if not base:
+        return None
+    res = impact.analyze(settings, port_id, root, base, _measured_fn(reports, root, browser, state))
+    if res is None:
+        return None
+    cid = "chk_" + uuid.uuid4().hex[:12]
+    left = [c for c in res["callers"] if c["executed"] is not True]
+    with ledger.tx(conn):
+        conn.execute("INSERT INTO port_check (id, port_id, kind, cases, passed, failed, detail, evidence_id, created_at) "
+                     "VALUES (?, ?, 'impact', ?, ?, ?, ?, NULL, ?)",
+                     (cid, port_id, len(res["callers"]), len(res["callers"]) - len(left), len(left),
+                      ledger.dumps({**res, "target_fp": fp}), _now()))
+    guard.record(conn, port_id, "coverage", {"id": cid, "kind": "impact"}, checks=[cid])
+    out = {"check_id": cid, **res}
+    if left:
+        out["note"] = ("바꾼 함수를 부르는 기존 코드를 합격 케이스가 거치지 않았다 — 그 동작(원래 하던 일)이 그대로인지 보는 케이스를 "
+                       "더한다 (원래 테스트에 기대지 않는다). 영향이 없으면 이유를 보고에 쓴다 — 툴킷이 사용자 확인 카드로 올렸다")
+    return out
 
 
 def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None, browser: set | None = None,
@@ -2612,10 +2728,12 @@ def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None
         path, ln = m.group(1), int(m.group(2))
         d = find(path)
         row = {"item": r["item_id"], "target": r["target_ref"]}
-        if d is None and TEST_FILE.search(path.replace("\\", "/")) and (root / path).is_file():
+        if TEST_FILE.search(path.replace("\\", "/")) and (root / path).is_file():
             # 테스트 파일 자체 ('테스트가 있다' 같은 요구사항의 위치) — 커버리지 도구는 테스트 파일을 리포트에서 빼지만,
             # 리포트가 생겼다는 것이 테스트가 돌았다는 뜻이다. 빠졌다고 실패로 두면 고칠 길이 없어 에이전트가 같은 자리를 돈다
-            rows.append({**row, "executed": True, "reason": "테스트 파일 — 테스트 실행으로 확인"})
+            # 케이스 실행을 재면 프로젝트의 테스트 파일도 기록에 들어오지만 케이스가 테스트를 부르지는 않는다 — 측정과 상관없이
+            rows.append({**row, "executed": True,
+                         "reason": "테스트 파일 — 이번에 만든 테스트는 검증 때 돌고, 원래 테스트를 고친 것은 확인 카드로"})
             continue
         if d is None and STYLE_FILE.search(path) and (root / path).is_file():
             # 스타일·마크업 — 실행되는 코드가 아니다. 실패로 두면 에이전트가 측정에 맞추려 화면 구조를 바꾼다 (실험에서 JSX 를 지웠다)
@@ -2639,9 +2757,9 @@ def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None
         if d is None:
             rows.append({**row, "executed": None, "reason": "리포트에 이 파일이 없음"})
             continue
-        fns = [n for _, fl, n in d["functions"] if fl and abs(fl - ln) <= 3]
-        if fns:
-            executed = max(fns) > 0
+        cnt = _fn_count(d, root / path, ln, 3)
+        if cnt is not None:
+            executed = cnt > 0
         else:
             near = [d["lines"][x] for x in range(ln, ln + 9) if x in d["lines"]]
             executed = any(c > 0 for c in near) if near else None

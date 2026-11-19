@@ -72,7 +72,8 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
     # Node 도구는 Windows 격리 안에서 돌지 않는다 — 격리 없이 돌릴지는 별도 종류(unsandboxed)의 규칙으로 정한다
     node = wrap and inbox.needs_unsandboxed(str((input or {}).get("command")))
     # 기록에 남는 글은 비밀을 가린다 (카드에는 사람이 판단할 수 있게 원래 입력을 그대로 보여 준다)
-    summary = mask_command(f"{inbox.action_label(kind, tool_name, input or {}, root)}: {tool_name} {_readable(input, root)[:300]}")
+    summary = mask_command(f"{inbox.action_label(kind, tool_name, input or {}, root, inbox.read_roots(run, settings))}: "
+                           f"{tool_name} {_readable(input, root)[:300]}")
     what = mask_command(str((input or {}).get("command") or (input or {}).get("file_path") or (input or {}).get("url") or "")[:160])
     inbox.log(settings, run["id"], "permission", tool=tool_name, permission_kind=kind, decision=decision, what=what)
     outside_ok = node and inbox.decide(run, "unsandboxed") == "allow"
