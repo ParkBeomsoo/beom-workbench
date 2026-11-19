@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import fnmatch
+import functools
 import hashlib
 import json
 import os
@@ -1146,16 +1147,16 @@ import sys
 
 def _beom_casecov():
     mark = os.environ.get("BEOM_CASECOV_DIR")
+    coverage = None
     try:
         import coverage
-    except ImportError:
+    except Exception:
         extra = os.environ.get("BEOM_CASECOV_LIB")
-        coverage = None
         if extra:
             sys.path.insert(0, extra)
             try:
                 import coverage
-            except ImportError:
+            except Exception:  # 다른 버전의 파이썬이라 못 불러옴 — 재지 않고 표시만 남긴다
                 coverage = None
             finally:
                 try:
@@ -1191,28 +1192,37 @@ def _beom_casecov():
             open(os.path.join(mark, "%s-%d" % (tag, os.getpid())), "w").close()
         except OSError:
             pass
+
+
+def _beom_chain():
+    # 이 폴더 밖의 원래 sitecustomize(배포판이 넣어 둔 것 등)도 이어서 — 우리 것이 가리지 않게
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in sys.path:
+        if not p or os.path.abspath(p) == here:
+            continue
+        f = os.path.join(p, "sitecustomize.py")
+        if os.path.isfile(f):
+            spec = importlib.util.spec_from_file_location("_beom_original_sitecustomize", f)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return
+
+
+for _beom_step in (_beom_casecov, _beom_chain):
     try:
-        import signal
-        if hasattr(signal, "SIGBREAK") and signal.getsignal(signal.SIGBREAK) in (signal.SIG_DFL, None):
-            # 검증이 서버를 끌 때 보내는 신호 — 정상 종료로 바꿔 기록을 쓰고 끝나게 (기본 동작은 기록 없이 바로 끝난다)
-            signal.signal(signal.SIGBREAK, lambda *a: sys.exit(130))
-    except Exception:
+        _beom_step()
+    except Exception:  # 측정 장치 때문에 사용자 프로그램이 오류를 내지 않게
         pass
-
-
-_beom_casecov()
 """
 
 CASECOV_EXIT_JS = """// beom-workbench: 검증이 서버를 끌 때 정상 종료 — node 가 실행 범위 기록(NODE_V8_COVERAGE)을 쓰고 끝나게.
-// 멈춤 파일이 생기면 끝난다 (콘솔 신호는 앱 안처럼 콘솔이 없으면 닿지 않는다). 신호는 보조로.
+// 멈춤 파일이 생길 때만 끝낸다 — 프로그램 자신의 종료 신호 처리(정리 작업)는 건드리지 않는다.
 const stop = process.env.BEOM_CASECOV_STOP;
 if (stop) {
   const fs = require("fs");
   const t = setInterval(() => { if (fs.existsSync(stop)) process.exit(130); }, 200);
   if (t.unref) t.unref();
-}
-for (const s of ["SIGINT", "SIGTERM", "SIGBREAK"]) {
-  try { process.on(s, () => process.exit(130)); } catch (e) { /* 그 신호가 없는 플랫폼 */ }
 }
 """
 
@@ -1238,38 +1248,56 @@ class _CaseCoverage:
 
     def __init__(self, root: Path, files: list[Path], harness: Path) -> None:
         self.root = root
-        self.dir = root / ".beom" / "tmp" / "casecov"
-        shutil.rmtree(self.dir, ignore_errors=True)
+        tmp = root / ".beom" / "tmp"
+        # 검증마다 따로 — 같은 폴더를 두 검증이 함께 쓰면 한쪽이 다른 쪽 기록을 지우고 멈춤 파일로 그쪽 서버까지 끈다.
+        # 하루 넘은 것(멈춘 검증이 남긴 것)만 치운다
+        for old in tmp.glob("casecov*") if tmp.is_dir() else []:
+            try:
+                if time.time() - old.stat().st_mtime > 86400:
+                    shutil.rmtree(old, ignore_errors=True)
+            except OSError:
+                pass
+        self.dir = tmp / ("casecov-" + uuid.uuid4().hex[:8])
         self.dir.mkdir(parents=True, exist_ok=True)
         self.py = [f for f in files if f.suffix == ".py"]
         self.js = [f for f in files if f.suffix in NODE_RUN_EXTS]
         # 매핑한 파일만이 아니라 프로젝트 소스 전체 — 바꾼 함수를 부르는 기존 코드(연관된 곳)를 케이스가 거쳤는지도 보려고
         from beom_workbench.core import impact
-        project_src = impact.source_files(root)
+        try:
+            project_src = impact.source_files(root)
+        except (OSError, ValueError):
+            project_src = []
         self.js += [f for f in project_src if f.suffix in NODE_RUN_EXTS and f not in self.js]
         self.py += [f for f in project_src if f.suffix == ".py" and f not in self.py]
         # 페이지가 불러가는 JS (브라우저에서 돈다) — 화면 케이스를 돌릴 때 브라우저 엔진에서 잰다
         from beom_workbench.core import layout
-        self.browser = [(root / r).resolve() for r in sorted(layout.browser_files(root)) if r.endswith((".js", ".mjs"))]
-        self.browser += layout.inline_script_pages(root)  # HTML 안에 직접 쓴 <script> — 그 HTML 파일의 줄로 잰다
-        py_dirs = sorted({str(r) for r in impact.scan_roots(root)} | {str(f.parent) for f in self.py})
+        try:
+            self.browser = [(root / r).resolve() for r in sorted(layout.browser_files(root)) if r.endswith((".js", ".mjs"))]
+            self.browser += layout.inline_script_pages(root)  # HTML 안에 직접 쓴 <script> — 그 HTML 파일의 줄로 잰다
+            py_dirs = sorted({str(r) for r in impact.scan_roots(root)} | {str(f.parent) for f in self.py})
+        except (OSError, ValueError):
+            self.browser, py_dirs = [], sorted({str(f.parent) for f in self.py})
         self.env: dict[str, str] = {}
         self.stop_file = self.dir / "stop"
         if self.py:
             site = self.dir / "site"
-            site.mkdir()
+            site.mkdir(exist_ok=True)
             (site / "sitecustomize.py").write_text(CASECOV_SITE, encoding="utf-8")
             rc = self.dir / "coveragerc"
             rc.write_text("[run]\nparallel = True\ndata_file = " + str(self.dir / ".cov") + "\nsource =\n"
                           + "".join(f"    {d}\n" for d in py_dirs)
                           + "omit =\n    */.beom/*\n    */node_modules/*\n    */site-packages/*\n    */venv/*\n    */.venv/*\n",
                           encoding="utf-8")
-            import coverage
+            try:
+                import coverage
+                lib = {"BEOM_CASECOV_LIB": str(Path(coverage.__file__).parent.parent)}  # 그 파이썬에 없으면 빌려 쓸 자리
+            except ImportError:
+                lib = {}
             self.env.update(BEOM_CASECOV_STOP=str(self.stop_file))
             self.env.update(PYTHONPATH=str(site), COVERAGE_PROCESS_START=str(rc), COVERAGE_FILE=str(self.dir / ".cov"),
-                            BEOM_CASECOV_DIR=str(self.dir), BEOM_CASECOV_LIB=str(Path(coverage.__file__).parent.parent))
+                            BEOM_CASECOV_DIR=str(self.dir), **lib)
         if self.js:
-            (self.dir / "v8").mkdir()
+            (self.dir / "v8").mkdir(exist_ok=True)
             hook = harness / "casecov-exit.cjs"
             # NODE_OPTIONS 의 따옴표 안에서는 역슬래시가 이스케이프로 읽힌다 — 경로는 / 로
             self.env.update(NODE_V8_COVERAGE=str(self.dir / "v8"), NODE_OPTIONS=f'--require "{hook.as_posix()}"',
@@ -1289,8 +1317,8 @@ class _CaseCoverage:
             state["python_nocov"] = any(self.dir.glob("nocov-*")) and not any(self.dir.glob("started-*"))
             state["python_ran"] = any(self.dir.glob("started-*")) or any(self.dir.glob("nocov-*"))
             if list(self.dir.glob(".cov.*")):
-                import coverage
                 try:
+                    import coverage
                     cov = coverage.Coverage(data_file=str(self.dir / ".cov"), config_file=str(self.dir / "coveragerc"))
                     cov.combine(data_paths=[str(self.dir)], keep=False)
                     cov.save()
@@ -1318,6 +1346,9 @@ class _CaseCoverage:
                 f.write_text(text, encoding="utf-8")
                 out.append(f)
         return out, state
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.dir, ignore_errors=True)
 
     def _browser_resolver(self, pages: list[Path]):
         """브라우저가 받은 스크립트 주소 → 대상 폴더의 파일 — 받은 내용의 지문이 파일과 같을 때만 (빌드·변환된 코드는 줄 위치가 달라
@@ -1378,13 +1409,25 @@ def _v8_lcov(reports: list[Path], files: list[Path], resolve=None) -> str:
                 runs.setdefault(path, []).append((sc.get("functions") or [], sc.get("start") or [0, 0]))
     out = []
     for key, per_run in runs.items():
-        src = want[key].read_text(encoding="utf-8", errors="replace")
+        # 원래 줄바꿈 그대로 읽는다 — V8 의 자리는 받은 소스 그대로이고(CRLF 포함), read_text 는 \r\n 을 \n 으로 바꿔
+        # 줄마다 한 글자씩 어긋났다 (Windows 의 CRLF 파일). 자리는 UTF-16 단위라 BMP 밖 글자(이모지)는 두 칸으로 센다
+        src = want[key].read_bytes().decode("utf-8", "replace")
+        if any(ord(ch) > 0xFFFF for ch in src):
+            u16, acc = [], 0
+            for ch in src:
+                u16.append(acc)
+                acc += 2 if ord(ch) > 0xFFFF else 1
+            to_idx = lambda off: bisect.bisect_left(u16, off)  # noqa: E731
+        else:
+            to_idx = lambda off: off  # noqa: E731
         starts = [0] + [i + 1 for i, c in enumerate(src) if c == "\n"]
         firsts = []  # 줄마다 처음 글자 자리 (빈 줄은 None)
         for i, st in enumerate(starts):
             end = starts[i + 1] - 1 if i + 1 < len(starts) else len(src)
             line = src[st:end]
             firsts.append(st + (len(line) - len(line.lstrip())) if line.strip() else None)
+        lines_at = [(off, i + 1) for i, off in enumerate(firsts) if off is not None]
+        offs = [o for o, _ in lines_at]
         line_of = lambda off: bisect.bisect_right(starts, off)  # noqa: E731 — 1부터
         fns: dict[tuple[str, int], int] = {}
         lines: dict[int, int] = {}
@@ -1397,15 +1440,14 @@ def _v8_lcov(reports: list[Path], files: list[Path], resolve=None) -> str:
                 rs = fn.get("ranges") or []
                 if not rs:
                     continue
-                ln = line_of(base + rs[0]["startOffset"])
+                ln = line_of(base + to_idx(rs[0]["startOffset"]))
                 name = (fn.get("functionName") or "(anonymous)") + f"@{ln}"
                 if fn.get("functionName") or rs[0]["startOffset"] > 0:  # 스크립트 전체(맨 위) 는 함수가 아니다
                     fns[(name, ln)] = fns.get((name, ln), 0) + int(rs[0]["count"])
-                spans.extend((base + r["startOffset"], base + r["endOffset"], int(r["count"])) for r in rs)
+                spans.extend((base + to_idx(r["startOffset"]), base + to_idx(r["endOffset"]), int(r["count"])) for r in rs)
             for st, en, cnt in sorted(spans, key=lambda x: x[0] - x[1]):  # 넓은 범위부터 — 안쪽 범위가 덮어쓴다
-                for i, off in enumerate(firsts):
-                    if off is not None and st <= off < en:
-                        paint[i + 1] = cnt
+                for j in range(bisect.bisect_left(offs, st), bisect.bisect_left(offs, en)):  # 그 범위 안의 줄만
+                    paint[lines_at[j][1]] = cnt
             for ln, cnt in paint.items():
                 lines[ln] = max(lines.get(ln, 0), cnt)
         out.append(f"SF:{want[key]}")
@@ -2547,12 +2589,17 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
     fp = guard.target_fingerprint(root, fresh=True, extra=_outside_refs(conn, port_id, root))
     tgt_adq = None
     impact_res = None
-    if cov_state is not None and side.casecov is not None and (side.casecov.py or side.casecov.js):
+    if cov_state is not None and side.casecov is not None and (side.casecov.py or side.casecov.js or side.casecov.browser):
         from beom_workbench.core import layout
         cov_state["forced_stop"] = bool(server and server.graceful is False)
         browser = layout.browser_files(root)
         tgt_adq = _target_adequacy(conn, port, [root / r for r in reports], fp, browser=browser, state=cov_state)
-        impact_res = _impact(conn, settings, proj, port_id, root, [root / r for r in reports], browser, cov_state, fp)
+        try:
+            impact_res = _impact(conn, settings, proj, port_id, root, [root / r for r in reports], browser, cov_state, fp)
+        except Exception as e:  # noqa: BLE001 — 분석 도구가 실패해도 검증 결과는 낸다 (분석 못 함으로 알린다)
+            impact_res = {"error": f"연관된 곳 분석 실패: {type(e).__name__}: {e}"[:300]}
+    if side.casecov is not None:
+        side.casecov.cleanup()
     elif reports:
         have = [root / r for r in reports if (root / r).exists()]
         if not have:
@@ -2669,24 +2716,41 @@ VIEW_CODE = re.compile(r"\.(?:jsx|tsx|vue|svelte)$", re.I)
 CONFIG_DOC = re.compile(r"(?:\.(?:json|jsonc|toml|ya?ml|ini|cfg|lock|md|markdown|txt|rst)|(?:^|/)(?:Dockerfile|Makefile|\.gitignore))$", re.I)
 
 
-def _py_enclosing(path: Path, line: int) -> tuple[int, ...]:
-    """파이썬 파일에서 그 줄을 품은 가장 안쪽 함수의 시작 줄 (ast — 정확한 끝 줄까지). 여러 줄에 걸친 문장은 커버리지에 시작 줄만
-    기록되므로, 그 안의 줄(리스트 컴프리헨션 중간 등)을 매핑해도 품은 함수로 판정한다 (예전에는 '측정 줄 없음' 으로 에이전트가 줄
-    번호를 바꿔 가며 검증을 되풀이했다)."""
+@functools.lru_cache(maxsize=64)
+def _py_tree(path: str, stamp: tuple):
     import ast
     try:
-        tree = ast.parse(Path(path).read_text(encoding="utf-8", errors="replace"))
+        return ast.parse(Path(path).read_text(encoding="utf-8", errors="replace"))
     except (OSError, SyntaxError, ValueError):
-        return ()
-    best = None
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.lineno <= line <= (node.end_lineno or node.lineno):
-            if best is None or node.lineno > best.lineno:
-                best = node
-    if best is None:
-        return ()
-    # 장식자(@app.get …)가 있으면 측정 도구가 그 줄을 함수의 시작으로 적을 수 있다 — 둘 다 후보로
-    return tuple(dict.fromkeys([best.lineno, *(dec.lineno for dec in best.decorator_list)]))
+        return None
+
+
+def _py_fn_ran(d: dict, path: Path, line: int) -> int | None:
+    """파이썬 — 그 줄의 함수(def·장식자 줄이면 그 함수, 몸통 안이면 품은 가장 안쪽 함수)가 돌았나: 몸통 줄 중 실행된 줄의 최대
+    횟수 (안쪽 함수의 몸통은 빼고 — 안쪽 def 줄만 바깥 함수가 돌 때 실행된다). 함수가 아니면 None.
+    측정 도구의 함수 정보(start_line)는 버전에 따라 없다 (7.6·7.10 에는 없음) — 그러면 'def' 줄은 모듈을 불러오기만 해도
+    실행된 줄이라, 부르지 않은 함수도 실행된 것으로 보였다."""
+    import ast
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return None
+    tree = _py_tree(str(path), (st.st_mtime_ns, st.st_size))
+    if tree is None:
+        return None
+    fns = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    head = [n for n in fns if line == n.lineno or any(line == dec.lineno for dec in n.decorator_list)]
+    inside = [n for n in fns if n.lineno <= line <= (n.end_lineno or n.lineno)]
+    f = head[0] if head else (max(inside, key=lambda n: n.lineno) if inside else None)
+    if f is None or not f.body:
+        return None
+    start, end = f.body[0].lineno, f.end_lineno or f.body[-1].lineno
+    skip: set[int] = set()
+    for n in ast.walk(f):
+        if n is not f and isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            skip.update(range(n.lineno + 1, (n.end_lineno or n.lineno) + 1))
+    counts = [d["lines"][x] for x in range(start, end + 1) if x in d["lines"] and x not in skip]
+    return max(counts) if counts else None
 
 
 def _py_statement(path: Path, line: int) -> int | None:
@@ -2708,18 +2772,16 @@ def _py_statement(path: Path, line: int) -> int | None:
 def _fn_count(d: dict, path: Path, line: int, near: int) -> int | None:
     """그 줄 근처(±near)에서 시작하는 함수, 아니면 (파이썬) 그 줄을 품은 함수의 호출 수, 그도 아니면 (파이썬) 그 줄을 품은 문장의
     시작 줄이 실행된 횟수 — 없으면 None."""
-    fns = [n for _, fl, n in d["functions"] if fl and abs(fl - line) <= near]
-    if fns:
-        return max(fns)
     if str(path).endswith(".py"):
-        starts = _py_enclosing(path, line)
-        hit = [n for _, fl, n in d["functions"] if fl in starts]
-        if hit:
-            return max(hit)
+        ran = _py_fn_ran(d, Path(path), line)
+        if ran is not None:
+            return ran
         stmt = _py_statement(path, line)
         if stmt is not None and stmt in d["lines"]:
             return d["lines"][stmt]
-    return None
+        return None
+    fns = [n for _, fl, n in d["functions"] if fl and abs(fl - line) <= near]
+    return max(fns) if fns else None
 
 
 def _merge_cov(data: dict, part: dict, norm=lambda k: k) -> None:
@@ -2753,6 +2815,8 @@ def _measured_fn(reports: list[Path], root: Path, browser: set, state: dict):
                 return False if state.get("browser_ran") and rel not in (state.get("browser_transformed") or ()) else None
             if not guard.measurable(root, rel, browser) or state.get("forced_stop") or (path.endswith(".py") and state.get("python_nocov")):
                 return None
+            if (path.endswith(".py") and not state.get("python_ran")) or (path.endswith(NODE_RUN_EXTS) and not state.get("node_ran")):
+                return None  # 툴킷이 띄운 그 언어의 프로세스가 없었다 — 못 잰 것
             return False
         cnt = _fn_count(d, Path(path), line, 1)
         if cnt is not None:
@@ -2801,6 +2865,9 @@ def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None
         _merge_cov(data, part)
     fmt = "+".join(dict.fromkeys(fmts))
     norm = {k.replace("\\", "/").lower(): v for k, v in data.items()}
+    for k, v in list(data.items()):
+        if not os.path.isabs(k):  # 측정 도구가 지금 자리 기준으로 적은 경로
+            norm.setdefault(os.path.abspath(k).replace("\\", "/").lower(), v)
     if base.resolve() != root.resolve():
         for k, v in list(data.items()):
             if not os.path.isabs(k):  # 측정한 자리 기준 상대 경로 → 절대 경로로도 찾게
@@ -2823,6 +2890,11 @@ def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None
             return "툴킷이 이 언어의 실행 범위를 재지 못함"
         if ext == ".py" and state.get("python_nocov"):
             return "케이스를 돌린 파이썬에서 측정을 켜지 못함"
+        if ext == ".py" and not state.get("python_ran"):
+            # 툴킷이 띄운 파이썬이 하나도 없었다 — 밖에서 띄운 서버(target_url 만)거나 PYTHONPATH 를 무시하는 파이썬
+            return "케이스가 툴킷이 띄운 파이썬 프로세스에서 돌지 않음 (서버를 밖에서 띄웠으면 target_cmd 로 툴킷이 띄우게)"
+        if ext in NODE_RUN_EXTS and not state.get("node_ran"):
+            return "케이스가 툴킷이 띄운 node 프로세스에서 돌지 않음 (서버를 밖에서 띄웠으면 target_cmd 로 툴킷이 띄우게)"
         if state.get("forced_stop"):
             return "검증 서버가 정상 종료되지 않아 실행 기록을 쓰지 못함"
         return None

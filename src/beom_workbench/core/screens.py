@@ -105,7 +105,7 @@ class serve_folder:
         self.srv.server_close()
 
 
-def capture(pages: list[dict], timeout: float = 300, coverage_dir: Path | None = None) -> list[dict]:
+def capture(pages: list[dict], timeout: float | None = None, coverage_dir: Path | None = None) -> list[dict]:
     """여러 페이지를 브라우저 엔진 하나로 차례대로. 결과는 pages 와 같은 순서.
     coverage_dir: 검증 중 — 페이지 JS 의 실행 범위를 케이스마다 그 폴더에 남긴다 (브라우저 엔진의 개발자 도구 연결을 이 컴퓨터
     안(127.0.0.1)에서만, 이 실행 동안만 연다)."""
@@ -128,8 +128,14 @@ def capture(pages: list[dict], timeout: float = 300, coverage_dir: Path | None =
     else:
         env.pop("BEOM_SHOT_COVERAGE", None)
         env.pop("QTWEBENGINE_REMOTE_DEBUGGING", None)
-    proc = subprocess.run([sys.executable, "-m", "beom_workbench.app.shot", json.dumps({"pages": pages})],
-                          capture_output=True, timeout=timeout, env=env)
+    if timeout is None:  # 엔진 시작 + 페이지마다 (페이지 한도 30초 + 측정 연결·기록)
+        timeout = 90 + 50 * len(pages)
+    try:
+        proc = subprocess.run([sys.executable, "-m", "beom_workbench.app.shot", json.dumps({"pages": pages})],
+                              capture_output=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        raise ToolError("timeout", f"화면 확인이 {int(timeout)}초 안에 끝나지 않음 (페이지 {len(pages)}개)",
+                        recovery="화면 케이스의 wait_ms·동작을 줄이거나 케이스를 나눈다") from None
     for line in reversed(proc.stdout.decode("utf-8", "replace").splitlines()):
         line = line.strip()
         if line.startswith("{"):

@@ -117,7 +117,7 @@ def projects(target: Path) -> list[tuple[str, Path]]:
             root = owner(t, kind)
             if root is not None and (root == t or has_lang_files(t, kind)):
                 out.append((kind, root))
-            elif root is None and kind == "python" and (pytest_files(t) or has_lang_files(t, "python")):
+            elif root is None and kind == "python" and (has_lang_files(t, "python") or pytest_files(t)):
                 out.append((kind, t))  # 설정 파일 없는 파이썬 폴더 — pytest·실행은 그 자리에서
     _CACHE[key] = (time.monotonic(), out)
     return list(out)
@@ -211,16 +211,19 @@ def pytest_files(root: Path, limit: int = 6000) -> list[str]:
 
 def _package(root: Path) -> dict:
     try:
-        return json.loads((Path(root) / "package.json").read_text(encoding="utf-8-sig"))
+        data = json.loads((Path(root) / "package.json").read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 NPM_PLACEHOLDER = re.compile(r"no test specified", re.I)
 
 
 def test_script(root: Path) -> str:
-    s = (_package(root).get("scripts") or {}).get("test") or ""
+    scripts = _package(root).get("scripts")
+    s = scripts.get("test") if isinstance(scripts, dict) else ""
+    s = s if isinstance(s, str) else ""
     return "" if NPM_PLACEHOLDER.search(s) else s
 
 
@@ -250,7 +253,7 @@ MOCHA_DEFAULT = re.compile(r"^test/[^/]+\.[cm]?js$")
 
 def _glob_rx(pattern: str) -> re.Pattern:
     """jest testMatch·mocha spec 같은 glob 을 정규식으로 (**·*·?·{a,b} 만)."""
-    p = pattern.lstrip("./").replace("<rootDir>/", "")
+    p = str(pattern).replace("<rootDir>/", "").removeprefix("./")
     out, i = "", 0
     while i < len(p):
         c = p[i]
@@ -289,7 +292,10 @@ def _node_rules(root: Path) -> list[re.Pattern]:
             return [_glob_rx(x) for x in cfg["testMatch"]]
         if cfg.get("testRegex"):
             rx = cfg["testRegex"]
-            return [re.compile(x) for x in (rx if isinstance(rx, list) else [rx])]
+            try:
+                return [re.compile(x) for x in (rx if isinstance(rx, list) else [rx])]
+            except (re.error, TypeError):
+                return [JEST_DEFAULT]  # JS 정규식 문법이라 읽지 못함 — 기본 규칙으로
         return [JEST_DEFAULT]
     if runner == "vitest":
         return [VITEST_DEFAULT]

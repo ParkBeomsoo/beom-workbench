@@ -398,7 +398,12 @@ def wb_handoff(summary: str, how_to_run: str | list[str], risks: str | list[str]
         tidied = brief.tidy(run["target_root"], existed=lambda rel: tasks._existed(settings, run, rel))
         if tidied:
             inbox.log(settings, run["id"], "brief_tidy", moved=tidied[:20])
-        chk = brief.check(run["target_root"], _policy_docs(run))
+        revising = _revision_pass(run)
+        if revising and run.get("brief_changes_round") != run.get("round"):
+            # 고칠 점을 받은 라운드 — 바꾼 값이 다른 문서·예시·시나리오에 남지 않았는지 툴킷이 찾아 본 뒤에 인계한다
+            return {"ok": False, "error": "고칠 점을 반영한 라운드 — wb_brief_check(changes=[{\"old\": 옛 값, \"new\": 새 값}]) 로 "
+                                          "옛 값이 남은 곳을 확인한 뒤 인계한다 (바꾼 값 없이 기능만 더했으면 changes=[])"}
+        chk = brief.check(run["target_root"], _policy_docs(run), run.get("brief_changes") if revising else None)
         if not chk["ok"]:
             return {"ok": False, "error": "기획 패키지가 아직 맞물리지 않음 — 고친 뒤 다시 인계한다", "problems": chk["problems"]}
     if run is not None and run.get("port_id") and run.get("project_id"):
@@ -452,16 +457,29 @@ def wb_run_policy(changes: dict | None = None) -> dict:
 # ---------------------------------------------------------------- 기획 패키지 (기획 모드)
 
 @mcp.tool()
-def wb_brief_check() -> dict:
+def wb_brief_check(changes: list[dict] | None = None) -> dict:
     """기획 패키지 점검 — .beom/brief/ 의 기획서·정책서·화면설계·테스트시나리오가 서로 맞물리는지 본다:
     빠진 문서·절, 테스트 시나리오가 없는 요구사항(R), 와이어프레임이 없는 화면(S), 스크린샷 안 찍은 와이어프레임, 열린 질문 수.
-    problems 가 비어야 인계(wb_handoff)할 수 있다. notes 는 참고."""
+    problems 가 비어야 인계(wb_handoff)할 수 있다. notes 는 참고.
+    changes: 사용자가 보낸 고칠 점으로 바꾼 값 — [{"old": "1시간", "new": "2시간", "keep": ["취소 마감"]}]. 툴킷이 문서·와이어프레임
+    전체에서 옛 값이 남은 줄을 찾는다 (예시·경계값·시나리오에 남기 쉽다). 남은 줄은 고치거나, 일부러 두면 그 줄의 말을 keep 에
+    넣는다. 고칠 점을 받은 라운드에서는 인계 전에 꼭 부른다 — 바꾼 값이 없으면(기능만 더함) changes=[]."""
     from beom_workbench.core import brief
 
     run = _run()
     if run is None:
         return {"ok": False, "error": "자동 실행 밖"}
-    return brief.check(run["target_root"], _policy_docs(run))
+    if changes is not None:
+        clean = [{"old": str(c.get("old") or ""), "new": str(c.get("new") or ""), "keep": [str(k) for k in c.get("keep") or []]}
+                 for c in changes if isinstance(c, dict)]
+        inbox.update_run(settings, run["id"], lambda r: r.update(brief_changes=clean, brief_changes_round=r.get("round")))
+        return brief.check(run["target_root"], _policy_docs(run), clean)
+    return brief.check(run["target_root"], _policy_docs(run), run.get("brief_changes") if _revision_pass(run) else None)
+
+
+def _revision_pass(run: dict) -> bool:
+    """인계까지 끝난 기획에 고칠 점이 와서 도는 라운드인가."""
+    return bool(run.get("revision")) and bool(run.get("revision_round")) and run.get("revision_round") == run.get("round")
 
 
 @mcp.tool()

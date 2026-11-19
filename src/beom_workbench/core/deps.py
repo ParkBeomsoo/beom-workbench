@@ -251,7 +251,8 @@ def _permit(settings, run: dict | None, item: dict) -> None:
         return
     files = ", ".join(item["files"])
     ans = inbox.ask(settings, run["id"], "permission", {
-        "summary": f"의존성 설치 (툴킷이 격리 밖에서): {item['command']} — {files}",
+        "summary": f"의존성 설치 (툴킷이 격리 밖에서): {item['command']} — {files}" + (
+            f" · 설치 자리: {item['at']} (대상 폴더가 속한 프로젝트)" if item.get("at") else ""),
         "tool": "mcp:deps", "input": {"command": item["command"]}, "permission_kind": "unsandboxed"})
     if not ans.get("allow"):
         raise ToolError("denied", "사용자가 의존성 설치를 거절함", recovery="의존성 없이 만들거나 wb_person_ask 로 이유와 함께 묻는다")
@@ -271,6 +272,8 @@ def ensure(settings, run: dict | None, root: Path, timeout: float = 900) -> dict
         for item in plan(at):
             if where.get(item["kind"]) != at:
                 continue  # 이 자리는 다른 언어의 프로젝트 자리 — 그 언어는 제 자리에서
+            if at.resolve() != root.resolve():
+                item["at"] = str(at)  # 대상 폴더 밖(위 프로젝트)에 설치한다 — 사람이 보고 허락하게 카드에 적는다
             _permit(settings, run, item)
             r = _install(item, at, timeout)
             done.append(r)

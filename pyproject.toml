@@ -13,6 +13,9 @@ dependencies = [
     "mcp>=2.3,<3",
     "multilspy>=0.1.1",
     "PyYAML>=6.0",
+    # 검증 때 케이스 실행의 실행 범위를 재고(coverage), 가상 환경이 없는 파이썬 프로젝트의 테스트를 돌린다(pytest)
+    "coverage>=7.4",
+    "pytest>=8",
 ]
 
 [project.optional-dependencies]

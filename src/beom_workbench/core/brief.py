@@ -64,8 +64,27 @@ def _defined_screens(md: str) -> list[str]:
     return sorted(found, key=lambda x: int(x[1:]))
 
 
-def check(target_root: str | Path, policies: list[str] | None = None) -> dict:
-    """policies: 대상 폴더의 정책·규칙 문서 (있으면 정책서에 '기존 정책 대조' 절이 있어야 한다)."""
+def leftovers(target_root: str | Path, changes: list[dict]) -> list[dict]:
+    """기획을 고친 뒤 옛 값이 남은 곳 — 문서와 와이어프레임에서 old 가 든 줄 (그 줄에 new 나 keep 의 말이 있으면 일부러 둔 것으로 본다).
+    [{"old", "file", "line", "text"}]. 사람이 고친 값이 한 곳만 바뀌고 다른 문서·예시·시나리오에 옛 값이 남는 일을 막는다."""
+    d = folder(target_root)
+    files = [d / n for n in DOCS] + (sorted((d / "wireframes").glob("*.html")) if (d / "wireframes").is_dir() else [])
+    out = []
+    for ch in changes:
+        old, new = str(ch.get("old") or "").strip(), str(ch.get("new") or "").strip()
+        keep = [str(k) for k in ch.get("keep") or [] if str(k).strip()]
+        if not old:
+            continue
+        for f in files:
+            for i, line in enumerate(_read(f).splitlines(), 1):
+                if old in line and not (new and new in line) and not any(k in line for k in keep):
+                    out.append({"old": old, "file": f.relative_to(d).as_posix(), "line": i, "text": line.strip()[:160]})
+    return out
+
+
+def check(target_root: str | Path, policies: list[str] | None = None, changes: list[dict] | None = None) -> dict:
+    """policies: 대상 폴더의 정책·규칙 문서 (있으면 정책서에 '기존 정책 대조' 절이 있어야 한다).
+    changes: 기획을 고칠 때 바꾼 값 [{"old": "1시간", "new": "2시간", "keep": ["취소 마감"]}] — 옛 값이 남은 곳이 있으면 문제로."""
     d = folder(target_root)
     texts = {name: _read(d / name) for name in DOCS}
     problems: list[str] = []
@@ -127,7 +146,12 @@ def check(target_root: str | Path, policies: list[str] | None = None) -> dict:
         if unscreened:
             notes.append(f"화면설계에 안 나오는 요구사항: {', '.join(unscreened)} (화면 없는 규칙이면 괜찮음)")
     open_q = [l.strip() for l in _section(plan, "질문").splitlines() if re.match(r"\s*([-*]|\d+\.)\s+", l)] if plan else []
-    return {"ok": not problems, "problems": problems, "notes": notes, "folder": str(d),
+    left = leftovers(target_root, changes) if changes else []
+    for old in dict.fromkeys(x["old"] for x in left):
+        hits = [x for x in left if x["old"] == old]
+        problems.append(f"바꾼 값 '{old}' 이 남은 곳 {len(hits)}곳 — 고치거나, 일부러 두는 것이면 그 줄의 말을 keep 에 넣는다: "
+                        + "; ".join(f"{x['file']}:{x['line']} {x['text'][:70]}" for x in hits[:6]))
+    return {"ok": not problems, "problems": problems, "notes": notes, "folder": str(d), **({"leftovers": left[:40]} if left else {}),
             "docs": {n: bool(t.strip()) for n, t in texts.items()}, "requirements": reqs, "screens": screens,
             "wireframes": [p.name for p in htmls], "shots": sorted(p.name for p in shots_dir.glob("*.png")) if shots_dir.is_dir() else [],
             "tests": _ids(_T, tests), "open_questions": len(open_q)}

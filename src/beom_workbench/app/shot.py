@@ -70,31 +70,24 @@ def main() -> int:
         if cb:
             cb(m.get("result") if "result" in m else {"error": m.get("error")})
 
-    def cov_start(idx, ready):
-        """측정을 켜고 같은 페이지를 다시 불러온다 — 처음 불릴 때 도는 코드까지 재려면 켠 뒤에 스크립트가 실행돼야 한다.
-        다시 부르기 전에 그 주소의 저장소를 비운다 (첫 불러오기가 남긴 기록이 두 번째에 보이지 않게). 안 되면 재지 않고 이어 간다."""
+    def cov_start(idx, then):
+        """빈 페이지(about:blank)에서 측정을 켠 뒤 대상 주소로 간다 — 처음 불릴 때 도는 코드까지 잰다. 예전에는 대상을 연 뒤 측정을
+        켜고 다시 불러와서, 서버의 GET 이 두 번 일어나 결과가 측정하지 않은 쪽과 달라질 수 있었다. 안 되면 재지 않고 이어 간다."""
         from PySide6.QtWebSockets import QWebSocket
-        from urllib.parse import urlsplit
         cur = state["cur"]
-        cur["_cov"] = "starting"
         ws = QWebSocket()
         cov.update(ws=ws, pending={}, scripts={})
         ws.textMessageReceived.connect(cdp_msg)
-        u = urlsplit(view.page().url().toString())
-        origin = f"{u.scheme}://{u.netloc}"
 
-        def failed(_=None):
-            if idx == state["i"] and cur.get("_cov") == "starting":
-                cur["_cov"] = "failed"
-                ready()
-        QTimer.singleShot(8000, failed)
+        def go(on):
+            if idx == state["i"] and cur.get("_cov") == "connecting":
+                cur["_cov"] = "on" if on else "failed"
+                QTimer.singleShot(0, then)
+        QTimer.singleShot(8000, lambda: go(False))
         # 디버거는 스크립트 위치를 받으려고만 켠다 — 페이지의 debugger 문에서 멈추지 않게 모든 멈춤을 건너뛴다
         ws.connected.connect(lambda: cdp_send("Profiler.enable", {}, lambda r: cdp_send("Debugger.enable", {}, lambda rd: cdp_send(
             "Debugger.setSkipAllPauses", {"skip": True}, lambda rs: cdp_send(
-            "Profiler.startPreciseCoverage", {"callCount": True, "detailed": True}, lambda r2: cdp_send(
-                "Storage.clearDataForOrigin", {"origin": origin, "storageTypes": "all"}, lambda r3: (
-                    cur.update(_cov="on", _loaded=False), QTimer.singleShot(0, lambda: view.page().triggerAction(
-                        QWebEnginePage.WebAction.ReloadAndBypassCache)))))))))
+                "Profiler.startPreciseCoverage", {"callCount": True, "detailed": True}, lambda r2: go(True))))))
         ws.open(QUrl(f"ws://127.0.0.1:{dbg}/devtools/page/{view.page().devToolsId()}"))
 
     def cov_take(idx, then):
@@ -108,7 +101,11 @@ def main() -> int:
         def done(r):
             import hashlib
             import urllib.request
-            scripts = [x for x in (r or {}).get("result") or [] if str(x.get("url", "")).startswith(("http://", "https://"))]
+            from urllib.parse import urlsplit
+            here = urlsplit(page_url).netloc
+            # 같은 서버(검증 서버)의 스크립트만 — 바깥(CDN) 스크립트는 프로젝트 파일이 아니고, 받으러 가면 느려진다
+            scripts = [x for x in (r or {}).get("result") or []
+                       if str(x.get("url", "")).startswith(("http://", "https://")) and urlsplit(x["url"]).netloc == here]
             for x in scripts:  # 문서 안 시작 위치 (외부 .js 파일은 0,0 — HTML 안 <script> 는 그 블록이 시작하는 줄·칸)
                 x["start"] = (cov.get("scripts") or {}).get(x.get("scriptId"), [0, 0])
             sources = {}
@@ -149,7 +146,12 @@ def main() -> int:
         target = QUrl(url) if "://" in url else QUrl.fromLocalFile(url)
         if state["i"] > 0:
             fresh_page()  # 케이스마다 빈 저장소에서 — 첫 페이지는 방금 만든 페이지 그대로
-        view.load(target)
+        if cov_dir and dbg and target.scheme() in ("http", "https"):
+            state["cur"]["_cov"] = "starting"
+            state["cur"]["_target"] = target
+            view.load(QUrl("about:blank"))  # 측정을 켤 빈 페이지 — 켜고 나서 대상으로 간다 (loaded 에서)
+        else:
+            view.load(target)
 
     def checked(raw, idx):
         if idx != state["i"]:  # 늦게 온 결과 (시간 초과로 이미 다음 페이지) — 버린다
@@ -303,11 +305,13 @@ def main() -> int:
         if state["cur"] is None or state["i"] >= len(pages) or state["cur"].get("_loaded"):
             return  # 페이지가 스스로 다시 이동해도 한 번만 확인한다
         cur = state["cur"]
-        if cov_dir and dbg and ok and not cur.get("_cov") and view.page().url().scheme() in ("http", "https"):
-            i0 = state["i"]
-            cov_start(i0, lambda: idx_ok(i0) and loaded(True))  # 측정을 켜고 다시 불러온 뒤 확인을 이어 간다 (안 되면 그대로)
+        if cur.get("_cov") == "connecting":
             return
         if cur.get("_cov") == "starting":
+            if view.page().url().toString() in ("about:blank", ""):
+                i0 = state["i"]
+                cur["_cov"] = "connecting"  # 빈 페이지 불러오기 알림이 두 번 와도 한 번만 연결한다
+                cov_start(i0, lambda: idx_ok(i0) and view.load(cur["_target"]))  # 측정을 켜고 대상으로 (안 되면 재지 않고)
             return
         state["cur"]["_loaded"] = True
         if not ok:

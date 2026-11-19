@@ -67,6 +67,11 @@ def command(root: Path, kind: str, task: str, paths: list[str], name: str) -> st
         sc = _scripts(root)
         if task == "test":
             runner = _node_runner(root)
+            if paths and runner in ("node", "mocha") and (layout._script_paths(root) or runner == "mocha"):
+                # 스크립트가 테스트 경로를 정해 두면(node --test test/ · mocha 설정의 spec) 'npm test -- 파일' 은 원래 테스트까지
+                # 함께 돈다 — 고른 파일만 실행기에 바로 준다
+                return ("node --test" + (f' --test-name-pattern="{name}"' if name else "") + f" {p}" if runner == "node"
+                        else f"mocha {p}" + (f' --grep "{name}"' if name else ""))
             if layout.test_script(root):
                 extra = []
                 if paths:
@@ -332,7 +337,27 @@ def project_checks(settings, run: dict | None, root: Path, done: dict | None = N
                    else "사용자가 검증 때 테스트 실행을 거절함")
             return results + [{"kind": k, "task": t, "command": c, "ok": False, "skipped": True, "error": why} for k, t, c, _ in plan]
         run = inbox.load_run(settings, run["id"])
-    return results + _execute(settings, run, root, plan)
+    out = _execute(settings, run, root, plan)
+    for item, res in zip(plan, out):
+        _scope_to_target(res, Path(item[3]), root)
+    return results + out
+
+
+_TYPE_ERR = re.compile(r"^(?P<p>[^\s(:][^\s(]*?\.(?:tsx?|mts|cts|jsx?|py))(?:\(\d+,\d+\)|:\d+(?::\d+)?): error", re.M)
+
+
+def _scope_to_target(res: dict, proot: Path, target: Path) -> None:
+    """대상 폴더가 더 큰 프로젝트(저장소 맨 위 등)에 속하면 그 프로젝트의 타입 검사는 저장소 전체를 본다 — 대상 폴더 밖의 오류는
+    이 작업의 판정에서 뺀다 (오류가 모두 밖이면 통과로 보고, 몇 개였는지 적는다). 오류 위치를 읽지 못하면 그대로 둔다."""
+    if res.get("ok") or res.get("task") != "typecheck" or Path(proot).resolve() == Path(target).resolve():
+        return
+    paths = [m.group("p") for m in _TYPE_ERR.finditer(res.get("output_tail") or "")]
+    if not paths:
+        return
+    t = Path(target).resolve()
+    inside = [x for x in paths if (Path(proot) / x).resolve().is_relative_to(t)]
+    if not inside:
+        res.update(ok=True, note=f"프로젝트 전체 타입 검사의 오류 {len(paths)}개는 모두 대상 폴더 밖 — 이 작업의 판정에서 뺌")
 
 
 # ---------------------------------------------------------------- 파일 지우기

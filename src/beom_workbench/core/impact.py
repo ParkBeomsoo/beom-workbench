@@ -100,12 +100,34 @@ def _overlaps(start: int, end: int, ranges: list[tuple[int, int]]) -> bool:
 
 # ---------------------------------------------------------------- 함수와 호출 관계
 
-def _graph_cbm(settings, index_root: Path, name: str) -> tuple[list[dict], list[dict]] | None:
+def _source_sig(root: Path) -> str:
+    """색인할 소스의 지문 (경로·크기·수정 시각) — 같으면 다시 색인하지 않는다."""
+    h = hashlib.sha256()
+    for f in sorted(source_files(root)):
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        h.update(f"{f}|{st.st_size}|{st.st_mtime_ns}\n".encode())
+    return h.hexdigest()
+
+
+def _graph_cbm(settings, index_root: Path, name: str, target: Path | None = None) -> tuple[list[dict], list[dict]] | None:
     from beom_workbench.adapters.cbm import CodebaseMemory
     cbm = CodebaseMemory(settings)
     if not cbm.available:
         return None
-    cbm.index(index_root, name)
+    # 검증마다 저장소 전체를 다시 색인하지 않는다 — 소스가 그대로면 지난 색인을 쓴다
+    mark = Path(settings.home) / "cache" / "impact" / f"{name}.sig"
+    sig = _source_sig(Path(target or index_root)) + "|" + str(index_root)
+    try:
+        fresh = mark.read_text(encoding="utf-8") != sig
+    except OSError:
+        fresh = True
+    if fresh:
+        cbm.index(index_root, name)
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.write_text(sig, encoding="utf-8")
     syms = [s for s in cbm.symbols(name) if s["label"] in ("Function", "Method")]
     for s in syms:
         s["abs"] = str((index_root / s["path"]).resolve())
@@ -119,7 +141,9 @@ def _graph_cbm(settings, index_root: Path, name: str) -> tuple[list[dict], list[
 
 
 def _graph_ast(files: list[Path]) -> tuple[list[dict], list[dict]]:
-    """엔진이 없을 때 — 파이썬 파일만, 함수 위치는 ast 로 정확히, 호출은 이름으로 잇는다 (같은 이름이 여럿이면 모두)."""
+    """엔진이 없을 때 — 파이썬 파일만. 함수 위치는 ast 로 정확히, 호출은 실제로 이어지는 것만 잇는다: 같은 모듈의 이름 호출
+    (`f()`), 불러온 이름(`from m import f` 뒤 `f()`), 불러온 모듈의 속성(`import m` 뒤 `m.f()`), 같은 클래스의 `self.f()`.
+    예전에는 이름만 같으면 이어서 `get`·`run` 같은 함수를 바꾸면 `dict.get` 을 부르는 곳까지 연관된 곳으로 잡혔다."""
     syms, calls_by = [], []
     for f in files:
         if f.suffix != ".py":
@@ -128,18 +152,41 @@ def _graph_ast(files: list[Path]) -> tuple[list[dict], list[dict]]:
             tree = ast.parse(f.read_text(encoding="utf-8", errors="replace"))
         except (SyntaxError, ValueError, OSError):
             continue
+        imported: dict[str, tuple[str, str | None]] = {}  # 이 파일에서 쓰는 이름 → (모듈 끝 이름, 함수 이름 또는 None=모듈)
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                s = {"qualified_name": f"{f.stem}.{node.name}", "name": node.name, "abs": str(f),
+            if isinstance(node, ast.ImportFrom) and node.module is not None:
+                for a in node.names:
+                    imported[a.asname or a.name] = (node.module.split(".")[-1], a.name)
+            elif isinstance(node, ast.Import):
+                for a in node.names:
+                    imported[a.asname or a.name.split(".")[0]] = (a.name.split(".")[-1], None)
+        for cls in [None, *[n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]]:
+            body = tree.body if cls is None else cls.body
+            for node in body:
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                s = {"qualified_name": f"{f.stem}.{cls.name + '.' if cls else ''}{node.name}", "name": node.name, "abs": str(f),
+                     "module": f.stem, "cls": cls.name if cls else None,
                      "start_line": node.lineno, "end_line": getattr(node, "end_lineno", node.lineno)}
                 syms.append(s)
-                names = {c.func.id if isinstance(c.func, ast.Name) else c.func.attr
-                         for c in ast.walk(node) if isinstance(c, ast.Call) and isinstance(c.func, (ast.Name, ast.Attribute))}
-                calls_by.append((s, names))
-    by_name: dict[str, list[dict]] = {}
+                refs = set()
+                for c in ast.walk(node):
+                    if not isinstance(c, ast.Call):
+                        continue
+                    fn = c.func
+                    if isinstance(fn, ast.Name):
+                        refs.add(imported.get(fn.id, (f.stem, fn.id)) if fn.id in imported else (f.stem, fn.id))
+                    elif isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name):
+                        base = fn.value.id
+                        if base == "self" and cls is not None:
+                            refs.add((f.stem, fn.attr, cls.name))
+                        elif base in imported and imported[base][1] is None:
+                            refs.add((imported[base][0], fn.attr))
+                calls_by.append((s, refs))
+    index: dict[tuple, list[dict]] = {}
     for s in syms:
-        by_name.setdefault(s["name"], []).append(s)
-    calls = [{"caller": s, "callee": t, "line": None} for s, names in calls_by for n in names for t in by_name.get(n, []) if t is not s]
+        index.setdefault((s["module"], s["name"], s["cls"]) if s["cls"] else (s["module"], s["name"]), []).append(s)
+    calls = [{"caller": s, "callee": t, "line": None} for s, refs in calls_by for r in refs for t in index.get(r, []) if t is not s]
     return syms, calls
 
 
@@ -156,7 +203,7 @@ def analyze(settings, port_id: str, target: Path, base: dict, measured) -> dict 
     index_root = roots[0] if len(roots) == 1 else Path(os.path.commonpath([str(r) for r in roots]))
     engine = "codebase-memory"
     try:
-        got = _graph_cbm(settings, index_root, "impact-" + port_id.removeprefix("port_"))
+        got = _graph_cbm(settings, index_root, "impact-" + port_id.removeprefix("port_"), target)
     except Exception as e:  # noqa: BLE001 — 엔진이 실패해도 검증은 이어 간다 (분석 못 함으로 알린다)
         got, engine = None, f"codebase-memory 실패: {str(e)[:120]}"
     if got is None:
