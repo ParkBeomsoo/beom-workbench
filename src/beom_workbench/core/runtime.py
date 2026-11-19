@@ -68,6 +68,11 @@ def _coveragepy(data: dict) -> dict[str, dict]:
             d["lines"][int(ln)] = 1
         for ln in f.get("missing_lines", []):
             d["lines"].setdefault(int(ln), 0)
+        for name, fr in (f.get("functions") or {}).items():
+            # 함수 단위 (coverage 7.5+) — 'def' 줄은 모듈을 불러오기만 해도 실행된 줄로 찍혀, 줄만 보면 부르지 않은 함수도
+            # 실행된 것처럼 보인다. 몸통 줄이 하나라도 돌았으면 실행된 함수
+            if name and fr.get("start_line"):
+                d["functions"].append((name, int(fr["start_line"]), 1 if fr.get("executed_lines") else 0))
         out[path] = d
     return out
 

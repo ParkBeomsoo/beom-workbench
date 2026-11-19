@@ -25,80 +25,6 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SAFE_PATH = re.compile(r"^(?!.*\.\.)(?![\\/])(?![A-Za-z]:)[\w.\-/\\]+$")
 _SAFE_NAME = re.compile(r"^[\w .:\-\[\]]{1,120}$")
 # package.json 의 기본 test 스크립트 (npm init) — 테스트가 없다는 뜻이다
-_NPM_PLACEHOLDER = re.compile(r"no test specified", re.I)
-
-
-_WALK_SKIP = {"node_modules", ".git", ".beom", "dist", "build", "target", ".venv", "venv", "__pycache__", "coverage"}
-
-
-def _has_files(root: Path, suffixes: tuple[str, ...], limit: int = 4000) -> bool:
-    """이 끝을 가진 파일이 있나 — node_modules 같은 큰 폴더는 건너뛰고, 처음 찾으면 멈춘다 (권한 판정마다 불린다)."""
-    seen = 0
-    for dirpath, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in _WALK_SKIP]
-        if any(f.endswith(suffixes) for f in files):
-            return True
-        seen += len(files)
-        if seen > limit:
-            return False
-    return False
-
-
-# node 내장 실행기가 인자 없이 찾는 테스트 파일 (node 의 기본 규칙) — 파이썬 tests/ 폴더는 여기에 들지 않는다
-_NODE_TEST = re.compile(r"(?:^|/)test/.+\.[cm]?js$|[.\-_]test\.[cm]?js$|(?:^|/)test-[^/]*\.[cm]?js$|(?:^|/)test\.[cm]?js$")
-
-
-def node_test_args(root: Path) -> str:
-    """package.json 의 test 가 'node --test <경로…>' 면 그 경로들 (없으면 '') — 툴킷의 측정도 같은 테스트를 돌린다."""
-    s = _scripts(Path(root)).get("test") or ""
-    m = re.search(r"\bnode(?:\.exe)?\b[^&|;]*?--test\b([^&|;]*)", s)
-    if not m:
-        return ""
-    return " ".join(t for t in m.group(1).split() if not t.startswith("-"))
-
-
-def node_tests(root: Path, limit: int = 4000) -> bool:
-    """node 내장 실행기가 돌릴 테스트 파일이 있나 — package.json 이 경로를 주면 그것, 아니면 node 의 기본 규칙
-    (*.test.js · *-test.js · *_test.js · test-*.js · test.js · test/ 아래). 예전에는 tests/ 폴더만 있어도 JS 테스트로 보아,
-    파이썬 서버 + 화면 JS 프로젝트에서 빈 측정을 돌리고 검증 전체가 '커버리지 형식을 알 수 없음' 으로 실패했다."""
-    root = Path(root)
-    args = node_test_args(root)
-    if args:
-        return any((root / t.strip("\"'")).exists() or any(root.glob(t.strip("\"'"))) for t in args.split())
-    seen = 0
-    for dirpath, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in _WALK_SKIP]
-        rel = Path(dirpath).relative_to(root).as_posix()
-        if any(_NODE_TEST.search(f if rel == "." else f"{rel}/{f}") for f in files):
-            return True
-        seen += len(files)
-        if seen > limit:
-            return False
-    return False
-
-
-def repo_top(path: Path) -> Path | None:
-    """이 폴더를 품은 git 저장소의 맨 위 (없으면 None)."""
-    p = Path(path).resolve()
-    return next((q for q in (p, *p.parents) if (q / ".git").exists()), None)
-
-
-def project_root(target: Path) -> Path:
-    """테스트·실행 범위 측정을 돌릴 자리. 대상 폴더에 프로젝트 파일이 없고 저장소의 하위 폴더면, 저장소 안에서 가장 가까운
-    프로젝트 폴더 (예: api/search 를 고치는데 tests/ 는 저장소 맨 위). 예전에는 대상 폴더에서만 찾아 테스트를 못 돌렸고,
-    에이전트가 측정을 맞추려 대상 폴더에 테스트 파일을 하나 더 만들었다."""
-    t = Path(target).resolve()
-    if kinds(t):
-        return t
-    top = repo_top(t)
-    if top is None or top == t:
-        return t
-    for p in t.parents:
-        if kinds(p):
-            return p
-        if p == top:
-            break
-    return t
 
 
 def _bin(root: Path, name: str) -> bool:
@@ -114,25 +40,9 @@ def _scripts(root: Path) -> dict:
 
 
 def kinds(root: Path) -> list[str]:
-    """대상 폴더의 프로젝트 종류 (여럿일 수 있다 — 파이썬 서버 + Node 화면)."""
-    root = Path(root)
-    out = []
-    if (root / "package.json").is_file():
-        out.append("node")
-    if any((root / n).is_file() for n in ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "pytest.ini", "tox.ini")) \
-            or any(root.glob("test_*.py")) or any(root.glob("tests/test_*.py")) or any(root.glob("*/test_*.py")):
-        out.append("python")
-    if (root / "Cargo.toml").is_file():
-        out.append("rust")
-    if (root / "go.mod").is_file():
-        out.append("go")
-    if (root / "pom.xml").is_file():
-        out.append("maven")
-    if (root / "build.gradle").is_file() or (root / "build.gradle.kts").is_file():
-        out.append("gradle")
-    if any(root.glob("*.csproj")) or any(root.glob("*.sln")):
-        out.append("dotnet")
-    return out
+    """이 폴더가 속한 프로젝트의 종류 (여럿일 수 있다 — 파이썬 서버 + Node 화면). 자리는 layout.projects."""
+    from beom_workbench.core import layout
+    return [k for k, _ in layout.projects(root)]
 
 
 def _python(root: Path) -> str:
@@ -142,24 +52,22 @@ def _python(root: Path) -> str:
 
 
 def _node_runner(root: Path) -> str | None:
-    s = _scripts(root).get("test") or ""
-    for name in ("vitest", "jest", "mocha"):
-        if re.search(rf"\b{name}\b", s):
-            return name
-    if re.search(r"\bnode\b[^&|;]*--test\b", s):
-        return "node"
-    return None
+    from beom_workbench.core import layout
+    return layout.node_runner(root)
 
 
 def command(root: Path, kind: str, task: str, paths: list[str], name: str) -> str | None:
-    """이 종류·작업의 명령 — 없으면 None. paths(테스트 파일)·name(테스트 이름 거르기)은 실행기에 맞는 꼴로 넣는다."""
+    """이 종류·작업의 명령 — 없으면 None. root 는 그 프로젝트의 자리 (layout.projects). paths(테스트 파일)·name(테스트 이름
+    거르기)은 실행기에 맞는 꼴로 넣는다. 테스트는 그 실행기가 모을 테스트가 있을 때만 — 없는데 돌리면 pytest 는 '테스트 없음'(종료
+    코드 5)으로 실패해, 테스트를 요청받지 않은 프로젝트도 에이전트가 테스트를 만들어야 통과했다."""
+    from beom_workbench.core import layout
     root = Path(root)
     p = " ".join(f'"{x}"' for x in paths)
     if kind == "node":
         sc = _scripts(root)
         if task == "test":
             runner = _node_runner(root)
-            if sc.get("test") and not _NPM_PLACEHOLDER.search(sc["test"]):
+            if layout.test_script(root):
                 extra = []
                 if paths:
                     extra.append(p)
@@ -172,7 +80,7 @@ def command(root: Path, kind: str, task: str, paths: list[str], name: str) -> st
                 return "vitest run" + (f" {p}" if p else "") + (f' -t "{name}"' if name else "")
             if _bin(root, "jest"):
                 return "jest" + (f" {p}" if p else "") + (f' -t "{name}"' if name else "")
-            if paths or (root / "test").is_dir() or _has_files(root, (".test.js", ".test.mjs", ".test.cjs")):
+            if paths or layout.node_test_files(root):  # node 가 인자 없이 모을 테스트 (node 의 기본 규칙)
                 return "node --test" + (f' --test-name-pattern="{name}"' if name else "") + (f" {p}" if p else "")
             return None
         if task == "typecheck":
@@ -189,6 +97,8 @@ def command(root: Path, kind: str, task: str, paths: list[str], name: str) -> st
     if kind == "python":
         py = _python(root)
         if task == "test":
+            if not paths and not layout.pytest_files(root):
+                return None  # pytest 가 모을 테스트가 없다
             return f"{py} -m pytest -q -p no:cacheprovider" + (f" {p}" if p else "") + (f' -k "{name}"' if name else "")
         from beom_workbench.core import deps
         bin_dir = deps.venv_dir(root) / ("Scripts" if os.name == "nt" else "bin")
@@ -217,7 +127,19 @@ def command(root: Path, kind: str, task: str, paths: list[str], name: str) -> st
 
 
 def available(root: Path, task: str) -> bool:
-    return any(command(root, k, task, [], "") for k in kinds(root))
+    from beom_workbench.core import layout
+    return any(command(r, k, task, [], "") for k, r in layout.projects(root))
+
+
+def _plan(root: Path, task: str, paths: list[str], name: str) -> list[tuple[str, str, str, Path]]:
+    """(종류, 작업, 명령, 돌릴 자리) — 이 폴더가 속한 프로젝트마다 그 자리에서. paths 는 이 폴더 기준이라 자리 기준으로 바꾼다."""
+    from beom_workbench.core import layout
+    out = []
+    for k, r in layout.projects(root):
+        rel = [os.path.relpath(Path(root) / x, r).replace("\\", "/") for x in paths]
+        if c := command(r, k, task, rel, name):
+            out.append((k, task, c, r))
+    return out
 
 
 def _summary(kind: str, text: str) -> str | None:
@@ -303,10 +225,8 @@ def run_task(settings, run: dict, task: str, *, path: str = "", paths: list[str]
     if bad or (name and not _SAFE_NAME.match(name)):
         raise ToolError("invalid_request", "paths 는 대상 폴더 안의 상대 경로, name 은 글자·숫자·공백·._-:[] 만",
                         recovery="거르지 않고 전체를 돌리거나 이름을 간단히")
-    if not kinds(root):
-        root = project_root(root)  # 저장소의 하위 폴더 — 그 저장소의 프로젝트(테스트가 있는 자리)에서 돌린다
     found = kinds(root)
-    if not any(command(root, k, task, paths, name) for k in found):
+    if not _plan(root, task, paths, name):
         why = (f"이 폴더의 프로젝트({', '.join(found)})에 '{task}' 작업이 없음" if found else "프로젝트 파일(package.json·pyproject.toml·"
                "Cargo.toml 등)을 찾지 못함")
         hint = {"test": "테스트 파일을 만들거나 package.json 에 test 스크립트를 적는다",
@@ -317,10 +237,10 @@ def run_task(settings, run: dict, task: str, *, path: str = "", paths: list[str]
         raise ToolError("denied", "규칙상 빌드·테스트 실행이 허용되지 않음", recovery="사용자에게 권한 설정을 바꿔 달라고 한다")
     deps.ensure(settings, run, base)  # 의존성 먼저 — 바뀐 것이 없으면 바로 지나간다
     # 명령은 준비가 끝난 뒤에 고른다 (방금 만든 .beom/venv 의 파이썬·node_modules/.bin 의 도구를 쓰게)
-    plan = [(k, c) for k in found if (c := command(root, k, task, paths, name))]
+    plan = _plan(root, task, paths, name)
     if inbox.decide(run, "build") == "ask" and f"task:{task}" not in (run.get("approved_cmds") or []):
         ans = inbox.ask(settings, run["id"], "permission", {
-            "summary": f"빌드·테스트 실행 (툴킷이 고른 명령): {' ; '.join(c for _, c in plan)}",
+            "summary": f"빌드·테스트 실행 (툴킷이 고른 명령): {' ; '.join(c for _, _, c, _ in plan)}",
             "tool": "mcp:wb_task", "input": {"task": task}, "permission_kind": "build"})
         if not ans.get("allow"):
             raise ToolError("denied", f"사용자가 '{task}' 실행을 거절함", recovery="wb_person_ask 로 이유와 함께 묻는다")
@@ -328,7 +248,7 @@ def run_task(settings, run: dict, task: str, *, path: str = "", paths: list[str]
                          lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [f"task:{task}"]))))
         run = inbox.load_run(settings, run["id"])
     before = deps.junk(base)
-    results = _execute(settings, run, root, [(k, task, c) for k, c in plan], timeout)
+    results = _execute(settings, run, root, plan, timeout)
     cleaned = deps.clean_junk(base, before)
     return {"ok": all(r["ok"] for r in results), "task": task, "results": results,
             **({"cleaned": cleaned} if cleaned else {})}
@@ -341,13 +261,14 @@ def result_of(kind: str, task: str, cmd: str, code: int, out: str) -> dict:
             "output_tail": "\n".join(lines[-60:])[-5000:]}
 
 
-def _execute(settings, run: dict | None, root: Path, plan: list[tuple[str, str, str]], timeout: int = 600) -> list[dict]:
-    """(종류, 작업, 명령) 을 차례로 — 자동 실행 중이면 격리 규칙대로 (Node 도구는 승인받아 격리 밖), 아니면 그냥."""
+def _execute(settings, run: dict | None, root: Path, plan: list[tuple], timeout: int = 600) -> list[dict]:
+    """(종류, 작업, 명령[, 자리]) 를 차례로 — 자동 실행 중이면 격리 규칙대로 (Node 도구는 승인받아 격리 밖), 아니면 그냥."""
     from beom_workbench.core import inbox, port, sandbox
-    side = port._Side("target", root, port._harness_dir(settings))
-    env = side.env()
     results = []
-    for kind, task, cmd in plan:
+    for item in plan:
+        kind, task, cmd = item[:3]
+        cwd = Path(item[3]) if len(item) > 3 else Path(root)
+        env = port._Side("target", cwd, port._harness_dir(settings)).env()
         boxed = run is not None and sandbox.wraps_powershell(run)
         outside = False
         if boxed and needs_outside(cmd):
@@ -363,7 +284,7 @@ def _execute(settings, run: dict | None, root: Path, plan: list[tuple[str, str, 
             argv, shell = cmd, True  # 문자열 그대로 (목록으로 넘기면 따옴표가 \" 로 바뀌어 cmd 가 경로를 잘못 읽는다)
         t = max(10, min(int(timeout or 600), 1800))
         try:
-            cp = port.run_tree(argv, shell=shell, cwd=str(root), timeout=t, env=env)
+            cp = port.run_tree(argv, shell=shell, cwd=str(cwd), timeout=t, env=env)
             code, out = cp.returncode, (cp.stdout + cp.stderr).decode("utf-8", "replace")
         except subprocess.TimeoutExpired as e:
             code, out = 124, ((e.output or b"") + (e.stderr or b"")).decode("utf-8", "replace") + f"\n({t}초 안에 끝나지 않아 멈춤)"
@@ -376,26 +297,26 @@ def _execute(settings, run: dict | None, root: Path, plan: list[tuple[str, str, 
 def project_checks(settings, run: dict | None, root: Path, done: dict | None = None) -> list[dict]:
     """검증 때 툴킷이 함께 돌리는 프로젝트 테스트·타입 검사 — 에이전트가 따로 돌리지 않아도 완료 판정에 들어간다.
     done: 이미 돈 테스트 결과 (커버리지 측정이 그 테스트를 돌렸으면 다시 돌리지 않는다). 규칙상 빌드가 '묻기'면 한 번 묻는다."""
-    from beom_workbench.core import inbox
+    from beom_workbench.core import inbox, layout
     root = Path(root)
     done = done or {}
     plan = []
-    for k in kinds(root):
-        if k not in done and (c := command(root, k, "test", [], "")):
-            plan.append((k, "test", c))
-        if k in ("node", "python") and (c := command(root, k, "typecheck", [], "")):
-            plan.append((k, "typecheck", c))  # 다른 언어는 테스트가 컴파일까지 한다
+    for k, r in layout.projects(root):  # 이 폴더가 속한 프로젝트마다 그 자리에서 (저장소의 하위 폴더면 그 프로젝트의 자리)
+        if k not in done and (c := command(r, k, "test", [], "")):
+            plan.append((k, "test", c, r))
+        if k in ("node", "python") and (c := command(r, k, "typecheck", [], "")):
+            plan.append((k, "typecheck", c, r))  # 다른 언어는 테스트가 컴파일까지 한다
     results = list(done.values())
     if not plan:
         return results
     if run is not None:
         # wb_task 와 같은 승인 — 같은 작업(테스트·타입 검사)을 이미 허락했으면 다시 묻지 않는다
-        ok = permit_build(settings, run, [f"task:{t}" for _, t, _ in plan],
-                          "검증 때 프로젝트 테스트·타입 검사 실행 (툴킷이 고른 명령): " + " ; ".join(c for _, _, c in plan))
+        ok = permit_build(settings, run, [f"task:{p[1]}" for p in plan],
+                          "검증 때 프로젝트 테스트·타입 검사 실행 (툴킷이 고른 명령): " + " ; ".join(c for _, _, c, _ in plan))
         if not ok:
             why = ("규칙상 빌드·테스트 실행이 허용되지 않아 돌리지 않음" if inbox.decide(run, "build") == "refuse"
                    else "사용자가 검증 때 테스트 실행을 거절함")
-            return results + [{"kind": k, "task": t, "command": c, "ok": False, "skipped": True, "error": why} for k, t, c in plan]
+            return results + [{"kind": k, "task": t, "command": c, "ok": False, "skipped": True, "error": why} for k, t, c, _ in plan]
         run = inbox.load_run(settings, run["id"])
     return results + _execute(settings, run, root, plan)
 

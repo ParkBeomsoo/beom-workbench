@@ -137,7 +137,7 @@ def _stage(run: dict, st: dict | None) -> int:
         req = st.get("requirements") or {}
         if not req.get("total") or not g.get(port.GATE_REQ_CASES) or not plan.get("steps"):
             return 0
-        if not plan.get("approved") or (st["approvals"]["pending"] and not req.get("implemented")):
+        if not plan.get("approved") or (st["approvals"].get("criteria", st["approvals"]["pending"]) and not req.get("implemented")):
             return 1
         if not g[port.GATE_MAPPED]:
             return 2
@@ -380,7 +380,7 @@ def _reviews(reviews: list[dict], conn, port_id: str) -> dict:
         for c in cases:
             req_of.setdefault(c, []).append(r)
     out = {"requirements": [], "expectations": [], "divergences": [], "omitted": [], "case_changes": [], "checks": [],
-           "count": len(reviews)}
+           "tests_changed": [], "count": len(reviews)}
     for h in reviews:
         if h["kind"] == "requirements":
             out["requirements"] = [{"id": d["case"], "text": d["diff"]} for d in h["detail"]]
@@ -394,6 +394,8 @@ def _reviews(reviews: list[dict], conn, port_id: str) -> dict:
             out["divergences"].append({"summary": h["summary"], "detail": h.get("detail")})
         elif h["kind"] == "omitted":
             out["omitted"].append({"summary": h["summary"].removeprefix("생략: ")})
+        elif h["kind"] == "tests_changed":
+            out["tests_changed"] = [{"file": d["case"], "diff": d["diff"]} for d in h.get("detail") or []]
         elif h["kind"] == "coverage_unmeasured":
             out["checks"].append({"summary": h["summary"], "files": (h.get("detail") or {}).get("files") or []})
         else:

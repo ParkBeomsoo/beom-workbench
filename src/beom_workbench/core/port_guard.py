@@ -18,7 +18,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -261,37 +260,70 @@ def is_approved(conn, port_id: str, item_id: str, fp: str) -> bool:
     return (item_id, fp) in _approved(_logs(conn, port_id))
 
 
-TS_EXTS = (".ts", ".mts", ".cts", ".tsx")
+# ---------------------------------------------------------------- 원래 있던 테스트
+
+BASELINE_FILE_MAX, BASELINE_TOTAL_MAX = 100_000, 2_000_000
 
 
-def local_bin(root: Path, name: str) -> bool:
-    b = Path(root) / "node_modules" / ".bin"
-    return any((b / (name + ext)).is_file() for ext in ("", ".cmd", ".ps1"))
+def record_baseline(conn, port_id: str, root: Path) -> None:
+    """작업을 시작할 때(첫 요구사항·슬라이스 단계, 코드를 고치기 전) 원래 있던 테스트 파일을 기록 사슬에 남긴다 — 한 번만.
+    원래 테스트는 '예전 동작' 을 기대한다. 요청으로 동작이 바뀌면 고쳐야 하지만, 맞추려고 고치거나 지우면 회귀를 가린다.
+    바뀐 것은 사람이 차이를 보고 확인한다 (tests_changed)."""
+    if any(lg["action"] == "baseline_tests" for lg in _logs(conn, port_id)):
+        return
+    from beom_workbench.core import layout
+    root = Path(root)
+    files, total = {}, 0
+    for f in sorted(layout.test_files(root)):
+        try:
+            data = Path(f).read_bytes()
+        except OSError:
+            continue
+        ent = {"sha": hashlib.sha256(data).hexdigest()}
+        if len(data) <= BASELINE_FILE_MAX and total + len(data) <= BASELINE_TOTAL_MAX:
+            ent["text"] = data.decode("utf-8", "replace")
+            total += len(data)
+        files[os.path.relpath(f, root).replace("\\", "/")] = ent
+    record(conn, port_id, "baseline_tests", {"files": files})
 
 
-def measurable(root: Path, rel: str) -> bool:
-    """툴킷이 이 파일의 실행 범위를 스스로 잴 수 있나 (port.auto_coverage 와 같은 기준). root 는 테스트를 돌리는 프로젝트 자리.
-    JS 는 그 프로젝트의 테스트 실행기로 잴 수 있을 때만 — jest(설치됨) · vitest(v8 커버리지 패키지) · node 내장(테스트 파일 있음).
-    mocha 나 테스트 없는 화면 JS(브라우저에서만 도는 app.js)는 잴 길이 없다 — 사람 확인 카드로 넘긴다."""
-    if rel.endswith(".py"):
-        return True
-    if rel.endswith((".js", ".mjs", ".cjs")):
-        from beom_workbench.core import tasks
-        runner = tasks._node_runner(Path(root))
-        if runner == "jest":
-            return local_bin(root, "jest")
-        if runner == "vitest":
-            return (Path(root) / "node_modules" / "@vitest" / "coverage-v8").is_dir() and local_bin(root, "vitest")
-        if runner == "mocha":
-            return False
-        from beom_workbench.core import port
-        return port._node_major() >= 20 and tasks.node_tests(Path(root))
-    if rel.endswith(TS_EXTS):  # vitest 프로젝트에 v8 커버리지 패키지가 깔려 있을 때
-        return (Path(root) / "node_modules" / "@vitest" / "coverage-v8").is_dir() and local_bin(root, "vitest")
-    if rel.endswith(".rs"):
-        from beom_workbench.core import deps
-        return deps.cargo_llvm_cov() is not None
-    return False
+def tests_changed(conn, port_id: str, root: Path) -> list[dict] | None:
+    """원래 있던 테스트 중 바뀌거나 지워진 것 — [{file, state, diff}] (없으면 None)."""
+    import difflib
+    base = next((lg["payload"] for lg in _logs(conn, port_id) if lg["action"] == "baseline_tests"), None)
+    if not base:
+        return None
+    out = []
+    for rel, ent in sorted((base.get("files") or {}).items()):
+        try:
+            now = (Path(root) / rel).read_bytes()
+        except OSError:
+            now = None
+        if now is not None and hashlib.sha256(now).hexdigest() == ent["sha"]:
+            continue
+        if now is None:
+            diff = "(지움)"
+        elif "text" in ent:
+            old_l, new_l = ent["text"].splitlines(), now.decode("utf-8", "replace").splitlines()
+            ops = difflib.SequenceMatcher(None, [x.rstrip() for x in old_l], [x.rstrip() for x in new_l], autojunk=False).get_opcodes()
+            if all(tag in ("equal", "insert") for tag, *_ in ops):
+                continue  # 원래 줄은 그대로 두고 테스트를 더하기만 함 — 원래 기대를 바꾸지 않았다
+            diff = "\n".join(difflib.unified_diff(old_l, new_l, f"{rel} (원래)", f"{rel} (지금)", lineterm="", n=1))[:4000]
+        else:
+            diff = "(파일이 커서 차이를 보여 주지 못함)"
+        out.append({"file": rel, "state": "deleted" if now is None else "changed", "diff": diff})
+    return out or None
+
+
+def measurable(root: Path, rel: str, browser: set | None = None) -> bool:
+    """툴킷이 합격 케이스를 돌리며 이 파일의 실행 범위를 잴 수 있나 — 케이스가 띄우는 파이썬·node 프로세스에서 도는 파일.
+    브라우저에서 도는 화면 코드(페이지가 불러오는 JS·JSX 등)와 다른 언어는 못 잰다 (사람 확인 카드로)."""
+    from beom_workbench.core import layout, port
+    if not rel.endswith((".py", *port.NODE_RUN_EXTS)):
+        return False
+    if browser is None:
+        browser = layout.browser_files(root)
+    return rel.replace("\\", "/") not in browser
 
 
 def coverage_gap(conn, port_id: str) -> dict | None:
@@ -314,9 +346,9 @@ def coverage_gap(conn, port_id: str) -> dict | None:
         "SELECT target_ref FROM port_map WHERE port_id = ? AND status = 'ported'", (port_id,)).fetchall()
         if (m := re.fullmatch(r"(.+?):\d+", r["target_ref"] or ""))})
     files = [f for f in files if not f.startswith(".beom/")]
-    from beom_workbench.core import tasks
-    proot = tasks.project_root(root)  # 테스트를 돌리는 자리 기준 (저장소의 하위 폴더면 저장소의 프로젝트)
-    if not files or any(measurable(proot, f) for f in files):
+    from beom_workbench.core import layout
+    browser = layout.browser_files(root)
+    if not files or any(measurable(root, f, browser) for f in files):
         return None
     return {"files": files, "exts": sorted({PurePosixPath(f).suffix or PurePosixPath(f).name for f in files})}
 
@@ -362,6 +394,13 @@ def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | Non
         items.append({"item_id": f"cases:{last_capture['id']}", "kind": "case_change", "fingerprint": fp,
                       "summary": f"케이스 변경 — 빠짐 {len(change['removed'])}개, 바뀜 {len(change['changed'])}개 (이전 capture 대비)",
                       "detail": change})
+    root_row = conn.execute("SELECT target_root FROM port WHERE id = ?", (port_id,)).fetchone()
+    changed = tests_changed(conn, port_id, Path(root_row["target_root"])) if root_row and root_row["target_root"] else None
+    if changed:
+        items.append({"item_id": "tests", "kind": "tests_changed", "fingerprint": _sha(changed),
+                      "summary": f"원래 있던 테스트 {len(changed)}개를 바꾸거나 지움 — 원래 테스트는 예전 동작을 기대합니다. "
+                                 "요청으로 동작이 바뀐 만큼만 고쳤는지 차이를 보고 승인하세요",
+                      "detail": [{"case": c["file"], "diff": c["diff"]} for c in changed[:20]]})
     gap = coverage_gap(conn, port_id)
     if gap:
         items.append({"item_id": "coverage", "kind": "coverage_unmeasured", "fingerprint": _sha(gap),

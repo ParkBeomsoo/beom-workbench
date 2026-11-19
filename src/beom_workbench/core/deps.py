@@ -34,13 +34,14 @@ def venv_python(root: Path) -> Path:
 
 
 def env_paths(root: Path) -> list[str]:
-    """툴킷이 돌리는 명령의 PATH 앞에 붙일 자리 — 준비된 .beom/venv 와 node_modules/.bin."""
+    """툴킷이 돌리는 명령의 PATH 앞에 붙일 자리 — 준비된 .beom/venv 와 node_modules/.bin (각 언어 프로젝트의 자리에서)."""
+    from beom_workbench.core import layout
     root = Path(root)
     out = []
-    v = venv_dir(root) / ("Scripts" if os.name == "nt" else "bin")
+    v = venv_dir(layout.root_for(root, "python")) / ("Scripts" if os.name == "nt" else "bin")
     if v.is_dir():
         out.append(str(v))
-    nb = root / "node_modules" / ".bin"
+    nb = layout.root_for(root, "node") / "node_modules" / ".bin"
     if nb.is_dir():
         out.append(str(nb))
     return out
@@ -134,9 +135,7 @@ def plan(root: Path) -> list[dict]:
         sig = _node_stamp(root)
         done = _stamp_file(root, "node")
         nm = root / "node_modules"
-        # 검증용 커버리지가 빠짐 (npm 이 지웠거나 예전 설치) — 이 vitest 버전으로 한 번 시도했으면 다시 하지 않는다 (오프라인 등)
-        no_cov = (nm / "vitest").is_dir() and not (nm / "@vitest" / "coverage-v8").is_dir() and _vitest_tried(root) != _vitest_version(root)
-        if not nm.is_dir() or not done.is_file() or done.read_text().strip() != sig or no_cov:
+        if not nm.is_dir() or not done.is_file() or done.read_text().strip() != sig:
             out.append({"kind": "node", "files": node, "sig": sig, "command": "npm install --no-audit --no-fund"})
     files, pkgs = _python_reqs(root)
     src = src_layout(root)
@@ -212,8 +211,6 @@ def _install(item: dict, root: Path, timeout: float) -> dict:
         argv = (["cmd", "/d", "/c", "npm", "install", "--no-audit", "--no-fund"] if os.name == "nt"
                 else ["npm", "install", "--no-audit", "--no-fund"])
         code, out = _run(argv, root, timeout)
-        if code == 0:
-            _vitest_coverage(root, timeout)
     else:
         py = venv_python(root)
         user = user_venv(root)
@@ -240,95 +237,6 @@ def _install(item: dict, root: Path, timeout: float) -> dict:
     return {"kind": item["kind"], "ok": ok, "exit_code": code, **({} if ok else {"output_tail": out})}
 
 
-def _vitest_coverage(root: Path, timeout: float) -> None:
-    """vitest 프로젝트면 같은 버전의 v8 커버리지 패키지를 package.json 에 적지 않고(--no-save) 넣는다 — 파이썬의 pytest·coverage 처럼
-    검증용 도구는 툴킷이 준비한다 (에이전트가 프로젝트 의존성에 끼워 넣지 않게). 실패해도 설치 자체는 성공이다 (그때는 사용자 확인 카드)."""
-    ver = _vitest_version(root)
-    if not ver or (root / "node_modules" / "@vitest" / "coverage-v8").is_dir():
-        return
-    pkg = f"@vitest/coverage-v8@{ver}"
-    argv = (["cmd", "/d", "/c", "npm", "install", "--no-save", "--no-audit", "--no-fund", pkg] if os.name == "nt"
-            else ["npm", "install", "--no-save", "--no-audit", "--no-fund", pkg])
-    _run(argv, root, timeout)
-    mark = _stamp_file(root, "vitest-coverage")
-    mark.parent.mkdir(parents=True, exist_ok=True)
-    mark.write_text(ver, encoding="utf-8")
-
-
-def _vitest_version(root: Path) -> str | None:
-    try:
-        return json.loads((Path(root) / "node_modules" / "vitest" / "package.json").read_text(encoding="utf-8")).get("version")
-    except (OSError, ValueError):
-        return None
-
-
-def _vitest_tried(root: Path) -> str | None:
-    f = _stamp_file(root, "vitest-coverage")
-    return f.read_text(encoding="utf-8").strip() if f.is_file() else None
-
-
-def tools_dir() -> Path:
-    """툴킷이 검증용으로 까는 도구 자리 — 사용자 전역 폴더(~/.cargo 등)가 아니라 툴킷 폴더 아래."""
-    from beom_workbench.config import _home
-    return _home() / "tools"
-
-
-def cargo_llvm_cov() -> str | None:
-    """Rust 실행 범위 측정 도구 — PATH 또는 툴킷 도구 자리."""
-    found = shutil.which("cargo-llvm-cov")
-    if found:
-        return found
-    exe = tools_dir() / "cargo" / "bin" / ("cargo-llvm-cov.exe" if os.name == "nt" else "cargo-llvm-cov")
-    return str(exe) if exe.is_file() else None
-
-
-def _llvm_tools_installed() -> bool:
-    try:
-        out = subprocess.run(["rustup", "component", "list", "--installed"], capture_output=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return b"llvm-tools" in out.stdout
-
-
-def ensure_rust_coverage(settings, run: dict | None, root: Path, timeout: float = 1200) -> dict:
-    """Rust 프로젝트의 실행 범위를 재는 도구를 준비한다 — 없으면 사용자에게 한 번 묻고 깐다:
-    rustup 구성 요소 llvm-tools-preview (Rust 도구에 더해짐) + cargo-llvm-cov (툴킷 폴더에). 거절하면 다시 묻지 않고 사용자 확인
-    카드(측정 불가)로 넘어간다. 결과: {"ready": bool, ...}."""
-    root = Path(root)
-    if not (root / "Cargo.toml").is_file() or not shutil.which("cargo"):
-        return {"ready": False, "why": "Rust 프로젝트가 아니거나 cargo 가 없음"}
-    have_tool, have_llvm = cargo_llvm_cov() is not None, _llvm_tools_installed()
-    if have_tool and have_llvm:
-        return {"ready": True}
-    if run is None:
-        return {"ready": False, "why": "자동 실행 밖 — 설치하지 않음"}
-    from beom_workbench.core import inbox
-    done = run.get("approved_cmds") or []
-    if "tool-refused:rust-coverage" in done:
-        return {"ready": False, "why": "사용자가 설치를 거절함"}
-    steps = ([] if have_llvm else ["rustup component add llvm-tools-preview"]) + \
-            ([] if have_tool else [f"cargo install cargo-llvm-cov --locked --root \"{tools_dir() / 'cargo'}\""])
-    if "tool:rust-coverage" not in done:
-        if inbox.decide(run, "unsandboxed") == "refuse" or inbox.decide(run, "build") == "refuse":
-            return {"ready": False, "why": "규칙상 설치가 허용되지 않음"}
-        ans = inbox.ask(settings, run["id"], "permission", {
-            "summary": "검증 도구 설치 — Rust 실행 범위를 재려면 필요합니다 (한 번, 몇 분 걸림): " + " ; ".join(steps)
-                       + (" — llvm-tools-preview 는 이 PC 의 Rust 도구에 더해집니다 (rustup component remove 로 뺄 수 있음)"
-                          if not have_llvm else ""),
-            "tool": "mcp:deps", "input": {"commands": steps}, "permission_kind": "unsandboxed"})
-        key = "tool:rust-coverage" if ans.get("allow") else "tool-refused:rust-coverage"
-        inbox.update_run(settings, run["id"], lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [key]))))
-        if not ans.get("allow"):
-            return {"ready": False, "why": "사용자가 설치를 거절함"}
-    for step in steps:
-        argv = ["cmd", "/d", "/c", step] if os.name == "nt" else ["sh", "-c", step]
-        code, out = _run(argv, root, timeout)
-        inbox.log(settings, run["id"], "deps", dep="rust-coverage", ok=code == 0, files=["Cargo.toml"])
-        if code != 0:
-            return {"ready": False, "why": f"설치 실패: {step}", "output_tail": out[-1500:]}
-    return {"ready": cargo_llvm_cov() is not None and _llvm_tools_installed()}
-
-
 def _permit(settings, run: dict | None, item: dict) -> None:
     """자동 실행 중이면 권한 규칙대로 — 빌드와 '격리 없이 실행' 둘 다 허용이면 바로, 아니면 카드 한 번 (같은 지문이면 다시 묻지 않는다)."""
     if run is None:
@@ -353,16 +261,23 @@ def _permit(settings, run: dict | None, item: dict) -> None:
 
 
 def ensure(settings, run: dict | None, root: Path, timeout: float = 900) -> dict:
-    """필요한 설치를 하고 결과를 돌려준다. 설치할 것이 없으면 바로 끝난다."""
+    """필요한 설치를 하고 결과를 돌려준다. 설치할 것이 없으면 바로 끝난다. root 는 대상 폴더 — 설치는 각 언어 프로젝트의 자리에서
+    (저장소의 하위 폴더가 대상이고 package.json·requirements 가 저장소 쪽에 있으면 거기). 예전에는 대상 폴더만 보아 설치를 건너뛰었다."""
+    from beom_workbench.core import layout
     root = Path(root)
     done = []
-    for item in plan(root):
-        _permit(settings, run, item)
-        r = _install(item, root, timeout)
-        done.append(r)
-        if run is not None:
-            from beom_workbench.core import inbox
-            inbox.log(settings, run["id"], "deps", dep=item["kind"], ok=r["ok"], files=item["files"])
+    where = {"node": layout.root_for(root, "node"), "python": layout.root_for(root, "python")}
+    for at in dict.fromkeys(where.values()):
+        for item in plan(at):
+            if where.get(item["kind"]) != at:
+                continue  # 이 자리는 다른 언어의 프로젝트 자리 — 그 언어는 제 자리에서
+            _permit(settings, run, item)
+            r = _install(item, at, timeout)
+            done.append(r)
+            if run is not None:
+                from beom_workbench.core import inbox
+                inbox.log(settings, run["id"], "deps", dep=item["kind"], ok=r["ok"], files=item["files"])
+    layout.forget(root)
     return {"installed": done, **status(root)}
 
 
@@ -410,15 +325,17 @@ def clean_junk(root: Path, before: set[str] | None) -> list[str]:
 
 
 def status(root: Path) -> dict:
+    from beom_workbench.core import layout
     root = Path(root)
-    py = venv_python(root)
+    pyroot, noderoot = layout.root_for(root, "python"), layout.root_for(root, "node")
+    py = venv_python(pyroot)
     out: dict = {}
-    if (root / "node_modules").is_dir():
-        out["node"] = {"node_modules": "node_modules"}
+    if (noderoot / "node_modules").is_dir():
+        out["node"] = {"node_modules": os.path.relpath(noderoot / "node_modules", root).replace("\\", "/")}
     if py.is_file():
-        out["python"] = {"python": py.relative_to(root).as_posix(),
+        out["python"] = {"python": os.path.relpath(py, root).replace("\\", "/"),
                          "note": "파이썬 테스트·실행은 이 python 으로 — 의존성과 pytest·coverage 가 들어 있다"}
-        if src_layout(root):
+        if src_layout(pyroot):
             out["python"]["src"] = ("src 폴더가 이 python 의 import 경로에 있다 — pytest pythonpath 설정·sys.path 조작·"
                                     "conftest 를 프로젝트에 넣지 않아도 된다")
     return out

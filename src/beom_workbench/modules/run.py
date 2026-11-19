@@ -142,7 +142,8 @@ def _redirect(run: dict, tool_name: str, inp: dict, kind: str, decision: str) ->
     task = inbox.task_like(cmd)
     if task and tasks.available(Path(run["target_root"]), task):
         return REDIRECT_TASK
-    if _PY_PROBE.search(cmd) and tasks.available(Path(run["target_root"]), "test"):
+    if _PY_PROBE.search(cmd) and "python" in tasks.kinds(Path(run["target_root"])):
+        # 파이썬 프로젝트면 — 테스트가 아직 없어도 확인용 테스트를 만들어 wb_task 로 돌리면 된다
         return REDIRECT_PROBE
     return None
 

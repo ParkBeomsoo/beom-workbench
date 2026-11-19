@@ -156,6 +156,10 @@ class Attendant:
                 w("  " + t("바뀜") + f": {', '.join(x['changed'])} — " + t("기대값이 이전 승인과 다름"))
         for x in (reviews.get("divergences") or [])[:10]:  # 사람이 확인할 차이 허용
             w("  " + t("차이 허용") + f": {t(str(x.get('summary') or ''))}")
+        for x in (reviews.get("tests_changed") or [])[:5]:  # 원래 있던 테스트를 바꾸거나 지움 — 사람이 차이를 보고 확인
+            w("  " + t("원래 있던 테스트를 바꿈") + f": {x.get('file')}")
+            for line in str(x.get("diff") or "").splitlines()[:12]:
+                w("    " + line)
         for x in (reviews.get("checks") or [])[:5]:  # 툴킷이 재지 못해 사람이 확인할 것
             w("  " + t("직접 확인할 점") + f": {t(str(x.get('summary') or ''))}")
         for x in (reviews.get("omitted") or [])[:10]:  # 옮기지 않는 것
