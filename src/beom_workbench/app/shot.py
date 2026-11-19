@@ -3,7 +3,8 @@
     python -m beom_workbench.app.shot '{"pages": [{"url": "...", "out": "a.png", "width": 1280, "height": 800,
                                                   "visible": ["주문하기"], "selectors": ["form button"], "wait_ms": 800}]}'
 
-여러 페이지를 브라우저 엔진 하나로 차례대로 연다 (엔진 시작이 가장 오래 걸린다). 결과는 표준 출력 마지막 줄 JSON:
+여러 페이지를 브라우저 엔진 하나로 차례대로 연다 (엔진 시작이 가장 오래 걸린다). 페이지마다 새 비공개 프로필이라 앞 케이스가
+저장한 것(localStorage·쿠키)이 다음 케이스로 넘어가지 않는다 — 케이스는 서로 독립이다. 결과는 표준 출력 마지막 줄 JSON:
 {"pages": [{"ok", "title", "found", "missing", "selectors_missing", "errors", "out", "height"}]}.
 따로 설치할 것 없이 앱 구성요소(PySide6 WebEngine)만 쓴다.
 """
@@ -20,13 +21,13 @@ def main() -> int:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
     from PySide6.QtCore import QTimer, QUrl
-    from PySide6.QtWebEngineCore import QWebEnginePage
+    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
     from PySide6.QtWebEngineWidgets import QWebEngineView
     from PySide6.QtWidgets import QApplication
 
     app = QApplication([])
     results: list[dict] = []
-    state = {"i": -1, "cur": None, "timer": None, "pending": None}
+    state = {"i": -1, "cur": None, "timer": None}
 
     class Page(QWebEnginePage):
         def javaScriptConsoleMessage(self, level, message, line, source):  # noqa: N802 — Qt 이름
@@ -36,6 +37,14 @@ def main() -> int:
     view = QWebEngineView()
     view.setPage(Page(view))
     view.show()
+    kept: list = []  # 지난 페이지·프로필 — 끝날 때까지 붙잡아 둔다 (쓰는 중에 지우면 엔진이 죽는다)
+
+    def fresh_page():
+        """새 비공개 프로필의 페이지 — 저장소가 비어 있다 (같은 주소의 앞 케이스가 남긴 기록이 보이지 않게)."""
+        prof = QWebEngineProfile(view)  # 이름 없는 프로필은 디스크에 남기지 않는 비공개 프로필
+        page = Page(prof, view)
+        kept.extend([view.page(), prof])
+        view.setPage(page)
 
     def next_page():
         if state["cur"] is not None:
@@ -54,13 +63,9 @@ def main() -> int:
         state["timer"] = guard
         url = p["url"]
         target = QUrl(url) if "://" in url else QUrl.fromLocalFile(url)
-        here = view.url()
-        if not here.isEmpty() and here.toString().split("#")[0] == target.toString().split("#")[0]:
-            # 같은 파일에 #조각만 다르면 브라우저는 페이지 안 이동으로 보고 '다 열림'을 알리지 않는다 — 빈 페이지를 거쳐 새로 연다
-            state["pending"] = target
-            view.load(QUrl("about:blank"))
-        else:
-            view.load(target)
+        if state["i"] > 0:
+            fresh_page()  # 케이스마다 빈 저장소에서 — 첫 페이지는 방금 만든 페이지 그대로
+        view.load(target)
 
     def checked(raw, idx):
         if idx != state["i"]:  # 늦게 온 결과 (시간 초과로 이미 다음 페이지) — 버린다
@@ -106,11 +111,20 @@ def main() -> int:
       }
       if (a.click !== undefined) { const el = pick(a.click); if (!el) return "누를 요소 없음: " + a.click; el.scrollIntoView({ block: "center" }); el.click(); return ""; }
       if (a.press !== undefined) {
-        const el = pick(a.on) || document.body; const key = String(a.press);
-        const opt = { key, code: key === "Enter" ? "Enter" : key, keyCode: key === "Enter" ? 13 : key === "Escape" ? 27 : 0, bubbles: true, cancelable: true };
+        const el = pick(a.on) || document.body; let key = String(a.press);
+        if (key === "Space" || key === "Spacebar") key = " ";
+        if (a.on && el.focus) el.focus();
+        const code = key === "Enter" ? "Enter" : key === " " ? "Space" : key;
+        const opt = { key, code, keyCode: key === "Enter" ? 13 : key === "Escape" ? 27 : key === " " ? 32 : 0, bubbles: true, cancelable: true };
         const go = el.dispatchEvent(new KeyboardEvent("keydown", opt));
         el.dispatchEvent(new KeyboardEvent("keyup", opt));
-        if (go && key === "Enter" && el.form) { if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit(); }
+        if (!go) return "";
+        // 진짜 브라우저의 기본 동작: 버튼·링크에 Enter, 버튼·체크박스에 Space 는 누름. 입력칸의 Enter 는 양식 제출
+        const tag = el.tagName || "", type = String(el.type || "").toLowerCase(), role = el.getAttribute ? el.getAttribute("role") : "";
+        const pressable = tag === "BUTTON" || role === "button" || (tag === "INPUT" && ["button", "submit", "reset"].includes(type));
+        if ((key === "Enter" && (pressable || tag === "A" || tag === "SUMMARY")) ||
+            (key === " " && (pressable || (tag === "INPUT" && ["checkbox", "radio"].includes(type))))) { el.click(); return ""; }
+        if (key === "Enter" && el.form) { if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit(); }
         return "";
       }
       return "";
@@ -137,10 +151,6 @@ def main() -> int:
             view.page().runJavaScript(ACT_JS % json.dumps(a, ensure_ascii=False), 0, after)
 
     def loaded(ok):
-        if state.get("pending") is not None:  # 빈 페이지를 거쳤다 — 이제 진짜 페이지
-            target, state["pending"] = state["pending"], None
-            view.load(target)
-            return
         if state["cur"] is None or state["i"] >= len(pages) or state["cur"].get("_loaded"):
             return  # 페이지가 스스로 다시 이동해도 한 번만 확인한다
         state["cur"]["_loaded"] = True

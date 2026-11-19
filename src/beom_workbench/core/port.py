@@ -2157,6 +2157,14 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
                             recovery="사용자에게 알리고 port-capture 로 다시 저장")
         cases, src = g["cases"], g["results"]
         source_kind = "golden"
+    static = None
+    if not (target_url or target_cli or target_cmd) and any("screen" in c or "path" in c for c in cases) and root.is_dir():
+        # 서버 명령 없이 화면·주소 케이스만 — 정적 페이지(HTML·JS·CSS)다. 툴킷이 대상 폴더만 내보낸다 (화면 찍기와 같은 서버).
+        # 에이전트가 python -m http.server 같은 명령을 넘기면 프로젝트 밖 명령이라 권한 카드가 뜬다
+        from beom_workbench.core import screens
+        static = screens.serve_folder(root)
+        static.__enter__()
+        target_url = static.base
     if not (target_url or target_cli or any("call" in c for c in cases)):
         raise ToolError("invalid_request", "target_url(HTTP) 또는 target_cli(명령) 이 필요함")
     side = _Side("target", root, _harness_dir(settings))
@@ -2197,6 +2205,8 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
     finally:
         if server:
             server.close()
+        if static:
+            static.__exit__(None, None, None)
         # 케이스를 돌리며 프로그램이 새로 만든 파일(데이터 파일 등)은 치운다 — 결과물에 검증 찌꺼기가 남지 않게
         cleaned = _drop_new(root, before, keep={target_coverage_report} if target_coverage_report else set())
     fp = guard.target_fingerprint(root, fresh=True)
@@ -2308,6 +2318,10 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
 
 
 TEST_FILE = re.compile(r"(?:^|/)(?:tests?|__tests__|spec)/|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|/)test_[^/]*\.py$|_test\.(?:py|go)$")
+# 실행되는 코드가 아닌 화면·스타일 파일 — 실행 범위로 잴 것이 아니라 화면 케이스로 확인한다
+STYLE_FILE = re.compile(r"\.(?:css|scss|sass|less|html?|svg)$", re.I)
+# 측정 도구가 읽지 못할 수 있는 화면 코드 — 리포트에 없으면 '측정 못 함' 으로 (실패가 아니라 사용자 확인 카드로 넘긴다)
+VIEW_CODE = re.compile(r"\.(?:jsx|tsx|vue|svelte)$", re.I)
 
 
 def _target_adequacy(conn, port: dict, report: Path, fp: str) -> dict:
@@ -2346,6 +2360,14 @@ def _target_adequacy(conn, port: dict, report: Path, fp: str) -> dict:
             # 리포트가 생겼다는 것이 테스트가 돌았다는 뜻이다. 빠졌다고 실패로 두면 고칠 길이 없어 에이전트가 같은 자리를 돈다
             rows.append({**row, "executed": True, "reason": "테스트 파일 — 테스트 실행으로 확인"})
             continue
+        if d is None and STYLE_FILE.search(path) and (root / path).is_file():
+            # 스타일·마크업 — 실행되는 코드가 아니다. 실패로 두면 에이전트가 측정에 맞추려 화면 구조를 바꾼다 (실험에서 JSX 를 지웠다)
+            rows.append({**row, "executed": True, "reason": "화면·스타일 파일 — 실행 범위가 아니라 화면 케이스로 확인"})
+            continue
+        if d is None and VIEW_CODE.search(path) and (root / path).is_file():
+            rows.append({**row, "executed": None, "unmeasurable": True,
+                         "reason": "측정 도구가 이 화면 코드를 읽지 못함 — 사용자 확인 카드로 넘김"})
+            continue
         if d is None:
             rows.append({**row, "executed": None, "reason": "리포트에 이 파일이 없음"})
             continue
@@ -2356,16 +2378,20 @@ def _target_adequacy(conn, port: dict, report: Path, fp: str) -> dict:
             near = [d["lines"][x] for x in range(ln, ln + 9) if x in d["lines"]]
             executed = any(c > 0 for c in near) if near else None
         rows.append({**row, "executed": executed, **({} if executed is not None else {"reason": "측정 줄 없음"})})
-    not_run = [r for r in rows if r["executed"] is not True]
+    not_run = [r for r in rows if r["executed"] is not True and not r.get("unmeasurable")]
+    ran = sum(1 for r in rows if r["executed"] is True)
+    unread = [r["target"] for r in rows if r.get("unmeasurable")]
     cid = "chk_" + uuid.uuid4().hex[:12]
     with ledger.tx(conn):
         conn.execute("INSERT INTO port_check (id, port_id, kind, cases, passed, failed, detail, evidence_id, created_at) "
                      "VALUES (?, ?, 'adequacy:target', ?, ?, ?, ?, NULL, ?)",
-                     (cid, port["id"], len(rows), len(rows) - len(not_run), len(not_run),
+                     (cid, port["id"], len(rows), ran, len(not_run),
                       ledger.dumps({"format": fmt, "report": str(report), "rows": rows, "target_fp": fp}), _now()))
     # 바로 사슬에 잇는다 — 이어지는 검증이 도중에 실패해도 이 기록이 '기록에 없는 검사 결과'로 남아 무결이 깨지지 않게
     guard.record(conn, port["id"], "coverage", {"id": cid, "kind": "adequacy:target"}, checks=[cid])
-    return {"check_id": cid, "ported": len(rows), "executed": len(rows) - len(not_run), "not_executed": not_run[:30]}
+    return {"check_id": cid, "ported": len(rows), "executed": ran, "not_executed": not_run[:30],
+            **({"unmeasured": unread[:30], "unmeasured_note": "측정 도구가 읽지 못한 화면 코드 — 사용자 확인 카드로 넘겼다 "
+                                                            "(측정에 맞추려고 코드 구조를 바꾸지 않는다)"} if unread else {})}
 
 
 _SKIP_DIRS = {".beom", ".git", "tests", "test", "node_modules", ".venv", "venv", "__pycache__"}

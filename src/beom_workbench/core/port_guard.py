@@ -274,6 +274,13 @@ def measurable(root: Path, rel: str) -> bool:
 def coverage_gap(conn, port_id: str) -> dict | None:
     """구현 파일이 모두 툴킷이 잴 수 없는 언어이고 측정 기록도 없으면 그 파일들 — 사람 확인으로 넘길 것.
     없으면 에이전트가 커버리지 도구를 찾고 설치하려 하거나, 없는 '생략 승인' 을 사용자에게 요청하며 같은 자리를 돈다."""
+    last = conn.execute("SELECT detail FROM port_check WHERE port_id = ? AND kind = 'adequacy:target' ORDER BY rowid DESC LIMIT 1",
+                        (port_id,)).fetchone()
+    if last:
+        # 측정은 됐지만 도구가 읽지 못한 화면 코드(JSX 등)가 있으면 그것만 사람 확인으로
+        rows = (json.loads(last["detail"]) if isinstance(last["detail"], str) else last["detail"] or {}).get("rows") or []
+        files = sorted({r["target"].rsplit(":", 1)[0] for r in rows if r.get("unmeasurable")})
+        return {"files": files, "exts": sorted({PurePosixPath(f).suffix for f in files})} if files else None
     if conn.execute("SELECT 1 FROM port_check WHERE port_id = ? AND kind LIKE 'adequacy%' LIMIT 1", (port_id,)).fetchone():
         return None
     row = conn.execute("SELECT target_root FROM port WHERE id = ?", (port_id,)).fetchone()
@@ -333,8 +340,8 @@ def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | Non
     gap = coverage_gap(conn, port_id)
     if gap:
         items.append({"item_id": "coverage", "kind": "coverage_unmeasured", "fingerprint": _sha(gap),
-                      "summary": f"실행 범위 측정 불가 ({', '.join(gap['exts'])}) — 툴킷에 이 언어의 커버리지 도구가 없어 케이스·테스트가 "
-                                 "구현 코드를 모두 거쳤는지 재지 못했습니다. 합격 케이스와 테스트 결과로 충분하면 승인하세요",
+                      "summary": f"실행 범위 측정 불가 ({', '.join(gap['exts'])}) — 툴킷이 이 파일들의 실행 범위를 재지 못해 케이스·테스트가 "
+                                 "구현 코드를 모두 거쳤는지 확인하지 못했습니다. 합격 케이스·화면 확인·테스트 결과로 충분하면 승인하세요",
                       "detail": {"files": gap["files"]}})
     for it in items:
         it["approved"] = (it["item_id"], it["fingerprint"]) in approved

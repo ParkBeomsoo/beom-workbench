@@ -101,7 +101,8 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   · 완료 확인 → wb_port_verify 하나로: 합격 케이스·커버리지에 더해 프로젝트 테스트·타입 검사도 툴킷이 함께 돌려 판정한다
   · 고치는 중에 테스트·타입 검사·빌드·린트만 따로 → wb_task(task="test"|"typecheck"|"build"|"lint") (일부만: paths·name)
   · 의존성 설치 → 의존성 파일에 적고 wb_deps · 커버리지 측정 → wb_port_verify 가 한다
-  · 검증용 서버 띄우기·포트 → 검증 도구의 target_cmd + {port} · 화면 확인 → wb_screen_shot·화면 케이스
+  · 검증용 서버 띄우기·포트 → 검증 도구의 target_cmd + {port} (정적 페이지 — HTML·JS·CSS 만 — 는 아무것도 넘기지 않으면 툴킷이
+    대상 폴더를 내보낸다: http.server 같은 명령을 넘기지 않는다) · 화면 확인 → wb_screen_shot·화면 케이스
   · 파일·폴더 지우기 → wb_remove(paths=[...]) · 검증 찌꺼기(__pycache__·.coverage)·커밋·체크포인트 → 툴킷이 알아서
   · 라이브러리·코드 동작 알아보기 → python -c 대신 .beom/tmp/test_probe.py 같은 테스트로 적고 wb_task(task="test", paths=[...])
   · 파일 고치기(합격 케이스 파일 포함) → Edit·Write (여러 곳을 한꺼번에 바꾸면 Write 로 통째로) — 셸 스크립트로 쓰지 않는다
@@ -192,7 +193,8 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   커버리지(케이스가 만든 코드를 실행했는지)는 툴킷이 잰다 — wb_port_verify 가 매핑한 파일을 프로젝트의 테스트(pytest·node --test·
   vitest)로 돌려 잰다. 측정 명령(target_coverage_cmd)을 짜거나 커버리지 도구를 깔거나(의존성에 넣는 것도) 변환 스크립트를 만들지
   않는다 (테스트를 만들면 된다). 툴킷이 잴 수 없는 언어(Rust 등)면 툴킷이 사용자 승인 카드('직접 확인할 점')를 올린다 —
-  도구를 찾거나 설치하지 말고, 사용자에게 따로 묻지도 말고 다른 승인과 함께 기다린다.
+  도구를 찾거나 설치하지 말고, 사용자에게 따로 묻지도 말고 다른 승인과 함께 기다린다. 측정에 맞추려고 코드 구조를 바꾸거나
+  파일을 지우지 않는다 (스타일·마크업은 화면 케이스로, 측정 도구가 읽지 못한 화면 코드는 툴킷이 사용자 카드로 넘긴다).
   격리 실행 안의 node --test(npm test)는 툴킷이 격리용 설정을 미리 넣어 두어 그대로 돈다 — --test-isolation 같은 옵션을 붙이거나
   우회 스크립트(.cmd 등)를 만들지 않는다. 툴킷이 돌리는 명령(target_cmd·cmd)은 평소처럼 python·npm 으로 쓴다 — 준비한 .beom/venv 와
   node_modules/.bin 이 PATH 앞에 있다 (.beom/venv/Scripts/python.exe 처럼 경로를 적지 않는다).
