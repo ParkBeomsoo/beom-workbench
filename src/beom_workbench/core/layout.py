@@ -353,6 +353,30 @@ def _resolve_js(base: Path, spec: str) -> Path | None:
     return None
 
 
+_INLINE_SCRIPT = re.compile(r"<script\b(?![^>]*\bsrc\s*=)[^>]*>\s*\S", re.I)
+
+
+def inline_script_pages(target: Path, limit: int = 3000) -> list[Path]:
+    """HTML 안에 스크립트를 직접 쓴 페이지 (절대 경로) — 'index.html 한 파일' 처럼. 서버 템플릿(Jinja 등)은 받은 HTML 이 파일과
+    달라 측정과 맞춰 볼 수 없지만, 그 판정은 받은 내용의 지문으로 한다 (여기서는 후보만)."""
+    t = Path(target).resolve()
+    out, seen = [], 0
+    for dirpath, dirs, files in os.walk(t):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        for f in files:
+            if f.lower().endswith((".html", ".htm")):
+                p = Path(dirpath) / f
+                try:
+                    if _INLINE_SCRIPT.search(p.read_text(encoding="utf-8", errors="replace")):
+                        out.append(p)
+                except OSError:
+                    continue
+        seen += len(files)
+        if seen > limit:
+            break
+    return sorted(out)
+
+
 def browser_files(target: Path, limit: int = 3000) -> set[str]:
     """페이지(HTML)가 <script src> 로 불러오는 JS 와 그것이 상대 경로로 import 하는 파일 (대상 폴더 기준 상대 경로) —
     브라우저에서 도는 코드다. 툴킷이 케이스로 띄우는 node·python 프로세스에서는 돌지 않으므로 실행 범위를 거기서 잴 수 없다."""

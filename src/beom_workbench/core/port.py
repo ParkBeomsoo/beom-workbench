@@ -1248,6 +1248,10 @@ class _CaseCoverage:
         project_src = impact.source_files(root)
         self.js += [f for f in project_src if f.suffix in NODE_RUN_EXTS and f not in self.js]
         self.py += [f for f in project_src if f.suffix == ".py" and f not in self.py]
+        # 페이지가 불러가는 JS (브라우저에서 돈다) — 화면 케이스를 돌릴 때 브라우저 엔진에서 잰다
+        from beom_workbench.core import layout
+        self.browser = [(root / r).resolve() for r in sorted(layout.browser_files(root)) if r.endswith((".js", ".mjs"))]
+        self.browser += layout.inline_script_pages(root)  # HTML 안에 직접 쓴 <script> — 그 HTML 파일의 줄로 잰다
         py_dirs = sorted({str(r) for r in impact.scan_roots(root)} | {str(f.parent) for f in self.py})
         self.env: dict[str, str] = {}
         self.stop_file = self.dir / "stop"
@@ -1303,11 +1307,55 @@ class _CaseCoverage:
                 f = self.dir / "node.info"
                 f.write_text(text, encoding="utf-8")
                 out.append(f)
+        pages = sorted((self.dir / "browser").glob("page-*.json")) if (self.dir / "browser").is_dir() else []
+        if pages:
+            state["browser_ran"] = True
+            resolve, transformed = self._browser_resolver(pages)
+            text = _v8_lcov(pages, self.browser, resolve=resolve)
+            state["browser_transformed"] = sorted(transformed)
+            if text:
+                f = self.dir / "browser.info"
+                f.write_text(text, encoding="utf-8")
+                out.append(f)
         return out, state
 
+    def _browser_resolver(self, pages: list[Path]):
+        """브라우저가 받은 스크립트 주소 → 대상 폴더의 파일 — 받은 내용의 지문이 파일과 같을 때만 (빌드·변환된 코드는 줄 위치가 달라
+        그 파일의 실행 범위로 쓸 수 없다 — transformed 로 따로 알린다)."""
+        import hashlib
+        import urllib.parse
+        sources: dict[str, str] = {}
+        for p in pages:
+            try:
+                sources.update(json.loads(p.read_text(encoding="utf-8")).get("sources") or {})
+            except (OSError, ValueError):
+                continue
+        rels = {f: os.path.relpath(f, self.root).replace("\\", "/") for f in self.browser}
+        transformed: set[str] = set()
 
-def _v8_lcov(reports: list[Path], files: list[Path]) -> str:
-    """node 의 V8 실행 범위 기록 → LCOV (매핑한 파일만). 함수는 처음 범위의 호출 수, 줄은 그 줄을 품은 가장 안쪽 범위의 수."""
+        def resolve(url: str) -> Path | None:
+            path = urllib.parse.unquote(urllib.parse.urlsplit(url).path).lstrip("/")
+            if not path or path.endswith("/"):
+                path += "index.html"  # 폴더 주소는 그 폴더의 index.html (정적 서버의 규칙)
+            exact = (self.root / path).resolve()
+            hits = [exact] if exact in rels else [f for f, r in rels.items() if r == path or r.endswith("/" + path)]
+            if len(hits) != 1:
+                return None
+            f = hits[0]
+            try:
+                same = hashlib.sha256(f.read_bytes()).hexdigest() == sources.get(url)
+            except OSError:
+                same = False
+            if not same:
+                transformed.add(rels[f])
+                return None
+            return f
+        return resolve, transformed
+
+
+def _v8_lcov(reports: list[Path], files: list[Path], resolve=None) -> str:
+    """V8 실행 범위 기록(node·브라우저) → LCOV (주어진 파일만). 함수는 처음 범위의 호출 수, 줄은 그 줄을 품은 가장 안쪽 범위의 수.
+    브라우저 기록의 start(문서 안 시작 줄·칸)가 있으면 그만큼 밀어서 — HTML 안에 직접 쓴 <script> 를 HTML 파일의 줄에 맞춘다."""
     import bisect
     import urllib.parse
     import urllib.request
@@ -1320,11 +1368,14 @@ def _v8_lcov(reports: list[Path], files: list[Path]) -> str:
             continue
         for sc in data.get("result") or []:
             url = sc.get("url") or ""
-            if not url.startswith("file:"):
+            if url.startswith("file:"):
+                path = os.path.normcase(os.path.abspath(urllib.request.url2pathname(urllib.parse.urlparse(url).path)))
+            elif resolve is not None and (hit := resolve(url)) is not None:
+                path = os.path.normcase(str(hit))  # 브라우저 — 받은 주소를 파일로 (내용이 같을 때만)
+            else:
                 continue
-            path = os.path.normcase(os.path.abspath(urllib.request.url2pathname(urllib.parse.urlparse(url).path)))
             if path in want:
-                runs.setdefault(path, []).append(sc.get("functions") or [])
+                runs.setdefault(path, []).append((sc.get("functions") or [], sc.get("start") or [0, 0]))
     out = []
     for key, per_run in runs.items():
         src = want[key].read_text(encoding="utf-8", errors="replace")
@@ -1337,18 +1388,20 @@ def _v8_lcov(reports: list[Path], files: list[Path]) -> str:
         line_of = lambda off: bisect.bisect_right(starts, off)  # noqa: E731 — 1부터
         fns: dict[tuple[str, int], int] = {}
         lines: dict[int, int] = {}
-        for fn_list in per_run:
+        for fn_list, start in per_run:
+            sl, sc0 = (int(start[0]), int(start[1])) if isinstance(start, (list, tuple)) and len(start) == 2 else (0, 0)
+            base = (starts[sl] if sl < len(starts) else 0) + sc0  # 스크립트가 파일 안에서 시작하는 자리
             paint: dict[int, int] = {}
             spans = []
             for fn in fn_list:
                 rs = fn.get("ranges") or []
                 if not rs:
                     continue
-                ln = line_of(rs[0]["startOffset"])
+                ln = line_of(base + rs[0]["startOffset"])
                 name = (fn.get("functionName") or "(anonymous)") + f"@{ln}"
-                if fn.get("functionName") or ln > 1:
+                if fn.get("functionName") or rs[0]["startOffset"] > 0:  # 스크립트 전체(맨 위) 는 함수가 아니다
                     fns[(name, ln)] = fns.get((name, ln), 0) + int(rs[0]["count"])
-                spans.extend((r["startOffset"], r["endOffset"], int(r["count"])) for r in rs)
+                spans.extend((base + r["startOffset"], base + r["endOffset"], int(r["count"])) for r in rs)
             for st, en, cnt in sorted(spans, key=lambda x: x[0] - x[1]):  # 넓은 범위부터 — 안쪽 범위가 덮어쓴다
                 for i, off in enumerate(firsts):
                     if off is not None and st <= off < en:
@@ -1381,7 +1434,27 @@ def _auto_run() -> dict | None:
         return None
 
 
+REPEAT_MAX = 1_000_000
+
+
+def _expand(value):
+    """케이스 값 도우미 — {"$repeat": "b", "times": 201} → 'bbb…' (201자). 길이 제한 확인 같은 케이스에서 긴 입력을 손으로 세거나
+    스크립트로 케이스 파일을 고치지 않게 (실험: 에이전트가 201자를 만들려고 PowerShell 정규식으로 cases.json 을 고쳤다)."""
+    if isinstance(value, dict):
+        if set(value) == {"$repeat", "times"}:
+            unit, times = value["$repeat"], value["times"]
+            if not isinstance(unit, str) or not isinstance(times, int) or isinstance(times, bool) or not 0 <= times * len(unit) <= REPEAT_MAX:
+                raise ToolError("invalid_request", f"$repeat 는 {{\"$repeat\": 문자열, \"times\": 0 이상 정수}} (모두 {REPEAT_MAX}자 이하)")
+            return unit * times
+        return {k: _expand(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand(v) for v in value]
+    return value
+
+
 def _template(value, saved: dict):
+    if isinstance(value, dict) and set(value) == {"$repeat", "times"}:
+        return _expand(value)
     if isinstance(value, str):
         def rep(m: re.Match) -> str:
             cur = saved
@@ -2126,7 +2199,8 @@ def _screens_for(cases: list[dict], side: _Side, url: str | None) -> dict[int, d
             c = cases[i]
             name = re.sub(r"[^\w-]+", "_", c.get("name") or f"case{i + 1}")
             try:
-                spec = screens.page_spec(c["screen"] if isinstance(c["screen"], dict) else {"path": str(c["screen"])}, url,
+                scr = _expand(c["screen"])  # 화면 동작의 입력값도 ($repeat)
+                spec = screens.page_spec(scr if isinstance(scr, dict) else {"path": str(scr)}, url,
                                          side.cwd, str(folder / f"{name}.png"), file_base=served.base)
             except ToolError as e:
                 out[i] = {"status": None, "body": None, "error": e.message}
@@ -2134,7 +2208,8 @@ def _screens_for(cases: list[dict], side: _Side, url: str | None) -> dict[int, d
             e = c.get("expect") or {}
             pages.append((i, {**spec, "visible": e.get("visible") or [], "selectors": e.get("selectors") or []}))
         try:
-            got = screens.capture([p for _, p in pages])
+            cc = getattr(side, "casecov", None)
+            got = screens.capture([p for _, p in pages], coverage_dir=(cc.dir / "browser") if cc is not None else None)
         except ToolError as e:
             return {**out, **{i: {"status": None, "body": None, "error": e.message} for i, _ in pages}}
     for (i, _), r in zip(pages, got):
@@ -2422,6 +2497,11 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
         target_url = static.base
     if not (target_url or target_cli or any("call" in c for c in cases)):
         raise ToolError("invalid_request", "target_url(HTTP) 또는 target_cli(명령) 이 필요함")
+    cli_cases = [c.get("name") or f"#{i + 1}" for i, c in enumerate(cases) if "call" not in c and ("argv" in c or "stdin" in c)]
+    if cli_cases and not target_cli:
+        # 돌리기 전에 — 예전에는 모든 케이스를 돌린 뒤 명령줄 케이스마다 'CLI 명령이 없음' 으로 실패했고, 에이전트가 같은 검증을 되풀이했다
+        raise ToolError("invalid_request", f"명령줄 케이스(argv·stdin) {len(cli_cases)}개에 쓸 target_cli 가 없음: {', '.join(cli_cases[:5])}",
+                        recovery="target_cli 에 그 프로그램을 실행하는 명령을 함께 넘긴다 (서버와 함께면 target_cmd·target_url 도)")
     side = _Side("target", root, _harness_dir(settings))
     side.screens = _port_dir(settings, proj, port_id) / "screens" / "target"
     if not target_coverage_cmd and not target_coverage_report and not side.image and root.is_dir():
@@ -2607,8 +2687,25 @@ def _py_enclosing(path: Path, line: int) -> tuple[int, ...]:
     return tuple(dict.fromkeys([best.lineno, *(dec.lineno for dec in best.decorator_list)]))
 
 
+def _py_statement(path: Path, line: int) -> int | None:
+    """파이썬 파일에서 그 줄을 품은 가장 안쪽 문장의 시작 줄 — 여러 줄에 걸친 문장(긴 문자열·딕셔너리·리스트)은 커버리지에 시작 줄만
+    기록된다 (예: 함수 밖의 HTML 템플릿 문자열 안의 줄)."""
+    import ast
+    try:
+        tree = ast.parse(Path(path).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, SyntaxError, ValueError):
+        return None
+    best = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.stmt) and node.lineno <= line <= (node.end_lineno or node.lineno):
+            if best is None or node.lineno >= best.lineno:
+                best = node
+    return best.lineno if best is not None else None
+
+
 def _fn_count(d: dict, path: Path, line: int, near: int) -> int | None:
-    """그 줄 근처(±near)에서 시작하는 함수, 아니면 (파이썬) 그 줄을 품은 함수의 호출 수 — 없으면 None."""
+    """그 줄 근처(±near)에서 시작하는 함수, 아니면 (파이썬) 그 줄을 품은 함수의 호출 수, 그도 아니면 (파이썬) 그 줄을 품은 문장의
+    시작 줄이 실행된 횟수 — 없으면 None."""
     fns = [n for _, fl, n in d["functions"] if fl and abs(fl - line) <= near]
     if fns:
         return max(fns)
@@ -2617,7 +2714,23 @@ def _fn_count(d: dict, path: Path, line: int, near: int) -> int | None:
         hit = [n for _, fl, n in d["functions"] if fl in starts]
         if hit:
             return max(hit)
+        stmt = _py_statement(path, line)
+        if stmt is not None and stmt in d["lines"]:
+            return d["lines"][stmt]
     return None
+
+
+def _merge_cov(data: dict, part: dict, norm=lambda k: k) -> None:
+    """측정 기록을 합친다 — 같은 파일이 여러 실행(node·브라우저·파이썬 프로세스)에 나오면 덮어쓰지 않고 줄은 큰 값, 함수는 모두."""
+    for k, v in part.items():
+        key = norm(k)
+        cur = data.get(key)
+        if cur is None:
+            data[key] = {"lines": dict(v["lines"]), "functions": list(v["functions"])}
+            continue
+        for ln, c in v["lines"].items():
+            cur["lines"][ln] = max(cur["lines"].get(ln, 0), c)
+        cur["functions"].extend(v["functions"])
 
 
 def _measured_fn(reports: list[Path], root: Path, browser: set, state: dict):
@@ -2628,12 +2741,14 @@ def _measured_fn(reports: list[Path], root: Path, browser: set, state: dict):
             _, part = runtime.parse(rp.read_text(encoding="utf-8-sig", errors="replace"))
         except (OSError, ToolError):
             continue
-        data.update({os.path.normcase(os.path.abspath(k)): v for k, v in part.items()})
+        _merge_cov(data, part, lambda k: os.path.normcase(os.path.abspath(k)))
 
     def measured(path: str, line: int) -> bool | None:
         d = data.get(os.path.normcase(os.path.abspath(path)))
         rel = os.path.relpath(path, root).replace("\\", "/")
         if d is None:
+            if rel in browser:  # 화면 코드 — 브라우저에서 잰 결과가 있고 내용이 같은 파일이면 '안 거침'
+                return False if state.get("browser_ran") and rel not in (state.get("browser_transformed") or ()) else None
             if not guard.measurable(root, rel, browser) or state.get("forced_stop") or (path.endswith(".py") and state.get("python_nocov")):
                 return None
             return False
@@ -2681,7 +2796,7 @@ def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None
     for rp in (report if isinstance(report, list) else [report]):  # 언어마다 하나씩 잰 리포트를 합친다 (파이썬 + JS)
         fmt, part = runtime.parse(rp.read_text(encoding="utf-8-sig", errors="replace"))
         fmts.append(fmt)
-        data.update(part)
+        _merge_cov(data, part)
     fmt = "+".join(dict.fromkeys(fmts))
     norm = {k.replace("\\", "/").lower(): v for k, v in data.items()}
     if base.resolve() != root.resolve():
@@ -2694,8 +2809,14 @@ def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None
         """케이스 실행을 직접 쟀는데 이 파일 기록이 없을 때 — 툴킷이 잴 수 없었던 이유 (없으면 케이스가 안 거친 것)."""
         rel = os.path.relpath(root / path, root).replace("\\", "/")
         ext = PurePosixPath(path).suffix.lower()
-        if VIEW_CODE.search(path) or rel in browser:
-            return "브라우저에서 도는 화면 코드 — 툴킷이 케이스로 띄우는 프로세스 밖이라 실행 범위를 재지 못함 (화면 케이스로 확인)"
+        if VIEW_CODE.search(path):
+            return "빌드 도구가 바꿔서 브라우저에 보내는 화면 코드 — 툴킷이 실행 범위를 재지 못함 (화면 케이스로 확인)"
+        if rel in browser:
+            if rel in (state.get("browser_transformed") or ()):
+                return "브라우저가 받은 코드가 이 파일과 다름 (빌드·변환됨) — 툴킷이 실행 범위를 재지 못함 (화면 케이스로 확인)"
+            if not state.get("browser_ran"):
+                return "브라우저에서 도는 화면 코드 — 이 화면을 여는 화면 케이스가 없어 재지 못함"
+            return None
         if ext != ".py" and ext not in NODE_RUN_EXTS:
             return "툴킷이 이 언어의 실행 범위를 재지 못함"
         if ext == ".py" and state.get("python_nocov"):
@@ -2751,6 +2872,8 @@ def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None
             if why:
                 # 못 잰 이유가 툴킷 쪽 — 실패로 두면 에이전트가 측정에 맞추려 매핑·코드를 바꾼다 (실험: app.js → index.html)
                 rows.append({**row, "executed": None, "unmeasurable": True, "reason": why + " — 사용자 확인 카드로 넘김"})
+            elif os.path.relpath(root / path, root).replace("\\", "/") in browser:
+                rows.append({**row, "executed": False, "reason": "화면 케이스가 이 코드를 실행하지 않음 — 이 화면을 열고 그 동작을 하는 화면 케이스가 필요"})
             else:
                 rows.append({**row, "executed": False, "reason": "합격 케이스가 이 파일을 실행하지 않음 — 이 동작을 거치는 케이스가 필요"})
             continue
@@ -2758,12 +2881,23 @@ def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None
             rows.append({**row, "executed": None, "reason": "리포트에 이 파일이 없음"})
             continue
         cnt = _fn_count(d, root / path, ln, 3)
+        if STYLE_FILE.search(path) and cnt is None and ln not in d["lines"]:
+            # HTML 의 마크업 줄 (그 안의 <script> 만 잰다) — 화면 파일 규칙대로
+            rows.append({**row, "executed": True, "reason": "화면·스타일 파일 — 실행 범위가 아니라 화면 케이스로 확인"})
+            continue
         if cnt is not None:
             executed = cnt > 0
         else:
             near = [d["lines"][x] for x in range(ln, ln + 9) if x in d["lines"]]
             executed = any(c > 0 for c in near) if near else None
-        rows.append({**row, "executed": executed, **({} if executed is not None else {"reason": "측정 줄 없음"})})
+        why = None
+        if executed is None:
+            why = "측정 줄 없음"
+        elif executed is False:  # 잰 기록이 있는데 그 함수가 돌지 않았다 — 에이전트가 할 일을 적는다
+            on_page = os.path.relpath(root / path, root).replace("\\", "/") in (browser or ())
+            why = ("화면 케이스가 이 코드를 실행하지 않음 — 이 화면을 열고 그 동작을 하는 화면 케이스가 필요" if on_page else
+                   "합격 케이스가 이 코드를 실행하지 않음 — 이 동작을 거치는 케이스가 필요")
+        rows.append({**row, "executed": executed, **({"reason": why} if why else {})})
     not_run = [r for r in rows if r["executed"] is not True and not r.get("unmeasurable")]
     ran = sum(1 for r in rows if r["executed"] is True)
     unread = [r["target"] for r in rows if r.get("unmeasurable")]

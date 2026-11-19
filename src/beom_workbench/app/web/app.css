@@ -266,6 +266,11 @@ kbd { font-family: var(--sans); font-size: 10.5px; font-weight: 500; color: var(
 .tbl td.k { width: 52px; white-space: nowrap; word-break: keep-all; font-weight: 600; font-size: 11.5px; color: var(--faint); font-family: var(--mono); }
 .tbl td.c { font-family: var(--mono); font-size: 12px; color: var(--text); }
 .tbl td.diff { font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; word-break: break-all; color: var(--text); }
+.tbl td.diff .dfile { font-weight: 600; margin-bottom: 4px; }
+.tbl td.diff .dl { padding: 0 4px; border-radius: 3px; }
+.tbl td.diff .dl.del { color: var(--fail); background: var(--fail-soft); }
+.tbl td.diff .dl.add { color: var(--ok); background: var(--ok-soft); }
+.tbl td.diff .dl.hunk { color: var(--faint); }
 .tbl td.r { color: var(--faint); font-size: 11.5px; text-align: right; white-space: nowrap; font-weight: 560; }
 .tbl tr.th td { color: var(--faint); font-size: 11.5px; font-weight: 600; padding-top: 8px; padding-bottom: 6px; }
 .tbl td.in { color: var(--muted); white-space: pre-wrap; word-break: break-all; }

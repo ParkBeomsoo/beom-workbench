@@ -1170,7 +1170,10 @@ function reviewCard(R, asking) {
     h("table", { class: "tbl" }, ...R.checks.map((x) => h("tr", {}, h("td", { text: x.summary + (x.files.length ? " — " + x.files.slice(0, 6).join(", ") : "") })))));
   if ((R.tests_changed || []).length) rows.push(h("div", { class: "sub", text: "원래 있던 테스트를 바꿈" }),
     h("div", { class: "desc", text: "원래 테스트는 예전 동작을 기대합니다. 요청으로 바뀐 동작만큼만 고쳤는지 보세요." }),
-    h("table", { class: "tbl" }, ...R.tests_changed.map((x) => h("tr", {}, h("td", { class: "diff", text: x.file + "\n" + x.diff })))));
+    h("table", { class: "tbl" }, ...R.tests_changed.map((x) => h("tr", {}, h("td", { class: "diff" },
+      h("div", { class: "dfile", text: x.file }),
+      ...String(x.diff || "").split("\n").filter((l) => !/^(---|\+\+\+) /.test(l)).map((l) =>
+        h("div", { class: /^-/.test(l) ? "dl del" : /^\+/.test(l) ? "dl add" : /^@@/.test(l) ? "dl hunk" : "dl", text: l || " " })))))));
   if (R.case_changes.length) rows.push(h("div", { class: "sub", text: "케이스 변경" }),
     h("table", { class: "tbl" }, ...R.case_changes.flatMap((x) => [
       (x && x.removed && x.removed.length) ? h("tr", {}, h("td", { class: "k", text: "빠짐" }), h("td", { text: x.removed.join(", ") + " — 이전 승인 기준에서 빠진 케이스" })) : null,

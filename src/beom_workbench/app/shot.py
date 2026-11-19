@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 
 def main() -> int:
@@ -28,6 +29,10 @@ def main() -> int:
     app = QApplication([])
     results: list[dict] = []
     state = {"i": -1, "cur": None, "timer": None}
+    # 검증 중이면 페이지 JS 의 실행 범위도 잰다 — 개발자 도구 연결(CDP)로 V8 커버리지를 받아 케이스마다 파일로 남긴다
+    cov_dir = os.environ.get("BEOM_SHOT_COVERAGE")
+    dbg = (os.environ.get("QTWEBENGINE_REMOTE_DEBUGGING") or "").rsplit(":", 1)[-1]
+    cov = {"ws": None, "pending": {}, "seq": 0}
 
     class Page(QWebEnginePage):
         def javaScriptConsoleMessage(self, level, message, line, source):  # noqa: N802 — Qt 이름
@@ -45,6 +50,85 @@ def main() -> int:
         page = Page(prof, view)
         kept.extend([view.page(), prof])
         view.setPage(page)
+
+    def cdp_send(method, params=None, cb=None):
+        cov["seq"] += 1
+        cov["pending"][cov["seq"]] = cb
+        cov["ws"].sendTextMessage(json.dumps({"id": cov["seq"], "method": method, "params": params or {}}))
+
+    def cdp_msg(text):
+        try:
+            m = json.loads(text)
+        except ValueError:
+            return
+        if m.get("method") == "Debugger.scriptParsed":
+            # 스크립트가 문서 어디서 시작하는지 — HTML 안에 직접 쓴 <script> 의 실행 범위를 HTML 파일의 줄에 맞출 때 쓴다
+            p = m.get("params") or {}
+            cov.setdefault("scripts", {})[p.get("scriptId")] = [p.get("startLine", 0), p.get("startColumn", 0)]
+            return
+        cb = cov["pending"].pop(m.get("id"), None) if "id" in m else None
+        if cb:
+            cb(m.get("result") if "result" in m else {"error": m.get("error")})
+
+    def cov_start(idx, ready):
+        """측정을 켜고 같은 페이지를 다시 불러온다 — 처음 불릴 때 도는 코드까지 재려면 켠 뒤에 스크립트가 실행돼야 한다.
+        다시 부르기 전에 그 주소의 저장소를 비운다 (첫 불러오기가 남긴 기록이 두 번째에 보이지 않게). 안 되면 재지 않고 이어 간다."""
+        from PySide6.QtWebSockets import QWebSocket
+        from urllib.parse import urlsplit
+        cur = state["cur"]
+        cur["_cov"] = "starting"
+        ws = QWebSocket()
+        cov.update(ws=ws, pending={}, scripts={})
+        ws.textMessageReceived.connect(cdp_msg)
+        u = urlsplit(view.page().url().toString())
+        origin = f"{u.scheme}://{u.netloc}"
+
+        def failed(_=None):
+            if idx == state["i"] and cur.get("_cov") == "starting":
+                cur["_cov"] = "failed"
+                ready()
+        QTimer.singleShot(8000, failed)
+        # 디버거는 스크립트 위치를 받으려고만 켠다 — 페이지의 debugger 문에서 멈추지 않게 모든 멈춤을 건너뛴다
+        ws.connected.connect(lambda: cdp_send("Profiler.enable", {}, lambda r: cdp_send("Debugger.enable", {}, lambda rd: cdp_send(
+            "Debugger.setSkipAllPauses", {"skip": True}, lambda rs: cdp_send(
+            "Profiler.startPreciseCoverage", {"callCount": True, "detailed": True}, lambda r2: cdp_send(
+                "Storage.clearDataForOrigin", {"origin": origin, "storageTypes": "all"}, lambda r3: (
+                    cur.update(_cov="on", _loaded=False), QTimer.singleShot(0, lambda: view.page().triggerAction(
+                        QWebEnginePage.WebAction.ReloadAndBypassCache)))))))))
+        ws.open(QUrl(f"ws://127.0.0.1:{dbg}/devtools/page/{view.page().devToolsId()}"))
+
+    def cov_take(idx, then):
+        """케이스가 끝날 때 — 실행 범위와, 브라우저가 받은 스크립트의 내용 지문(파일과 같은지 툴킷이 확인한다)을 남긴다."""
+        cur = state["cur"]
+        if cur.get("_cov") != "on" or cov["ws"] is None:
+            then()
+            return
+        page_url = view.page().url().toString()
+
+        def done(r):
+            import hashlib
+            import urllib.request
+            scripts = [x for x in (r or {}).get("result") or [] if str(x.get("url", "")).startswith(("http://", "https://"))]
+            for x in scripts:  # 문서 안 시작 위치 (외부 .js 파일은 0,0 — HTML 안 <script> 는 그 블록이 시작하는 줄·칸)
+                x["start"] = (cov.get("scripts") or {}).get(x.get("scriptId"), [0, 0])
+            sources = {}
+            for x in scripts:
+                try:
+                    with urllib.request.urlopen(x["url"], timeout=5) as resp:  # noqa: S310 — 검증 서버(127.0.0.1)
+                        sources[x["url"]] = hashlib.sha256(resp.read()).hexdigest()
+                except Exception:  # noqa: BLE001 — 못 받으면 그 스크립트는 파일과 맞춰 보지 못한다
+                    continue
+            try:
+                Path(cov_dir, f"page-{idx}.json").write_text(json.dumps({"url": page_url, "result": scripts, "sources": sources}),
+                                                            encoding="utf-8")
+            except OSError:
+                pass
+            ws = cov["ws"]
+            cov["ws"] = None
+            kept.append(ws)  # 자기 신호를 처리하는 중에 지우면 엔진이 죽는다 — 끝날 때까지 붙잡고, 닫기·다음 케이스는 다음 차례에
+            QTimer.singleShot(0, lambda: (ws.close(), then()))
+        cdp_send("Profiler.takePreciseCoverage", {}, done)
+        QTimer.singleShot(8000, lambda: idx == state["i"] and cov["ws"] is not None and (cov.update(ws=None), then()))
 
     def next_page():
         if state["cur"] is not None:
@@ -95,40 +179,66 @@ def main() -> int:
             cur["height"] = full
             if state["timer"]:
                 state["timer"].stop()
-            next_page()
+            cov_take(idx, next_page)
 
         QTimer.singleShot(300, shoot)
 
-    ACT_JS = """((a) => {
-      const pick = (s) => { try { return s ? document.querySelector(s) : document.activeElement; } catch (e) { return null; } };
-      if (a.fill !== undefined) {
-        const el = pick(a.fill); if (!el) return "입력할 요소 없음: " + a.fill;
-        el.focus();
-        const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value");
-        if (d && d.set) d.set.call(el, String(a.value ?? "")); else el.value = String(a.value ?? "");
-        el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true }));
-        return "";
-      }
-      if (a.click !== undefined) { const el = pick(a.click); if (!el) return "누를 요소 없음: " + a.click; el.scrollIntoView({ block: "center" }); el.click(); return ""; }
-      if (a.press !== undefined) {
-        const el = pick(a.on) || document.body; let key = String(a.press);
-        if (key === "Space" || key === "Spacebar") key = " ";
-        if (a.on && el.focus) el.focus();
-        const code = key === "Enter" ? "Enter" : key === " " ? "Space" : key;
-        const opt = { key, code, keyCode: key === "Enter" ? 13 : key === "Escape" ? 27 : key === " " ? 32 : 0, bubbles: true, cancelable: true };
-        const go = el.dispatchEvent(new KeyboardEvent("keydown", opt));
-        el.dispatchEvent(new KeyboardEvent("keyup", opt));
-        if (!go) return "";
-        // 진짜 브라우저의 기본 동작: 버튼·링크에 Enter, 버튼·체크박스에 Space 는 누름. 입력칸의 Enter 는 양식 제출
-        const tag = el.tagName || "", type = String(el.type || "").toLowerCase(), role = el.getAttribute ? el.getAttribute("role") : "";
-        const pressable = tag === "BUTTON" || role === "button" || (tag === "INPUT" && ["button", "submit", "reset"].includes(type));
-        if ((key === "Enter" && (pressable || tag === "A" || tag === "SUMMARY")) ||
-            (key === " " && (pressable || (tag === "INPUT" && ["checkbox", "radio"].includes(type))))) { el.click(); return ""; }
-        if (key === "Enter" && el.form) { if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit(); }
-        return "";
-      }
+    # 화면 동작 — 사람이 하듯 진짜 입력으로. 예전에는 자바스크립트로 만든 가짜 키보드·클릭 이벤트를 보내, Tab 으로 포커스가 옮겨
+    # 가지 않고(:focus-visible 확인이 실패) 기본 동작(Enter·Space)을 흉내 내야 했다. 이제 키는 브라우저 엔진에 진짜 키 입력으로,
+    # 클릭은 요소 한가운데를 진짜 마우스로 누른다 (다른 요소에 가려져 있으면 사람도 못 누른다 — 그렇다고 알린다).
+    # 값 채우기(fill)는 입력칸에 값을 넣고 input·change 를 알린다 (한글 같은 글자는 키 입력으로 보낼 수 없어서).
+    FILL_JS = """((a) => {
+      const el = (() => { try { return document.querySelector(a.fill); } catch (e) { return null; } })();
+      if (!el) return "입력할 요소 없음: " + a.fill;
+      el.focus();
+      const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value");
+      if (d && d.set) d.set.call(el, String(a.value ?? "")); else el.value = String(a.value ?? "");
+      el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true }));
       return "";
     })(%s)"""
+    AIM_JS = """((sel, focus) => {
+      let el; try { el = sel ? document.querySelector(sel) : document.activeElement; } catch (e) { el = null; }
+      if (!el) return JSON.stringify({ missing: true });
+      el.scrollIntoView({ block: "center", inline: "center" });
+      if (focus) { if (el.focus) el.focus(); return JSON.stringify({ ok: true }); }
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) return JSON.stringify({ hidden: true });
+      const x = r.left + r.width / 2, y = r.top + r.height / 2, top = document.elementFromPoint(x, y);
+      return JSON.stringify({ x, y, covered: !(top && (top === el || el.contains(top))),
+                              by: top && top !== el && !el.contains(top) ? (top.id ? "#" + top.id : top.tagName.toLowerCase()) : null });
+    })(%s, %s)"""
+    KEYS = {"enter": "Key_Return", "return": "Key_Return", "tab": "Key_Tab", "escape": "Key_Escape", "esc": "Key_Escape",
+            "space": "Key_Space", "spacebar": "Key_Space", " ": "Key_Space", "backspace": "Key_Backspace", "delete": "Key_Delete",
+            "arrowup": "Key_Up", "arrowdown": "Key_Down", "arrowleft": "Key_Left", "arrowright": "Key_Right", "up": "Key_Up",
+            "down": "Key_Down", "left": "Key_Left", "right": "Key_Right", "home": "Key_Home", "end": "Key_End",
+            "pageup": "Key_PageUp", "pagedown": "Key_PageDown"}
+    MODS = {"shift": "ShiftModifier", "ctrl": "ControlModifier", "control": "ControlModifier", "alt": "AltModifier",
+            "meta": "MetaModifier", "cmd": "MetaModifier"}
+
+    def send_key(spec: str) -> str:
+        """'Tab' · 'Shift+Tab' · 'Enter' · 'a' 같은 키 하나를 진짜 키 입력으로."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        parts = [x for x in str(spec).split("+") if x] if str(spec).strip() != "+" else ["+"]
+        if str(spec) in (" ", "Space"):
+            parts = [" "]
+        mods = Qt.KeyboardModifier.NoModifier
+        for m in parts[:-1]:
+            if m.strip().lower() not in MODS:
+                return f"알 수 없는 키 조합: {spec}"
+            mods |= getattr(Qt.KeyboardModifier, MODS[m.strip().lower()])
+        key = parts[-1] if parts else ""
+        w = view.focusProxy() or view
+        view.activateWindow()
+        w.setFocus()
+        name = KEYS.get(key.lower()) if key != " " else KEYS[" "]
+        if name:
+            QTest.keyClick(w, getattr(Qt.Key, name), mods)
+        elif len(key) == 1 and key.isascii():
+            QTest.keyClick(w, key, mods)
+        else:
+            return f"보낼 수 없는 키: {spec} (글자 입력은 fill 로)"
+        return ""
 
     def run_actions(idx, acts, done):
         if idx != state["i"]:
@@ -147,12 +257,58 @@ def main() -> int:
 
         if set(a) <= {"wait_ms"}:
             after("")
+        elif a.get("fill") is not None:
+            view.page().runJavaScript(FILL_JS % json.dumps(a, ensure_ascii=False), 0, after)
+        elif a.get("click") is not None:
+            def clicked(raw):
+                from PySide6.QtCore import QPoint, Qt
+                from PySide6.QtTest import QTest
+                try:
+                    r = json.loads(raw) if isinstance(raw, str) else {}
+                except ValueError:
+                    r = {}
+                if r.get("missing"):
+                    return after("누를 요소 없음: " + str(a["click"]))
+                if r.get("hidden"):
+                    return after("누를 요소가 화면에 보이지 않음 (크기 0): " + str(a["click"]))
+                if r.get("covered"):
+                    return after(f"누를 요소가 다른 요소({r.get('by')})에 가려져 있음: {a['click']}")
+                z = view.page().zoomFactor() or 1.0
+                w = view.focusProxy() or view
+                view.activateWindow()
+                QTest.mouseClick(w, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                                 QPoint(int(r["x"] * z), int(r["y"] * z)))
+                after("")
+            # 스크롤이 끝난 뒤 자리를 다시 재서 누른다
+            view.page().runJavaScript(AIM_JS % (json.dumps(a["click"]), "false"), 0,
+                                      lambda _r: QTimer.singleShot(60, lambda: idx == state["i"] and view.page().runJavaScript(
+                                          AIM_JS % (json.dumps(a["click"]), "false"), 0, clicked)))
+        elif a.get("press") is not None:
+            def focused(raw):
+                try:
+                    r = json.loads(raw) if isinstance(raw, str) else {}
+                except ValueError:
+                    r = {}
+                if a.get("on") and r.get("missing"):
+                    return after("키를 누를 요소 없음: " + str(a["on"]))
+                after(send_key(a["press"]))
+            if a.get("on"):
+                view.page().runJavaScript(AIM_JS % (json.dumps(a["on"]), "true"), 0, focused)
+            else:
+                focused("{}")
         else:
-            view.page().runJavaScript(ACT_JS % json.dumps(a, ensure_ascii=False), 0, after)
+            after("알 수 없는 동작: " + json.dumps(a, ensure_ascii=False)[:80])
 
     def loaded(ok):
         if state["cur"] is None or state["i"] >= len(pages) or state["cur"].get("_loaded"):
             return  # 페이지가 스스로 다시 이동해도 한 번만 확인한다
+        cur = state["cur"]
+        if cov_dir and dbg and ok and not cur.get("_cov") and view.page().url().scheme() in ("http", "https"):
+            i0 = state["i"]
+            cov_start(i0, lambda: idx_ok(i0) and loaded(True))  # 측정을 켜고 다시 불러온 뒤 확인을 이어 간다 (안 되면 그대로)
+            return
+        if cur.get("_cov") == "starting":
+            return
         state["cur"]["_loaded"] = True
         if not ok:
             state["cur"]["errors"].append("페이지를 열지 못함")
@@ -173,6 +329,9 @@ def main() -> int:
                 QTimer.singleShot(150 if p.get("actions") else 0, lambda: idx == state["i"] and view.page().runJavaScript(js, 0, lambda r: checked(r, idx)))
 
         QTimer.singleShot(int(p.get("wait_ms") or 800), lambda: run_actions(idx, list(p.get("actions") or []), check))
+
+    def idx_ok(i0):
+        return i0 == state["i"]
 
     view.loadFinished.connect(loaded)
     QTimer.singleShot(0, next_page)

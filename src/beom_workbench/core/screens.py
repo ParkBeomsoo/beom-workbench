@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 from beom_workbench.common.response import ToolError
 
@@ -104,8 +105,10 @@ class serve_folder:
         self.srv.server_close()
 
 
-def capture(pages: list[dict], timeout: float = 300) -> list[dict]:
-    """여러 페이지를 브라우저 엔진 하나로 차례대로. 결과는 pages 와 같은 순서."""
+def capture(pages: list[dict], timeout: float = 300, coverage_dir: Path | None = None) -> list[dict]:
+    """여러 페이지를 브라우저 엔진 하나로 차례대로. 결과는 pages 와 같은 순서.
+    coverage_dir: 검증 중 — 페이지 JS 의 실행 범위를 케이스마다 그 폴더에 남긴다 (브라우저 엔진의 개발자 도구 연결을 이 컴퓨터
+    안(127.0.0.1)에서만, 이 실행 동안만 연다)."""
     if not pages:
         return []
     if not available():
@@ -114,6 +117,17 @@ def capture(pages: list[dict], timeout: float = 300) -> list[dict]:
     # 결과는 UTF-8 로 받는다 — Windows 기본 코드 페이지(cp949)로 나오면 한글 확인 결과가 깨진다
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu",
                PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    if coverage_dir is not None:
+        import socket
+        Path(coverage_dir).mkdir(parents=True, exist_ok=True)
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        env.update(BEOM_SHOT_COVERAGE=str(coverage_dir), QTWEBENGINE_REMOTE_DEBUGGING=f"127.0.0.1:{port}")
+    else:
+        env.pop("BEOM_SHOT_COVERAGE", None)
+        env.pop("QTWEBENGINE_REMOTE_DEBUGGING", None)
     proc = subprocess.run([sys.executable, "-m", "beom_workbench.app.shot", json.dumps({"pages": pages})],
                           capture_output=True, timeout=timeout, env=env)
     for line in reversed(proc.stdout.decode("utf-8", "replace").splitlines()):

@@ -396,7 +396,7 @@ def _reviews(reviews: list[dict], conn, port_id: str) -> dict:
             out["omitted"].append({"summary": h["summary"].removeprefix("생략: ")})
         elif h["kind"] == "tests_changed":
             out["tests_changed"] = [{"file": d["case"], "diff": d["diff"]} for d in h.get("detail") or []]
-        elif h["kind"] == "coverage_unmeasured":
+        elif h["kind"] in ("coverage_unmeasured", "impact"):  # 툴킷이 재지 못한 파일 · 케이스가 거치지 않은 연관된 곳
             out["checks"].append({"summary": h["summary"], "files": (h.get("detail") or {}).get("files") or []})
         else:
             out["case_changes"].append(h.get("detail"))
