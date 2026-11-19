@@ -267,7 +267,8 @@ def measurable(root: Path, rel: str) -> bool:
     if rel.endswith(TS_EXTS):  # vitest 프로젝트에 v8 커버리지 패키지가 깔려 있을 때
         return (Path(root) / "node_modules" / "@vitest" / "coverage-v8").is_dir() and local_bin(root, "vitest")
     if rel.endswith(".rs"):
-        return shutil.which("cargo-llvm-cov") is not None
+        from beom_workbench.core import deps
+        return deps.cargo_llvm_cov() is not None
     return False
 
 

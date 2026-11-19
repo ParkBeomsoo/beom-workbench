@@ -263,11 +263,62 @@ CODEX_OFFLINE_RULE = """[이 실행의 인터넷 — 막힘]
   설치 확인(pip install -e . 등)만을 위해 돌리지는 않는다: 대상 폴더에서 바로 import·실행·테스트로 확인한다."""
 
 
+CODEX_CONTEXT_RULE = """[이미 받은 것 — 다시 찾지 않는다]
+- AGENTS.md 는 Codex 가 스스로 읽어 들였고, 대상 폴더의 규칙·정책 문서는 툴킷이 [작업 규칙·정책] 으로 지시에 넣었다 — 라운드마다
+  C:\\·사용자 폴더 같은 상위 폴더를 셸로 뒤져 AGENTS.md·SKILL.md 를 찾지 않는다.
+- 툴킷 도구 목록은 바뀌지 않는다 — 라운드마다 전체 목록을 다시 훑지 않는다. 파일은 필요한 줄만 읽는다 (Get-Content 로 통째로 읽지 않는다)."""
+
 CODEX_WIN_RULE = """[Windows 격리 실행 — Node 자식 프로세스]
 - 이 격리에서는 Node 가 다른 프로세스를 띄우지 못한다 (spawn EPERM). `node --test`·`npm test` 는 툴킷이 격리용 설정(NODE_OPTIONS)을
   미리 넣어 두어 그대로 돈다 — 옵션을 붙이거나 우회 스크립트를 만들지 않는다. 우회는 결과물(package.json·README)에 넣지 않는다.
 - npm 스크립트·테스트 러너·빌드 도구가 같은 이유로 실패하면 격리 탓이다 — 코드를 고치려 하지 말고 wb_task(task="test" 등)로 돌린다
   (툴킷이 격리 밖에서 돌린다). 사용자에게는 격리 안에서 못 돌린 명령을 끝에 알린다."""
+
+
+# 작업에 맞지 않는 규칙 절은 싣지 않는다 — 규칙은 모델 호출마다 다시 실린다 (CLI·라이브러리 작업에 화면 디자인 안내 2천여 자,
+# 빈 폴더에서 새로 만드는 작업에 기존 자산 맞추기 안내 1천 자). 애매하면 싣는다 (화면 작업을 화면 없는 작업으로 잘못 보지 않게)
+_UI_WORDS = re.compile(r"웹|화면|페이지|앱|ui\b|html|css|react|vue|svelte|vite|next|nuxt|디자인|버튼|브라우저|프론트|대시보드|모바일|"
+                       r"데스크톱|desktop|tkinter|qt\b|electron|tauri|창|레이아웃|이미지|png|jpe?g|스크린|프로토타입|와이어|web|page|screen|"
+                       r"button|frontend|dashboard|mobile|gui", re.I)
+_NO_UI_WORDS = re.compile(r"cli\b|명령줄|커맨드|라이브러리|패키지|api\b|모듈|함수|library|package|module|function|command", re.I)
+_SECTIONS = {
+    "ui": ("- 화면이 있는 작업(웹·앱 화면)은 화면 케이스도 둔다", "- 작업은 대상 폴더 안에서만 한다"),
+    "form": ("- 형태는 요청에 적힌 말을 따른다", "- 사전 설계"),
+    "assets": ("- 기존 자산 맞추기", "- 형태는 요청에 적힌 말을 따른다"),
+}
+
+
+def ui_task(run: dict) -> bool:
+    """화면이 있는 작업인가 — 요청·이름·첨부 이름으로. 화면 낱말이 하나라도 있거나, 화면 없는 작업이라는 낱말이 없으면 있다고 본다."""
+    text = " ".join([str(run.get("request") or ""), str(run.get("name") or ""), str(run.get("feature") or ""),
+                     *[Path(str(a)).name for a in run.get("attachments") or []]])
+    return bool(_UI_WORDS.search(text)) or not _NO_UI_WORDS.search(text)
+
+
+def has_assets(run: dict) -> bool:
+    """맞출 기존 자산이 있나 — 대상 폴더에 파일이 있거나(.beom 제외) 원본·첨부·분석 맥락이 있으면."""
+    if run.get("source") or run.get("attachments") or run.get("context"):
+        return True
+    root = Path(run.get("target_root") or "")
+    try:
+        return any(p.name != ".beom" for p in root.iterdir()) if root.is_dir() else False
+    except OSError:
+        return True
+
+
+def _drop(text: str, section: str) -> str:
+    start, end = _SECTIONS[section]
+    i, j = text.find(start), text.find(end)
+    return text[:i] + text[j:] if 0 <= i < j else text
+
+
+def fit_rules(run: dict) -> str:
+    rules = RULES
+    if not has_assets(run):  # 먼저 — 이 절의 끝 표시('형태' 절 머리)를 아래에서 지우기 전에
+        rules = _drop(rules, "assets")
+    if not ui_task(run):
+        rules = _drop(_drop(rules, "ui"), "form")
+    return rules
 
 
 FREE_RULES = """너는 사용자의 개발 에이전트다. 사용자가 보낸 요청을 그대로 수행한다 (툴킷의 절차·승인 단계는 쓰지 않는다).
@@ -947,12 +998,14 @@ class Runner:
         return inbox.update_run(self.settings, self.run_id, lambda r: r.update(kw))
 
     def _rules(self, run: dict) -> str:
-        rules = {"free": FREE_RULES, "plan": PLAN_RULES}.get(run.get("mode"), RULES)
+        rules = {"free": FREE_RULES, "plan": PLAN_RULES}.get(run.get("mode"), None) or fit_rules(run)
         from beom_workbench.core import sandbox
         if run.get("agent", "claude") == "claude" and sandbox.active(run):
             rules += "\n\n" + sandbox.rule(run)
         if run.get("agent", "claude") == "claude" and run.get("mode") != "free":
             rules += "\n\n" + EDIT_TOOLS_RULE
+        if run.get("agent") == "codex":
+            rules += "\n\n" + CODEX_CONTEXT_RULE
         if run.get("agent") == "codex" and sys.platform == "win32":
             rules += "\n\n" + CODEX_WIN_RULE
         if run.get("agent") == "codex" and (run.get("policy") or {}).get("web") != "allow":
@@ -1630,17 +1683,22 @@ class Runner:
             return rounds.defaults()
 
     def _progress_sig(self, run: dict) -> str:
-        """라운드 사이에 무언가 진행됐는지 — 원장 기록 끝, 계획·인수인계, 대상 폴더 스냅샷."""
+        """라운드 사이에 무언가 진행됐는지 — 원장의 '결과'(게이트·다음 할 일·통과·실패 수·승인), 계획·인수인계, 대상 폴더 스냅샷.
+        원장 기록 끝(로그 머리)은 쓰지 않는다: 같은 실패로 끝나는 검증도 기록을 하나 남겨서, 막힌 채 같은 검증만 되풀이해도 진전으로
+        셌다 (도구 쪽 문제로 막힌 실행이 5라운드를 더 돌았다)."""
+        state = None
         try:
-            head = None
             if run.get("project_id") and run.get("port_id"):
                 conn, _ = project.load(self.settings, run["project_id"])
-                head = conn.execute("SELECT log_head FROM port WHERE id = ?", (run["port_id"],)).fetchone()
+                st = port.status_(conn, run["port_id"], brief=True)
+                last = st.get("last_check") or {}
+                state = [st.get("gates"), st.get("next_step"), st.get("counts"), st.get("approvals"),
+                         [last.get("kind"), last.get("cases"), last.get("passed"), last.get("failed")]]
         except ToolError:
-            head = None
+            state = None
         cps = Checkpoints(inbox.run_dir(self.settings, self.run_id), run["target_root"]).list()
-        return json.dumps([head[0] if head else None, run.get("plan"), run.get("handoff"), cps[0]["id"] if cps else None],
-                          ensure_ascii=False, default=str)
+        return json.dumps([state, run.get("plan"), run.get("handoff"), cps[0]["id"] if cps else None],
+                          ensure_ascii=False, default=str, sort_keys=True)
 
     def _settle_orphans(self) -> bool:
         """라운드가 끝났는데 남은 질문·권한 요청 — 묻던 에이전트는 이미 끝났다 (Codex 는 답을 기다리지 않고 턴을 닫기도 한다).

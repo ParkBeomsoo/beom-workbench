@@ -691,6 +691,21 @@ def _next_step_request(gates: dict, *, req_state, capture, diff, human, adequacy
     return "완료 — port-finish 판정 유효"
 
 
+def agent_status(conn, port_id: str) -> dict:
+    """에이전트가 다음 할 일을 정하는 데 쓰는 상태 — 게이트·next_step·남은 매핑·승인 대기 항목(짧은 설명)만.
+    전체 상태(모든 매핑 줄·모든 승인 항목의 상세)는 매번 문맥에 수만 자가 쌓여, 자주 부르는 에이전트일수록 토큰이 커진다."""
+    st = status_(conn, port_id, brief=True)
+    rows = conn.execute("SELECT item_id, kind, label FROM port_map WHERE port_id = ? AND status = 'pending' ORDER BY item_id",
+                        (port_id,)).fetchall()
+    if rows:
+        st["pending"] = [{"item": r["item_id"], "label": (r["label"] or "")[:80]} for r in rows[:30]]
+    waiting = [h for h in guard.reviews(conn, port_id, _last_check(conn, port_id, "differential:%"),
+                                        _last_check(conn, port_id, "capture")) if not h["approved"]]
+    if waiting:
+        st["waiting_approval"] = [{"item": h["item_id"], "kind": h["kind"], "summary": h["summary"][:140]} for h in waiting[:20]]
+    return st
+
+
 def status_(conn, port_id: str, brief: bool = False, fp_max_age: float = 0) -> dict:
     port = _port(conn, port_id)
     rows = ledger.rows_to_dicts(conn.execute("SELECT * FROM port_map WHERE port_id = ? ORDER BY kind, label", (port_id,)).fetchall())
@@ -1122,7 +1137,9 @@ def auto_coverage(conn, port: dict, root: Path, allowed: bool | None = None) -> 
         return (f"vitest run --coverage.enabled=true --coverage.provider=v8 --coverage.reporter=json "
                 f"--coverage.reportsDirectory=.beom/tmp/vcov {inc}", ".beom/tmp/vcov/coverage-final.json")
     if rs and guard.measurable(root, rs[0]) and (root / "Cargo.toml").is_file():
-        return "cargo llvm-cov --lcov --output-path .beom/tmp/autocov.info", ".beom/tmp/autocov.info"
+        from beom_workbench.core import deps
+        # 툴킷 자리에 깐 것도 쓰게 실행 파일을 직접 부른다 (cargo 하위 명령은 'cargo-llvm-cov llvm-cov …' 로도 돈다)
+        return (f'"{deps.cargo_llvm_cov()}" llvm-cov --lcov --output-path .beom/tmp/autocov.info', ".beom/tmp/autocov.info")
     return None
 
 
@@ -1255,7 +1272,14 @@ def _call(side: _Side, case: dict, timeout: float) -> dict:
             mod = file[:-3].strip("/").replace("/", ".").removesuffix(".__init__")
             if file.lstrip("/").startswith(".beom/"):  # 케이스용 보조 함수 — 커밋되지 않는 작업 폴더에 둔 것
                 mod = "file:" + file.lstrip("/")
-            exe = rt or ("python" if side.image else side.quote(sys.executable))
+            if rt or side.image:
+                exe = rt or "python"
+            else:
+                # 툴킷이 준비한 프로젝트 파이썬(.beom/venv — 프로젝트 의존성이 들어 있다) — 툴킷 자신의 파이썬으로 부르면 FastAPI 같은
+                # 프로젝트 의존성을 못 찾아 맞게 만든 코드도 실패한다 (에이전트가 '도구 문제'로 막혀 라운드를 되풀이했다)
+                from beom_workbench.core import deps
+                venv = deps.venv_python(side.root)
+                exe = side.quote(str(venv) if venv.is_file() else sys.executable)
             cmd = f"{exe} {side.quote(side.harness_path('harness.py'))} {side.quote(side.root)} {side.quote(mod)} {side.quote(fn)}"
         elif ext in (".js", ".cjs", ".mjs", ".ts", ".mts", ".cts"):
             exe = rt or "node"
@@ -2185,6 +2209,10 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
         if not target_coverage_cmd and not target_coverage_report:
             # 측정 명령을 받지 않았으면 툴킷이 잰다 — 매핑한 파일을 그 프로젝트의 테스트로 돌린다 (에이전트가 명령을 짤 일이 없다)
             run_now = _auto_run()
+            if (root / "Cargo.toml").is_file() and run_now is not None:
+                from beom_workbench.core import deps
+                deps.ensure_rust_coverage(settings, run_now, root)
+                run_now = _auto_run()
             allowed = tasks_mod().permit_build(
                 settings, run_now, ["task:test"], "검증 때 프로젝트 테스트 실행 (케이스가 구현 코드를 거쳤는지 실행 범위도 함께 잰다)"
             ) if run_now is not None and tasks_mod().available(root, "test") else None

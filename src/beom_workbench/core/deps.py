@@ -259,6 +259,68 @@ def _vitest_tried(root: Path) -> str | None:
     return f.read_text(encoding="utf-8").strip() if f.is_file() else None
 
 
+def tools_dir() -> Path:
+    """툴킷이 검증용으로 까는 도구 자리 — 사용자 전역 폴더(~/.cargo 등)가 아니라 툴킷 폴더 아래."""
+    from beom_workbench.config import _home
+    return _home() / "tools"
+
+
+def cargo_llvm_cov() -> str | None:
+    """Rust 실행 범위 측정 도구 — PATH 또는 툴킷 도구 자리."""
+    found = shutil.which("cargo-llvm-cov")
+    if found:
+        return found
+    exe = tools_dir() / "cargo" / "bin" / ("cargo-llvm-cov.exe" if os.name == "nt" else "cargo-llvm-cov")
+    return str(exe) if exe.is_file() else None
+
+
+def _llvm_tools_installed() -> bool:
+    try:
+        out = subprocess.run(["rustup", "component", "list", "--installed"], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return b"llvm-tools" in out.stdout
+
+
+def ensure_rust_coverage(settings, run: dict | None, root: Path, timeout: float = 1200) -> dict:
+    """Rust 프로젝트의 실행 범위를 재는 도구를 준비한다 — 없으면 사용자에게 한 번 묻고 깐다:
+    rustup 구성 요소 llvm-tools-preview (Rust 도구에 더해짐) + cargo-llvm-cov (툴킷 폴더에). 거절하면 다시 묻지 않고 사용자 확인
+    카드(측정 불가)로 넘어간다. 결과: {"ready": bool, ...}."""
+    root = Path(root)
+    if not (root / "Cargo.toml").is_file() or not shutil.which("cargo"):
+        return {"ready": False, "why": "Rust 프로젝트가 아니거나 cargo 가 없음"}
+    have_tool, have_llvm = cargo_llvm_cov() is not None, _llvm_tools_installed()
+    if have_tool and have_llvm:
+        return {"ready": True}
+    if run is None:
+        return {"ready": False, "why": "자동 실행 밖 — 설치하지 않음"}
+    from beom_workbench.core import inbox
+    done = run.get("approved_cmds") or []
+    if "tool-refused:rust-coverage" in done:
+        return {"ready": False, "why": "사용자가 설치를 거절함"}
+    steps = ([] if have_llvm else ["rustup component add llvm-tools-preview"]) + \
+            ([] if have_tool else [f"cargo install cargo-llvm-cov --locked --root \"{tools_dir() / 'cargo'}\""])
+    if "tool:rust-coverage" not in done:
+        if inbox.decide(run, "unsandboxed") == "refuse" or inbox.decide(run, "build") == "refuse":
+            return {"ready": False, "why": "규칙상 설치가 허용되지 않음"}
+        ans = inbox.ask(settings, run["id"], "permission", {
+            "summary": "검증 도구 설치 — Rust 실행 범위를 재려면 필요합니다 (한 번, 몇 분 걸림): " + " ; ".join(steps)
+                       + (" — llvm-tools-preview 는 이 PC 의 Rust 도구에 더해집니다 (rustup component remove 로 뺄 수 있음)"
+                          if not have_llvm else ""),
+            "tool": "mcp:deps", "input": {"commands": steps}, "permission_kind": "unsandboxed"})
+        key = "tool:rust-coverage" if ans.get("allow") else "tool-refused:rust-coverage"
+        inbox.update_run(settings, run["id"], lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [key]))))
+        if not ans.get("allow"):
+            return {"ready": False, "why": "사용자가 설치를 거절함"}
+    for step in steps:
+        argv = ["cmd", "/d", "/c", step] if os.name == "nt" else ["sh", "-c", step]
+        code, out = _run(argv, root, timeout)
+        inbox.log(settings, run["id"], "deps", dep="rust-coverage", ok=code == 0, files=["Cargo.toml"])
+        if code != 0:
+            return {"ready": False, "why": f"설치 실패: {step}", "output_tail": out[-1500:]}
+    return {"ready": cargo_llvm_cov() is not None and _llvm_tools_installed()}
+
+
 def _permit(settings, run: dict | None, item: dict) -> None:
     """자동 실행 중이면 권한 규칙대로 — 빌드와 '격리 없이 실행' 둘 다 허용이면 바로, 아니면 카드 한 번 (같은 지문이면 다시 묻지 않는다)."""
     if run is None:

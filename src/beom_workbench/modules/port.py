@@ -108,11 +108,14 @@ def wb_make_requirements(project_id: str, port_id: str, requirements: list[dict]
 
 @mcp.tool()
 @enveloped("port.status")
-def wb_port_status(project_id: str, port_id: str | None = None) -> dict:
+def wb_port_status(project_id: str, port_id: str | None = None, detail: bool = False) -> dict:
     """포팅 진행·게이트·next_step(다음 할 일). 게이트: 매핑 · 대상 위치 · 차등 검증(지금 코드 기준) · 케이스 충분성 ·
-    사람 승인 · 기록 무결 · 라이선스. 다음에 할 일은 next_step 을 따른다."""
+    사람 승인 · 기록 무결 · 라이선스. 다음에 할 일은 next_step 을 따른다.
+    기본은 짧게 (게이트·남은 매핑·승인 대기 항목) — 모든 매핑 줄과 승인 항목의 상세가 필요할 때만 detail=true."""
     conn, _ = project.load(settings, project_id)
-    return port.status_(conn, port_id) if port_id else port.list_(conn)
+    if not port_id:
+        return port.list_(conn)
+    return port.status_(conn, port_id) if detail else port.agent_status(conn, port_id)
 
 
 @mcp.tool()
