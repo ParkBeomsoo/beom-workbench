@@ -334,6 +334,43 @@ def _follows(run: dict | None, steps: list[dict], follows: list[dict] | None) ->
     return rules[:12], errors
 
 
+DESIGN_TOPIC = re.compile(r"디자인|design|분위기|스타일|톤|look", re.I)
+
+
+def _design_gate(run: dict, steps: list[dict], picks: list[dict], look: list[str], basis: str) -> str | None:
+    """새로 만드는 화면의 디자인 방향 — 참고 화면을 찍어 보고(조사), 방향이 다른 시안을 그림으로 보여 사용자가 고르게 한다.
+    규칙에 '반드시'라고 적어도 같은 에이전트가 어떤 때는 하고 어떤 때는 건너뛰었다 — 계획을 받을 때 확인한다.
+    빼는 경우: 화면이 없는 작업, 기존 화면이 여럿 있는 프로젝트(기존 디자인을 따른다), 사용자가 정한 디자인(design_basis),
+    화면 엔진이 없는 설치. 참고 화면은 웹 접속이 규칙상 막혔거나 사용자가 거절했으면 뺀다."""
+    from datetime import datetime
+
+    from beom_workbench.core import conventions, screens
+    ui = [x for s in steps for x in s["files"] if str(x).lower().endswith(conventions.UI_EXTS)]
+    design = next((d for d in picks if DESIGN_TOPIC.search(d["topic"])), None)
+    if not (ui or look or design) or basis.strip() or not screens.available():
+        return None
+    try:
+        started = datetime.fromisoformat(run["created_at"]).timestamp() + 1
+    except (KeyError, ValueError, TypeError):
+        started = None
+    if conventions.has_screens(Path(run["target_root"]), before=started):
+        return None
+    problems = []
+    evs = [e.get("kind") for e in inbox.events(settings, run["id"])[0]]
+    if inbox.decide(run, "web") != "refuse" and not ({"design_refs", "design_refs_declined"} & set(evs)):
+        problems.append("참고 화면을 아직 보지 않았다 — mcp__beom-workbench__wb_design_refs 로 같은 분야의 잘 만든 서비스 2~4곳을 찍어 "
+                        "보고 (사용자가 거절하면 그대로 진행)")
+    shots = (design or {}).get("shots") or {}
+    if len(shots) < 2:
+        problems.append("'디자인 방향' 결정에 방향이 확실히 다른 시안을 선택지 2개 이상 그림으로 붙여야 한다 — 핵심 화면 한 장씩 "
+                        ".beom/looks/a.html 처럼 만들고 decisions 의 그 결정에 looks={\"선택지\": \".beom/looks/a.html\", …} "
+                        "(선택지 이름은 choice·options 와 똑같이)" + ("" if design else " — 그 결정이 아직 없다"))
+    if not problems:
+        return None
+    return ("새로 만드는 화면의 디자인을 정하기 전에: " + " / ".join(problems) +
+            ". 사용자가 브랜드·디자인을 이미 정해 주었으면 design_basis 에 근거를 적는다")
+
+
 def _shoot_looks(run: dict, picks: list[dict]) -> list[str]:
     """디자인 방향 시안(HTML)을 찍어 결정에 붙인다 — {"선택지": ".beom/looks/a.png"}. 시안은 대상 폴더의 .beom 안 HTML 만."""
     from beom_workbench.common.response import ToolError
@@ -375,7 +412,8 @@ def _shoot_looks(run: dict, picks: list[dict]) -> list[str]:
 
 @mcp.tool()
 def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decisions: list[dict] | None = None,
-                 look: list[str] | None = None, previews: list[str] | None = None, follows: list[dict] | None = None) -> dict:
+                 look: list[str] | None = None, previews: list[str] | None = None, follows: list[dict] | None = None,
+                 design_basis: str = "") -> dict:
     """구현 계획을 낸다 — 사용자가 앱에서 승인한 뒤 구현한다. steps: [{title, files?: [...], commands?: [...], requirements?: ["R1"]}].
     decisions: 사전 설계 결정 [{topic: "데이터 저장", choice: "SQLite 파일", options: ["JSON 파일"], why: "한 줄"}] — 형태(웹·앱·API)·
     데이터 저장·스택·실행 방법·디자인 방향처럼 결과를 크게 가르는 것. 사용자가 승인하며 대안으로 바꿀 수 있다.
@@ -386,6 +424,8 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
     follows: 기존 화면이 있는 프로젝트에서 화면을 만들·고칠 때 — 다른 화면들에서 확인한 규칙과 근거
     [{rule: "목록에서 상세는 행 더블클릭", evidence: ["src/pages/OrderList.jsx:8", "src/pages/UserList.jsx:8"]}]. 근거는 지금 있는
     코드의 파일:줄이어야 하고 (툴킷이 확인한다), 규칙 전체에 걸쳐 서로 다른 기존 파일 2개 이상. 사용자가 계획 카드에서 본다.
+    새로 만드는 화면이면 '디자인 방향' 결정에 시안(looks)을 선택지 2개 이상 붙여야 하고, 그 전에 참고 화면(wb_design_refs)을
+    찍어 봐야 한다 — 툴킷이 확인한다. 사용자가 브랜드·디자인을 정해 주었으면 design_basis 에 그 근거(요청·첨부의 어디)를 적는다.
     계획을 다시 내면 이전 승인은 풀린다."""
     clean = [{"title": str(s.get("title", "")).strip()[:200], "files": [str(f) for f in s.get("files") or []][:20],
               "commands": [str(c) for c in s.get("commands") or []][:10], "requirements": s.get("requirements") or [],
@@ -418,6 +458,9 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
     if rule_errors and rules is None:
         return {"ok": False, "error": rule_errors[0], "problems": rule_errors[1:]}
     look_errors = _shoot_looks(run, picks) if run is not None else []
+    gate = _design_gate(run, clean, picks, lines, design_basis) if run is not None else None
+    if gate:
+        return {"ok": False, "error": gate, **({"look_errors": look_errors} if look_errors else {})}
 
     def put(r):
         old = r.get("plan") or {}
@@ -425,7 +468,8 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
         r["plan"] = {"steps": clean, "summary": summary.strip()[:1000], "approved": False, "history": history[-5:],
                      "at": inbox._now(), **({"design": design.strip()[:6000]} if design.strip() else {}),
                      **({"decisions": picks[:10]} if picks else {}), **({"look": lines} if lines else {}),
-                     **({"previews": shots} if shots else {}), **({"follows": rules} if rules else {})}
+                     **({"previews": shots} if shots else {}), **({"follows": rules} if rules else {}),
+                     **({"design_basis": design_basis.strip()[:300]} if design_basis.strip() else {})}
     out = _update(put)
     if out["ok"]:
         inbox.log(settings, os.environ["BEOM_WORKBENCH_RUN"], "plan", steps=len(clean))
@@ -781,6 +825,7 @@ def wb_design_refs(urls: list[str], mobile: bool = False) -> dict:
             "summary": "참고 화면 찍기 (웹 접속): " + ", ".join(picks), "tool": "mcp:wb_design_refs", "input": {"urls": picks},
             "permission_kind": "web"})
         if not ans.get("allow"):
+            inbox.log(settings, run["id"], "design_refs_declined", urls=picks)
             return {"ok": False, "error": "사용자가 참고 화면 찍기를 거절함 — 아는 범위에서 참고 서비스를 적는다"}
         if ans.get("always"):
             inbox.update_run(settings, run["id"], lambda r: r["policy"].__setitem__("web", "allow"))

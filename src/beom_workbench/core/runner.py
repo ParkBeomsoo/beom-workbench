@@ -195,7 +195,8 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
      시안: 새로 만드는 화면이고 사용자가 정한 브랜드·기존 디자인이 없으면, 방향이 확실히 다른 시안 2~3개를 만든다 — 핵심 화면 한
      장씩(실제 문구·숫자, 가짜 글 없이), .beom/looks/ 의 HTML 로, 정체성(색·글꼴·그림·기억에 남는 요소)이 서로 달라야 한다.
      계획의 '디자인 방향' 결정에 looks={"선택지 이름": ".beom/looks/a.html"} 로 붙이면 툴킷이 찍어 사용자에게 그림으로 보여 주고,
-     사용자가 고른다. 승인 뒤에는 고른 시안의 HTML 을 출발점으로 구현한다.
+     사용자가 고른다. 승인 뒤에는 고른 시안의 HTML 을 출발점으로 구현한다. 툴킷은 계획을 받을 때 참고 화면을 찍어 봤는지와 시안이
+     붙었는지 확인한다 — 사용자가 브랜드·디자인을 정해 주었으면 wb_plan_set 의 design_basis 에 그 근거를 적는다.
      계획(wb_plan_set)의 look 에 이것을 사용자가 알아듣는 말로 1~2줄 쓴다 (예: "아침 빵집처럼 크림색 바탕에 구운 갈색, 빵 그림과
      손글씨 느낌 제목"). 수치는 계획에 쓰지 않는다 — 구현할 때 디자인 토큰 파일 하나에 두고 그것만 쓴다 (색·글꼴·글자 크기 단계·
      4 배수 간격·모서리). 이미 쓰는 프레임워크·컴포넌트 라이브러리·디자인 시스템이 있으면 그것이 먼저다.
@@ -968,6 +969,26 @@ def kill_tree(proc: subprocess.Popen) -> None:
         proc.terminate()
 
 
+def add_tokens(settings: Settings, run_id: str, sid: str, usage: dict) -> dict | None:
+    """비용을 알려 주지 않는 에이전트(Codex 등)의 사용량 — 쓴 토큰을 센다.
+    이어 받은 세션은 그 세션 전체 누적값을 알려 준다 — 세션마다 마지막 값만 두고 합한다 (비용과 같은 방식).
+    입력 토큰에는 매 턴 다시 보내는 앞 대화(캐시 적중)가 들어 있다 — 그것까지 세면 실제보다 수십 배로 보인다 (한 실행에서 입력
+    2,374만 중 2,358만이 캐시 적중). 새로 쓴 것(캐시 아닌 입력 + 출력)을 사용량으로, 캐시 적중은 따로 둔다."""
+    cached = int(usage.get("cached_input_tokens") or usage.get("cache_read_input_tokens") or 0)
+    n = max(0, int(usage.get("input_tokens") or 0) - cached) + int(usage.get("output_tokens") or 0)
+    if not n:
+        return None
+
+    def put(r):
+        per = r.setdefault("token_sessions", {})
+        per[sid] = max(int(per.get(sid) or 0), n)
+        r["tokens"] = sum(per.values())
+        cpe = r.setdefault("cached_sessions", {})
+        cpe[sid] = max(int(cpe.get(sid) or 0), cached)
+        r["cached_tokens"] = sum(cpe.values())
+    return inbox.update_run(settings, run_id, put)
+
+
 class Runner:
     """한 실행을 라운드 단위로 진행한다. 앱은 스레드로, CLI 는 그대로 돌린다."""
 
@@ -1283,15 +1304,8 @@ class Runner:
                     u = e.get("usage")
                     if not e.get("cost_usd") and isinstance(u, dict):
                         # 비용을 알려 주지 않는 에이전트(Codex 등)는 쓴 토큰을 센다 — 화면에 사용량이 비어 보이지 않게
-                        # 이어 받은 세션은 그 세션 전체 누적값을 알려 준다 — 세션마다 마지막 값만 두고 합한다 (비용과 같은 방식)
-                        n = int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0)
                         sid = e.get("session_id") or run.get("session_id") or f"round-{run.get('round')}"
-                        if n:
-                            def put(r, n=n, sid=sid):
-                                per = r.setdefault("token_sessions", {})
-                                per[sid] = max(int(per.get(sid) or 0), n)
-                                r["tokens"] = sum(per.values())
-                            run = inbox.update_run(self.settings, self.run_id, put)
+                        run = add_tokens(self.settings, self.run_id, sid, u) or run
                 if e.get("session_id"):
                     run = self._set(session_id=e["session_id"])
                     if e.get("cost_usd"):
