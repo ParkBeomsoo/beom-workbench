@@ -49,11 +49,11 @@ def page_spec(spec: dict, url: str | None, root, out: str, file_base: str | None
     else:
         raise ToolError("invalid_request", "화면 케이스에는 screen.file(로컬 파일) 또는 screen.path + 서버 주소(*_url)가 필요함")
     acts = spec.get("actions") or []
-    if not isinstance(acts, list) or any(not isinstance(a, dict) or not (set(a) & {"fill", "click", "press", "wait_ms"})
-                                         or set(a) - {"fill", "value", "click", "press", "on", "wait_ms"} for a in acts):
-        raise ToolError("invalid_request", "웹 화면의 actions 는 [{fill, value} | {click} | {press, on?} | {wait_ms}] 목록")
+    if not isinstance(acts, list) or any(not isinstance(a, dict) or not (set(a) & {"fill", "click", "dblclick", "press", "wait_ms"})
+                                         or set(a) - {"fill", "value", "click", "dblclick", "press", "on", "wait_ms"} for a in acts):
+        raise ToolError("invalid_request", "웹 화면의 actions 는 [{fill, value} | {click} | {dblclick} | {press, on?} | {wait_ms}] 목록")
     return {"url": target, "out": out, "width": int(spec.get("width") or w), "height": int(spec.get("height") or h),
-            "wait_ms": int(spec.get("wait_ms") or 800), "actions": acts[:30]}
+            "wait_ms": int(spec.get("wait_ms") or 800), "actions": acts[:30], **({"audit": True} if spec.get("audit") else {})}
 
 
 class serve_folder:
@@ -79,9 +79,9 @@ class serve_folder:
                 real, base = os.path.realpath(full), os.path.realpath(root_str)
                 if real != base and not real.startswith(base.rstrip(os.sep) + os.sep):
                     return os.path.join(base, "__outside__")
-                # 화면에 필요 없는 비밀·기록은 내보내지 않는다 — git 내부, .env, 툴킷 기록(.beom 의 brief 화면 설계는 예외)
+                # 화면에 필요 없는 비밀·기록은 내보내지 않는다 — git 내부, .env, 툴킷 기록(.beom 의 brief 화면 설계·looks 디자인 시안은 예외)
                 parts = [x.lower() for x in os.path.relpath(real, base).split(os.sep)]
-                if ".git" in parts or any(x.startswith(".env") for x in parts) or (parts[:1] == [".beom"] and parts[1:2] != ["brief"]):
+                if ".git" in parts or any(x.startswith(".env") for x in parts) or (parts[:1] == [".beom"] and parts[1:2] not in (["brief"], ["looks"])):
                     return os.path.join(base, "__hidden__")
                 return full
 

@@ -20,6 +20,9 @@ from beom_workbench.core import layout
 
 SOURCE_FILE_MAX, SOURCE_TOTAL_MAX, SOURCE_COUNT_MAX = 300_000, 5_000_000, 3000
 CODE_EXTS = tuple(sorted({e for k, exts in layout.LANG_EXT.items() for e in exts}))
+# 원래 소스 기록에는 화면 틀(HTML·JSP·템플릿)도 — 만든 뒤 새 화면을 다른 화면들의 쓰임과 비교할 때 (conventions.differences)
+SNAP_EXTS = tuple(sorted(set(CODE_EXTS) | {".html", ".htm", ".jsp", ".ejs", ".hbs", ".njk", ".twig", ".erb", ".cshtml", ".razor",
+                                            ".php", ".ftl", ".vm"}))
 
 
 def scan_roots(target: Path) -> list[Path]:
@@ -33,7 +36,7 @@ def scan_roots(target: Path) -> list[Path]:
 
 
 def source_files(target: Path) -> list[Path]:
-    """기록할 소스 파일 (테스트 파일·작업 폴더·의존성 폴더 빼고)."""
+    """기록할 소스 파일 (테스트 파일·작업 폴더·의존성 폴더 빼고) — 코드와 화면 틀."""
     tests = layout.test_files(target)
     out: list[Path] = []
     for root in scan_roots(target):
@@ -41,7 +44,7 @@ def source_files(target: Path) -> list[Path]:
             dirs[:] = [d for d in dirs if d not in layout.SKIP_DIRS and not d.startswith(".")]
             for f in files:
                 p = Path(dirpath) / f
-                if f.endswith(CODE_EXTS) and str(p.resolve()) not in tests:
+                if f.endswith(SNAP_EXTS) and str(p.resolve()) not in tests:
                     out.append(p.resolve())
                     if len(out) >= SOURCE_COUNT_MAX:
                         return out

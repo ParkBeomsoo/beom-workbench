@@ -2598,6 +2598,10 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
             impact_res = _impact(conn, settings, proj, port_id, root, [root / r for r in reports], browser, cov_state, fp)
         except Exception as e:  # noqa: BLE001 — 분석 도구가 실패해도 검증 결과는 낸다 (분석 못 함으로 알린다)
             impact_res = {"error": f"연관된 곳 분석 실패: {type(e).__name__}: {e}"[:300]}
+    try:
+        conv_res = _screen_rules(conn, settings, proj, port_id, root, fp)
+    except Exception as e:  # noqa: BLE001 — 분석이 실패해도 검증 결과는 낸다
+        conv_res = {"error": f"기존 화면 규칙 비교 실패: {type(e).__name__}: {e}"[:300]}
     if side.casecov is not None:
         side.casecov.cleanup()
     elif reports:
@@ -2696,6 +2700,7 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
             "latency_ms": {"source": _latency(src), "target": _latency(dst),
                            "note": "참고값 — 골든 기준이면 원본 시간은 capture 시점"},
             "accepted_unapproved": unapproved, "target_adequacy": tgt_adq, **({"impact": impact_res} if impact_res else {}),
+            **({"screen_rules": conv_res} if conv_res else {}),
             "project_checks": [{k: v for k, v in r.items() if k != "output_tail" or not r.get("ok")} for r in project],
             **({"cleaned": cleaned[:20], "cleaned_note": "케이스를 돌리는 동안 프로그램이 새로 만든 파일이라 지웠다 — 직접 지울 필요 없다"}
                if cleaned else {}),
@@ -2848,6 +2853,27 @@ def _impact(conn, settings, proj: dict, port_id: str, root: Path, reports: list[
         out["note"] = ("바꾼 함수를 부르는 기존 코드를 합격 케이스가 거치지 않았다 — 그 동작(원래 하던 일)이 그대로인지 보는 케이스를 "
                        "더한다 (원래 테스트에 기대지 않는다). 영향이 없으면 이유를 보고에 쓴다 — 툴킷이 사용자 확인 카드로 올렸다")
     return out
+
+
+def _screen_rules(conn, settings, proj: dict, port_id: str, root: Path, fp: str) -> dict | None:
+    """기존 화면 규칙 — 새로 만들거나 고친 화면이 같은 부품을 다른 화면들의 실제 쓰임과 다르게 쓰는 곳 (conventions 모듈).
+    원래 소스 기록이 없으면(새 프로젝트) None. 다른 곳이 있으면 사용자 확인 카드로 올린다."""
+    from beom_workbench.core import conventions
+    base = guard.baseline_sources(conn, port_id, _port_dir(settings, proj, port_id))
+    if not base:
+        return None
+    found = conventions.differences(root, base)
+    cid = "chk_" + uuid.uuid4().hex[:12]
+    with ledger.tx(conn):
+        conn.execute("INSERT INTO port_check (id, port_id, kind, cases, passed, failed, detail, evidence_id, created_at) "
+                     "VALUES (?, ?, 'screen_rules', ?, ?, ?, ?, NULL, ?)",
+                     (cid, port_id, len(found), 0, len(found), ledger.dumps({"findings": found, "target_fp": fp}), _now()))
+    guard.record(conn, port_id, "coverage", {"id": cid, "kind": "screen_rules"}, checks=[cid])
+    if not found:
+        return None
+    return {"check_id": cid, "findings": found,
+            "note": "새 화면이 같은 부품을 다른 화면들과 다르게 쓴다 (근거는 다른 화면들의 실제 코드) — 같은 방식으로 고치거나, 일부러 "
+                    "다르게 했으면 이유를 보고에 쓴다. 툴킷이 사용자 확인 카드로 올렸다"}
 
 
 def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None, browser: set | None = None,

@@ -303,14 +303,89 @@ def wb_activity(text: str) -> dict:
     return out
 
 
+def _follows(run: dict | None, steps: list[dict], follows: list[dict] | None) -> tuple[list[dict] | None, list[str]]:
+    """계획의 '기존 규칙 따름' — 근거(파일:줄)가 실제 기존 코드인지 확인한다. 기존 화면이 여럿 있는 프로젝트에서 화면 파일을
+    만들·고치는 계획인데 근거가 없으면 (None, [이유…]) — 계획을 받지 않는다. 틀린 근거는 빼고 알린다."""
+    from beom_workbench.core import conventions
+    if run is None:
+        return [], []
+    root = Path(run["target_root"])
+    rules, errors = [], []
+    for f in follows or []:
+        if not isinstance(f, dict) or not str(f.get("rule", "")).strip():
+            continue
+        ok, bad = conventions.check_evidence(root, [str(x) for x in f.get("evidence") or []][:6])
+        errors += [f"근거 확인 실패: {b}" for b in bad]
+        if ok:
+            rules.append({"rule": str(f["rule"]).strip()[:200], "evidence": ok})
+    ui = [x for s in steps for x in s["files"] if str(x).lower().endswith(conventions.UI_EXTS)]
+    started = None
+    try:
+        from datetime import datetime
+        started = datetime.fromisoformat(run["created_at"]).timestamp() + 1  # 시각은 초 단위로 잘려 기록된다
+    except (KeyError, ValueError, TypeError):
+        pass
+    if ui and conventions.has_screens(root, before=started):
+        files = {e.split(":")[0] for r in rules for e in r["evidence"]}
+        if len(files) < 2:
+            return None, ["기존 화면이 있는 프로젝트에서 화면(" + ", ".join(ui[:3]) + ")을 만들거나 고치는 계획인데, 다른 화면들의 규칙을 "
+                          "확인한 근거가 없음 — wb_ui_conventions(near=[만들·고칠 파일])로 비슷한 기존 화면과 공통 부품의 쓰임을 보고, "
+                          "follows=[{rule, evidence:[\"파일:줄\", …]}] 로 따를 규칙을 남긴다 (서로 다른 기존 파일 2개 이상)", *errors]
+    return rules[:12], errors
+
+
+def _shoot_looks(run: dict, picks: list[dict]) -> list[str]:
+    """디자인 방향 시안(HTML)을 찍어 결정에 붙인다 — {"선택지": ".beom/looks/a.png"}. 시안은 대상 폴더의 .beom 안 HTML 만."""
+    from beom_workbench.common.response import ToolError
+    from beom_workbench.core import screens
+    root = Path(run["target_root"]).resolve()
+    jobs, errors = [], []
+    for d in picks:
+        for label, rel in (d.get("looks") or {}).items():
+            f = (root / rel).resolve()
+            if f.suffix.lower() not in (".html", ".htm") or not f.is_file() or not f.is_relative_to(root / ".beom"):
+                errors.append(f"시안은 대상 폴더 .beom/ 안의 HTML 이어야 함: {rel}")
+                continue
+            jobs.append((d, label, f))
+        d.pop("looks", None)
+    if not jobs:
+        return errors
+    if not screens.available():
+        return errors + ["이 설치에는 화면 엔진이 없어 시안을 찍지 못함 — 선택지는 글로만 보인다"]
+    out_dir = root / ".beom" / "looks"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with screens.serve_folder(root) as srv:
+        pages = []
+        for i, (d, label, f) in enumerate(jobs):
+            spec = {"file": f.relative_to(root).as_posix(), "mobile": True, "wait_ms": 600}
+            pg = screens.page_spec(spec, None, root, str(out_dir / f"look-{i + 1}.png"), file_base=srv.base)
+            pg["full_page"] = False  # 첫 화면 그대로 — 카드 안에서 비교하기 좋게
+            pages.append(pg)
+        try:
+            got = screens.capture(pages)
+        except ToolError as e:
+            return errors + [e.message]
+    for (d, label, f), r in zip(jobs, got):
+        if r.get("ok"):
+            d.setdefault("shots", {})[label] = Path(r["out"]).resolve().relative_to(root).as_posix()
+        else:
+            errors.append(f"시안을 찍지 못함: {f.name} {(r.get('errors') or [''])[0]}")
+    return errors
+
+
 @mcp.tool()
 def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decisions: list[dict] | None = None,
-                 look: list[str] | None = None, previews: list[str] | None = None) -> dict:
+                 look: list[str] | None = None, previews: list[str] | None = None, follows: list[dict] | None = None) -> dict:
     """구현 계획을 낸다 — 사용자가 앱에서 승인한 뒤 구현한다. steps: [{title, files?: [...], commands?: [...], requirements?: ["R1"]}].
     decisions: 사전 설계 결정 [{topic: "데이터 저장", choice: "SQLite 파일", options: ["JSON 파일"], why: "한 줄"}] — 형태(웹·앱·API)·
     데이터 저장·스택·실행 방법·디자인 방향처럼 결과를 크게 가르는 것. 사용자가 승인하며 대안으로 바꿀 수 있다.
     look: 디자인 컨셉 1~2줄, 전문 용어 없이 (사용자용). 색·글꼴 같은 수치는 계획에 쓰지 말고 구현의 토큰 파일에.
-    design·previews 는 예전 형식 — 앱이 보여 주지 않는다 (승인 전에는 미리보기를 그리지 않는다).
+    시안: 디자인 방향 결정에 looks={"선택지 이름": ".beom/looks/a.html", …} 를 주면 툴킷이 각 시안(핵심 화면 한 장)을 찍어 계획
+    카드의 선택지 옆에 그림으로 보여 준다 — 사용자가 보고 고른다. 선택지 이름은 choice·options 와 똑같이.
+    design·previews 는 예전 형식 — 앱이 보여 주지 않는다.
+    follows: 기존 화면이 있는 프로젝트에서 화면을 만들·고칠 때 — 다른 화면들에서 확인한 규칙과 근거
+    [{rule: "목록에서 상세는 행 더블클릭", evidence: ["src/pages/OrderList.jsx:8", "src/pages/UserList.jsx:8"]}]. 근거는 지금 있는
+    코드의 파일:줄이어야 하고 (툴킷이 확인한다), 규칙 전체에 걸쳐 서로 다른 기존 파일 2개 이상. 사용자가 계획 카드에서 본다.
     계획을 다시 내면 이전 승인은 풀린다."""
     clean = [{"title": str(s.get("title", "")).strip()[:200], "files": [str(f) for f in s.get("files") or []][:20],
               "commands": [str(c) for c in s.get("commands") or []][:10], "requirements": s.get("requirements") or [],
@@ -323,7 +398,10 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
             continue
         choice = str(d["choice"]).strip()[:120]
         opts = [str(o).strip()[:120] for o in d.get("options") or [] if str(o).strip() and str(o).strip() != choice][:3]
-        picks.append({"topic": str(d["topic"]).strip()[:60], "choice": choice, "options": opts, "why": str(d.get("why", "")).strip()[:300]})
+        item = {"topic": str(d["topic"]).strip()[:60], "choice": choice, "options": opts, "why": str(d.get("why", "")).strip()[:300]}
+        if isinstance(d.get("looks"), dict):
+            item["looks"] = {str(k).strip()[:120]: str(v) for k, v in d["looks"].items() if str(k).strip()[:120] in [choice, *opts]}
+        picks.append(item)
 
     shots, bad = [], []
     run = _run()
@@ -336,6 +414,10 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
             else:
                 bad.append(str(x))
     lines = [str(x).strip()[:200] for x in look or [] if str(x).strip()][:6]
+    rules, rule_errors = _follows(run, clean, follows)
+    if rule_errors and rules is None:
+        return {"ok": False, "error": rule_errors[0], "problems": rule_errors[1:]}
+    look_errors = _shoot_looks(run, picks) if run is not None else []
 
     def put(r):
         old = r.get("plan") or {}
@@ -343,10 +425,14 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
         r["plan"] = {"steps": clean, "summary": summary.strip()[:1000], "approved": False, "history": history[-5:],
                      "at": inbox._now(), **({"design": design.strip()[:6000]} if design.strip() else {}),
                      **({"decisions": picks[:10]} if picks else {}), **({"look": lines} if lines else {}),
-                     **({"previews": shots} if shots else {})}
+                     **({"previews": shots} if shots else {}), **({"follows": rules} if rules else {})}
     out = _update(put)
     if out["ok"]:
         inbox.log(settings, os.environ["BEOM_WORKBENCH_RUN"], "plan", steps=len(clean))
+        if look_errors:
+            out["look_errors"] = look_errors
+        if rule_errors:
+            out["follows_errors"] = rule_errors
     if bad:
         out["warning"] = "미리보기로 쓸 수 없는 경로(대상 폴더 .beom/ 안 png 만): " + ", ".join(bad)
     return {**out, "note": "사용자 승인 전에는 코드를 바꾸지 않는다"}
@@ -548,6 +634,171 @@ def wb_screen_shot(files: list[str] | None = None, mobile: bool = False, width: 
     shots = [{"file": p.relative_to(root).as_posix(), "ok": bool(r.get("ok")), "shot": r.get("out") if r.get("ok") else None,
               "errors": (r.get("errors") or [])[:3]} for p, r in zip(picks, got)]
     inbox.log(settings, run["id"], "screen_shots", shots=[s["shot"] for s in shots if s["shot"]])
+    return {"ok": True, "shots": shots}
+
+
+def _design_findings(audit: dict | None) -> tuple[list[str], list[str]]:
+    """점검 결과 → (고칠 것, 참고). 고칠 것: WCAG 대비 미달·24px 미만 누르는 곳·가로 넘침·잘린 글자·겹친 버튼·12px 미만 글자."""
+    if not audit:
+        return ["점검 결과를 읽지 못함 (페이지가 이동 중이었을 수 있음)"], []
+    iss, var = audit.get("issues") or {}, audit.get("variety") or {}
+    fix, advice = [], []
+    for c in iss.get("contrast") or []:
+        fix.append(f"대비 부족 {c['ratio']}:1 (필요 {c['need']}:1) — {c['el']} '{c['text']}'")
+    for t in iss.get("tiny_targets") or []:
+        fix.append(f"누르기 너무 작음 {t['w']}×{t['h']}px (24px 이상) — {t['el']} '{t['text']}'")
+    if iss.get("overflow"):
+        o = iss["overflow"]
+        fix.append(f"가로로 넘침 — 페이지 {o['page']}px > 화면 {o['viewport']}px ({', '.join(o.get('wide') or [])})")
+    for c in iss.get("clipped") or []:
+        fix.append(f"글자가 잘림 — {c['el']} '{c['text']}'")
+    for o in iss.get("overlap") or []:
+        fix.append(f"누르는 곳끼리 겹침 — {o['a']} · {o['b']}")
+    for t in iss.get("small_text") or []:
+        fix.append(f"글자가 너무 작음 {t['size']}px (12px 이상) — {t['el']} '{t['text']}'")
+    for t in iss.get("small_targets") or []:
+        advice.append(f"모바일에서 누르기 작음 {t['w']}×{t['h']}px (44px 권장) — {t['el']} '{t['text']}'")
+    if len(var.get("fonts") or []) > 3:
+        advice.append(f"글꼴이 {len(var['fonts'])}가지 — 제목·본문 2가지(많아야 3)로: {', '.join(var['fonts'][:6])}")
+    if len(var.get("sizes") or []) > 8:
+        advice.append(f"글자 크기가 {len(var['sizes'])}단계 — 6~8단계로 줄이면 위계가 또렷해진다: {var['sizes']}")
+    if (var.get("text_colors") or 0) > 10:
+        advice.append(f"글자 색이 {var['text_colors']}가지 — 토큰의 몇 가지 색으로 모은다")
+    return fix, advice
+
+
+@mcp.tool()
+def wb_ui_conventions(near: list[str] | None = None, like: str = "") -> dict:
+    """기존 화면의 규칙 — 이 프로젝트의 다른 화면들이 실제로 어떻게 만들어졌는지 코드에서 뽑는다 (규칙은 툴킷이 정하지 않는다).
+    shared: 여러 화면이 함께 쓰는 부품(공통 컴포넌트·공통 함수·그리드 같은 위젯)과 쓰는 방식 — 화면/팝업 안을 나눠 이벤트(예:
+    onRowDoubleClick 4/4 → 목록에서 상세는 행 더블클릭)와 옵션(예: 팝업 안 그리드 height=320 3/3)이 몇 곳에서 쓰였는지, 근거(파일:줄).
+    events: 프로젝트 전체의 이벤트 이름. similar: 지금 만들·고칠 화면과 비슷한 기존 화면 — near=[만들·고칠 파일], like="목록 상세" 처럼.
+    비슷한 화면을 열어 읽고, 같은 부품을 같은 방식으로 쓴다. 계획(wb_plan_set)의 follows 에 따를 규칙과 근거를 남긴다."""
+    from beom_workbench.core import conventions
+
+    run = _run()
+    if run is None:
+        return {"ok": False, "error": "자동 실행 밖"}
+    res = conventions.scan(Path(run["target_root"]), near=near, like=like)
+    if not res["shared"] and not res["events"]:
+        return {"ok": True, **res, "note": "기존 화면 코드가 없음 — 새로 만드는 화면이면 '화면 디자인' 절대로"}
+    return {"ok": True, **res, "next": "similar 의 화면들을 열어 읽고 follows=[{rule, evidence:[파일:줄…]}] 로 계획에 남긴다"}
+
+
+@mcp.tool()
+def wb_design_check(files: list[str] | None = None, url: str | None = None, paths: list[str] | None = None,
+                    cmd: str | None = None, actions: list[dict] | None = None) -> dict:
+    """디자인 점검 — 화면을 실제 브라우저 엔진으로 모바일(390px)·PC(1280px) 두 크기로 열어, 계산된 스타일과 위치로 잰다:
+    글자와 바탕의 대비(WCAG 4.5:1, 큰 글자 3:1), 누르는 곳 크기(24px 미만은 고칠 것, 모바일 44px 권장), 가로 넘침, 잘린 글자,
+    겹친 버튼, 12px 미만 글자, 글꼴·글자 크기·색이 너무 많은지. fix 는 고칠 것, advice 는 참고. 스크린샷도 함께 남긴다.
+    files=["index.html"] 또는 url·paths·cmd (wb_screen_shot 과 같다), actions 로 눌러 본 뒤의 화면도."""
+    from beom_workbench.core import screens
+
+    run = _run()
+    if run is None:
+        return {"ok": False, "error": "자동 실행 밖"}
+    if not screens.available():
+        return {"ok": False, "error": "이 설치에는 화면 엔진(PySide6)이 없음"}
+    root = Path(run["target_root"]).resolve()
+    out_dir = root / ".beom" / "shots"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    targets: list[tuple[str, dict]] = []
+    server = None
+    before = None
+    from beom_workbench.core import port
+    srv = None
+    try:
+        if url:
+            if cmd:
+                inbox.gate_commands(settings, {"screen_server": cmd})
+            cmd, url = port.fill_port(cmd, url)
+            port.check_url(url)
+            before = port._files(root)
+            if cmd:
+                server = port._Server(port._Side("target", root, root / ".beom"), cmd, url)
+            for pth in (paths or ["/"])[:6]:
+                targets.append(("/" + str(pth).lstrip("/"), {"path": "/" + str(pth).lstrip("/")}))
+            base = url
+        else:
+            if not files:
+                return {"ok": False, "error": "files(HTML) 또는 url(서버 주소)이 필요함"}
+            for f in files[:6]:
+                p = (root / f).resolve()
+                if not p.is_relative_to(root) or not p.is_file():
+                    return {"ok": False, "error": f"대상 폴더 안의 파일이 아님: {f}"}
+                targets.append((p.relative_to(root).as_posix(), {"file": p.relative_to(root).as_posix()}))
+            srv = screens.serve_folder(root)
+            srv.__enter__()
+            base = None
+        pages = []
+        for label, spec in targets:
+            for mobile in (True, False):
+                name = "check-" + re.sub(r"[^\w-]+", "_", label).strip("_")[:50] + ("-mobile" if mobile else "")
+                pages.append((label, mobile, screens.page_spec({**spec, "mobile": mobile, "wait_ms": 700, "audit": True,
+                                                                "actions": list(actions or [])},
+                                                               base, root, str(out_dir / f"{name}.png"),
+                                                               file_base=srv.base if srv else None)))
+        got = screens.capture([pg for _, _, pg in pages])
+    finally:
+        if server:
+            server.close()
+        if srv:
+            srv.__exit__(None, None, None)
+        if before is not None:
+            port._drop_new(root, before, keep=set())
+    report = []
+    for (label, mobile, _pg), r in zip(pages, got):
+        fix, advice = _design_findings(r.get("audit"))
+        report.append({"page": label, "size": "모바일 390px" if mobile else "PC 1280px", "shot": r.get("out") if r.get("ok") else None,
+                       "fix": fix[:20], "advice": advice[:10], **({"errors": r["errors"][:3]} if r.get("errors") else {})})
+    inbox.log(settings, run["id"], "screen_shots", shots=[x["shot"] for x in report if x["shot"]])
+    total = sum(len(x["fix"]) for x in report)
+    return {"ok": True, "fix_count": total, "pages": report,
+            "next": "fix 를 고친 뒤 다시 점검한다 — 대비는 토큰의 색을, 크기는 패딩·최소 높이를 고친다" if total else "고칠 것 없음 — advice 를 보고 다듬는다"}
+
+
+@mcp.tool()
+def wb_design_refs(urls: list[str], mobile: bool = False) -> dict:
+    """참고 화면 찍기 — 같은 분야에서 디자인으로 좋은 평을 받는 서비스의 실제 화면을 찍어 .beom/refs/ 에 남긴다 (최대 4개).
+    결과의 shot 을 직접 열어 보고 색 분위기·글꼴·사진/그림 쓰는 법·배치·기억에 남는 요소를 뽑는다 — 베끼지 않고 원리만.
+    바깥 사이트에 접속하는 일이라 웹 권한 규칙을 따른다 (묻기면 사용자에게 한 번 묻는다). 화면은 쿠키·저장소 없이 새로 연다."""
+    from beom_workbench.common.response import ToolError
+    from beom_workbench.core import screens
+
+    run = _run()
+    if run is None:
+        return {"ok": False, "error": "자동 실행 밖"}
+    picks = [u for u in (urls or [])[:4] if re.match(r"^https?://[^\s/]+", str(u))]
+    if not picks:
+        return {"ok": False, "error": "urls 에 http(s) 주소를 1~4개"}
+    if not screens.available():
+        return {"ok": False, "error": "이 설치에는 화면 엔진(PySide6)이 없음 — 참고 서비스는 웹 검색 결과의 설명으로만 본다"}
+    decision = inbox.decide(run, "web")
+    if decision == "refuse":
+        return {"ok": False, "error": "규칙상 웹 접속이 허용되지 않음 — 아는 범위에서 참고 서비스를 적는다"}
+    if decision == "ask":
+        ans = inbox.ask(settings, run["id"], "permission", {
+            "summary": "참고 화면 찍기 (웹 접속): " + ", ".join(picks), "tool": "mcp:wb_design_refs", "input": {"urls": picks},
+            "permission_kind": "web"})
+        if not ans.get("allow"):
+            return {"ok": False, "error": "사용자가 참고 화면 찍기를 거절함 — 아는 범위에서 참고 서비스를 적는다"}
+        if ans.get("always"):
+            inbox.update_run(settings, run["id"], lambda r: r["policy"].__setitem__("web", "allow"))
+    out_dir = Path(run["target_root"]).resolve() / ".beom" / "refs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pages = []
+    for u in picks:
+        name = re.sub(r"[^\w-]+", "_", re.sub(r"^https?://", "", u)).strip("_")[:60] + ("-mobile" if mobile else "")
+        w, h = (390, 844) if mobile else (1280, 900)
+        pages.append({"url": u, "out": str(out_dir / f"{name}.png"), "width": w, "height": h, "wait_ms": 2500, "full_page": False,
+                      "timeout_ms": 30000})
+    try:
+        got = screens.capture(pages)
+    except ToolError as e:
+        return {"ok": False, "error": e.message}
+    shots = [{"url": u, "ok": bool(r.get("ok")), "shot": r.get("out") if r.get("ok") else None, "title": r.get("title"),
+              "errors": (r.get("errors") or [])[:2]} for u, r in zip(picks, got)]
+    inbox.log(settings, run["id"], "design_refs", shots=[s["shot"] for s in shots if s["shot"]])
     return {"ok": True, "shots": shots}
 
 

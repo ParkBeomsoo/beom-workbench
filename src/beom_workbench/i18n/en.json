@@ -1548,5 +1548,10 @@
 "격리 밖 실행": "Run outside isolation",
 "격리 밖 실행 (Codex 샌드박스는 인터넷이 막혀 있음)": "Run outside isolation (the Codex sandbox has no internet)",
 "원래 있던 테스트를 바꿈": "Existing tests changed",
-"원래 테스트는 예전 동작을 기대합니다. 요청으로 바뀐 동작만큼만 고쳤는지 보세요.": "Existing tests expect the old behavior. Check that they changed only as far as the request changed the behavior."
+"원래 테스트는 예전 동작을 기대합니다. 요청으로 바뀐 동작만큼만 고쳤는지 보세요.": "Existing tests expect the old behavior. Check that they changed only as far as the request changed the behavior.",
+"참고 화면 찍기": "Capture reference screens",
+"기존 화면 규칙 확인": "Check existing screen rules",
+"다른 화면들에서 확인한 방식 그대로 만듭니다": "Built the same way the other screens already do it",
+"기존 화면 규칙 따름": "Follows the existing screens",
+"디자인 점검": "Design check"
 }

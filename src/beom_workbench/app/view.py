@@ -26,7 +26,7 @@ TOOL_TEXT = {
     "wb_port_create": "원장 만들기", "wb_features": "기능 목록 확인", "wb_person_ask": "질문",
     "wb_port_accept": "차이 허용 제안", "wb_port_finish": "완료 판정", "wb_inventory_build": "저장소 분석",
     "wb_activity": "진행 상황 알림", "wb_brief_check": "기획 패키지 점검", "wb_brief_screens": "화면 그림 만들기",
-    "wb_screen_shot": "화면 찍기", "wb_run": "격리 밖 실행", "wb_license_scan": "라이선스 확인", "wb_capabilities": "쓸 수 있는 기능 확인",
+    "wb_screen_shot": "화면 찍기", "wb_design_refs": "참고 화면 찍기", "wb_design_check": "디자인 점검", "wb_ui_conventions": "기존 화면 규칙 확인", "wb_run": "격리 밖 실행", "wb_license_scan": "라이선스 확인", "wb_capabilities": "쓸 수 있는 기능 확인",
     "wb_repo_open": "저장소 열기", "wb_repo_status": "저장소 상태 확인", "wb_repo_list": "저장소 목록 확인",
     "wb_graph_query": "구조 지도 찾기", "wb_impact_analyze": "영향 범위 확인", "wb_extension_points": "확장 지점 찾기",
     "wb_report_features": "기능 목록 확인", "wb_report_coverage": "커버리지 확인", "wb_runtime_run": "실행해서 확인",
@@ -396,7 +396,7 @@ def _reviews(reviews: list[dict], conn, port_id: str) -> dict:
             out["omitted"].append({"summary": h["summary"].removeprefix("생략: ")})
         elif h["kind"] == "tests_changed":
             out["tests_changed"] = [{"file": d["case"], "diff": d["diff"]} for d in h.get("detail") or []]
-        elif h["kind"] in ("coverage_unmeasured", "impact"):  # 툴킷이 재지 못한 파일 · 케이스가 거치지 않은 연관된 곳
+        elif h["kind"] in ("coverage_unmeasured", "impact", "screen_rules"):  # 툴킷이 재지 못한 파일 · 케이스가 거치지 않은 연관된 곳
             out["checks"].append({"summary": h["summary"], "files": (h.get("detail") or {}).get("files") or []})
         else:
             out["case_changes"].append(h.get("detail"))

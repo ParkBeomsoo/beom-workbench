@@ -1237,6 +1237,10 @@ function expectText(e) {
 function lookList(plan) {  // 디자인 컨셉 — 한두 줄 (예전 계획은 앞의 두 줄만)
   return (plan.look || []).length ? h("ul", { class: "looks" }, ...plan.look.slice(0, 2).map((x) => h("li", {}, ...inlineMd(x)))) : null;
 }
+function followList(plan) {  // 다른 화면에서 확인한 규칙 — 규칙마다 근거(파일:줄)
+  return (plan.follows || []).length ? h("ul", { class: "follows" }, ...plan.follows.map((f) => h("li", {},
+    h("span", { class: "fr", text: f.rule }), h("span", { class: "fe" }, ...(f.evidence || []).map((e) => h("code", { text: e })))))) : null;
+}
 function reqList(R) {
   const perReq = {};
   for (const e of R.expectations) for (const q of e.reqs || []) perReq[q] = (perReq[q] || 0) + 1;
@@ -1260,6 +1264,7 @@ function startCard(R, plan, asking) {
     sec("만들 것", `${R.requirements.length}개 — 다 되면 완료`, reqList(R)),
     (plan.decisions || []).length ? sec("정할 것", "추천이 골라져 있습니다 — 바꾸려면 누르세요", decisionTable(plan, true)) : null,
     (plan.look || []).length ? sec("디자인 컨셉", "", lookList(plan)) : null,
+    (plan.follows || []).length ? sec("기존 화면 규칙 따름", "다른 화면들에서 확인한 방식 그대로 만듭니다", followList(plan)) : null,
     sec("진행 순서", `${plan.steps.length}단계`, h("ol", { class: "sorder" }, ...plan.steps.map((s) => h("li", { text: s.title })))),
     h("div", { class: "cf" }, h("span", { class: "hint", text: "고칠 점은 입력창으로 보내면 반영해 다시 보여 줍니다" }),
       h("button", { class: "btn quiet", onclick: () => startEdit("spec") }, "기준 고치기"),
@@ -1273,6 +1278,7 @@ function planCard(plan, asking) {
     plan.summary ? h("p", { class: "slead" }, ...inlineMd(plan.summary)) : null,
     decisionTable(plan),
     lookList(plan) ? h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: "디자인 컨셉" })), lookList(plan)) : null,
+    followList(plan) ? h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: "기존 화면 규칙 따름" })), followList(plan)) : null,
     h("div", { class: "sub", text: `진행 순서 · ${plan.steps.length}단계` }),
     h("div", { class: "steps-list" }, ...plan.steps.map((s) => h("div", { class: "s" }, h("span", { text: s.title })))),
     h("div", { class: "cf" }, h("span", { class: "hint", text: "직접 고치거나, 바꿀 점을 입력창으로 보내세요" }),
@@ -1293,12 +1299,15 @@ function decisionTable(plan, bare) {
       const opts = [d.choice, ...(open ? d.options || [] : [])];
       const row = h("div", { class: "dec" },
         h("div", { class: "dt", text: d.topic }),
-        h("div", { class: "dv" }, h("div", { class: "dseg" }, ...opts.map((o, i) => {
-          const b = h("button", { class: "opt" + ((S.picks.v[d.topic] || d.choice) === o ? " on" : ""), disabled: !open,
+        h("div", { class: "dv" }, h("div", { class: "dseg" + (d.shots ? " looks" : "") }, ...opts.map((o, i) => {
+          // 시안이 있으면 그림으로 — 보고 고른다 (그림은 실행 폴더의 .beom 안 png 만 불러온다)
+          const pic = d.shots && d.shots[o] ? h("img", { class: "lookimg", alt: o }) : null;
+          if (pic) call("runImage", S.current, d.shots[o]).then((r) => { if (r.ok) pic.src = r.data.url; });
+          const b = h("button", { class: "opt" + (pic ? " look" : "") + ((S.picks.v[d.topic] || d.choice) === o ? " on" : ""), disabled: !open,
             onclick: () => {
               if (o === d.choice) delete S.picks.v[d.topic]; else S.picks.v[d.topic] = o;
               for (const x of row.querySelectorAll(".opt")) x.classList.toggle("on", x === b);
-            } }, o, i === 0 && open ? h("span", { class: "rec", text: d.changed_by_user ? "바꿈" : "추천" }) : null);
+            } }, pic, h("span", { class: "lt", text: o }), i === 0 && open ? h("span", { class: "rec", text: d.changed_by_user ? "바꿈" : "추천" }) : null);
           return b;
         })), d.why ? h("div", { class: "why", text: d.why }) : null));
       return row;

@@ -435,6 +435,17 @@ def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | Non
                           "summary": f"바꾼 함수를 부르는 기존 코드 {len(left)}곳을 합격 케이스가 거치지 않음 — 이 동작들이 그대로인지 "
                                      "확인되지 않았습니다. 영향이 없거나 따로 확인했으면 승인하세요",
                           "detail": {"files": [f"{c['target']} {c['caller']} → {', '.join(c['calls'])}" for c in left[:20]]}})
+    rules = conn.execute("SELECT detail FROM port_check WHERE port_id = ? AND kind = 'screen_rules' ORDER BY rowid DESC LIMIT 1",
+                         (port_id,)).fetchone()
+    if rules:
+        d = json.loads(rules["detail"]) if isinstance(rules["detail"], str) else rules["detail"] or {}
+        found = d.get("findings") or []
+        if found:
+            items.append({"item_id": "screen_rules", "kind": "screen_rules", "fingerprint": _sha(found),
+                          "summary": f"다른 화면들과 다르게 만든 곳 {len(found)}개 — 같은 부품을 이 프로젝트의 다른 화면들이 쓰는 방식과 "
+                                     "다르게 썼습니다 (근거는 다른 화면의 코드). 일부러 다르게 한 것이 맞으면 승인하세요",
+                          "detail": {"files": [f"{f['at']} {f['summary']}" + (f" ← {f['evidence'][0]}" if f.get("evidence") else "")
+                                               for f in found[:20]]}})
     gap = coverage_gap(conn, port_id)
     if gap:
         items.append({"item_id": "coverage", "kind": "coverage_unmeasured", "fingerprint": _sha(gap),

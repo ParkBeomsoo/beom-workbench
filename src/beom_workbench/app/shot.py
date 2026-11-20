@@ -176,6 +176,15 @@ def main() -> int:
         def shoot():
             if idx != state["i"]:
                 return
+            if p.get("audit") and "audit" not in cur:  # 디자인 점검 — 찍기 전에 이 크기 그대로 잰다
+                def audited(r):
+                    try:
+                        cur["audit"] = json.loads(r) if isinstance(r, str) else None
+                    except ValueError:
+                        cur["audit"] = None
+                    shoot()
+                view.page().runJavaScript(AUDIT_JS, 0, audited)
+                return
             if p.get("out"):
                 view.grab().save(p["out"])
             cur["height"] = full
@@ -217,6 +226,25 @@ def main() -> int:
     MODS = {"shift": "ShiftModifier", "ctrl": "ControlModifier", "control": "ControlModifier", "alt": "AltModifier",
             "meta": "MetaModifier", "cmd": "MetaModifier"}
 
+    def double_click(w, at) -> None:
+        """진짜 더블클릭 — 누르기·떼기 두 번을 짧은 간격의 시각으로 보낸다. 브라우저 엔진은 이벤트 시각과 자리로 클릭 횟수를 세어
+        dblclick 을 만든다. QTest.mouseDClick 은 Qt 의 '더블클릭' 이벤트 하나를 보내는데 엔진이 이를 클릭 횟수로 세지 않고, QTest 의
+        클릭 두 번은 우연한 더블클릭을 막으려 시각을 더블클릭 간격만큼 벌려 두 번의 한 번 클릭이 된다."""
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication
+        import time
+        local = QPointF(at)
+        glob = QPointF(w.mapToGlobal(at))
+        t0 = int(time.monotonic() * 1000)
+        seq = [(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton), (QEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton),
+               (QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton), (QEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton)]
+        for i, (kind, buttons) in enumerate(seq):
+            ev = QMouseEvent(kind, local, glob, Qt.MouseButton.LeftButton, buttons, Qt.KeyboardModifier.NoModifier)
+            ev.setTimestamp(t0 + 40 * i)
+            QApplication.sendEvent(w, ev)
+
+
     def send_key(spec: str) -> str:
         """'Tab' · 'Shift+Tab' · 'Enter' · 'a' 같은 키 하나를 진짜 키 입력으로."""
         from PySide6.QtCore import Qt
@@ -242,6 +270,68 @@ def main() -> int:
             return f"보낼 수 없는 키: {spec} (글자 입력은 fill 로)"
         return ""
 
+    # 디자인 점검 — 사람이 눈으로 놓치기 쉬운 것을 실제 계산된 스타일·위치로 잰다 (WCAG 대비·누르는 크기 등)
+    AUDIT_JS = r"""(() => {
+      const vw = innerWidth, mobile = vw <= 480, cap = (a) => a.slice(0, 15);
+      const vis = (el) => { const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none" && parseFloat(s.opacity) > 0.05; };
+      const name = (el) => el.id ? "#" + el.id : el.tagName.toLowerCase() + (el.classList.length ? "." + [...el.classList].slice(0, 2).join(".") : "");
+      const txt = (el) => (el.innerText || el.value || el.getAttribute("aria-label") || "").trim().replace(/\s+/g, " ").slice(0, 30);
+      const parse = (c) => { const m = String(c).match(/rgba?\(([^)]+)\)/); if (!m) return null;
+        const p = m[1].split(/[ ,\/]+/).filter(Boolean).map(parseFloat); return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 }; };
+      const lum = (c) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+        return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b); };
+      const bgOf = (el) => { const layers = []; for (let e = el; e && e.nodeType === 1; e = e.parentElement) {
+          const s = getComputedStyle(e); if (s.backgroundImage && s.backgroundImage !== "none") return null;  // 그림 위 글자는 계산하지 않는다
+          const c = parse(s.backgroundColor); if (c && c.a > 0) { layers.push(c); if (c.a >= 0.99) break; } }
+        let b = { r: 255, g: 255, b: 255 };
+        for (let i = layers.length - 1; i >= 0; i--) { const c = layers[i]; b = { r: c.r * c.a + b.r * (1 - c.a), g: c.g * c.a + b.g * (1 - c.a), b: c.b * c.a + b.b * (1 - c.a) }; }
+        return b; };
+      const out = { contrast: [], small_text: [], tiny_targets: [], small_targets: [], clipped: [], overlap: [], overflow: null };
+      const fonts = new Set(), sizes = new Set(), colors = new Set(), hits = [];
+      for (const el of (document.body ? document.body.querySelectorAll("*") : [])) {
+        if (!vis(el) || ["SCRIPT", "STYLE", "SVG", "PATH"].includes(el.tagName.toUpperCase())) continue;
+        const s = getComputedStyle(el);
+        const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+        const off = el.disabled || el.closest("[disabled],[aria-disabled='true']");
+        if (own) {
+          const fs = parseFloat(s.fontSize), fw = parseInt(s.fontWeight) || 400;
+          fonts.add(s.fontFamily.split(",")[0].replace(/["']/g, "").trim()); sizes.add(Math.round(fs)); colors.add(s.color);
+          const fg = parse(s.color), bg = bgOf(el);
+          if (fg && bg && fg.a > 0.05 && !off) {
+            const ratio = (Math.max(lum(fg), lum(bg)) + 0.05) / (Math.min(lum(fg), lum(bg)) + 0.05);
+            const need = fs >= 24 || (fs >= 18.66 && fw >= 700) ? 3 : 4.5;
+            if (ratio < need) out.contrast.push({ el: name(el), text: txt(el), ratio: +ratio.toFixed(2), need });
+          }
+          if (fs < 12) out.small_text.push({ el: name(el), text: txt(el), size: fs });
+          if (/(hidden|clip)/.test(s.overflow + s.overflowX) && el.scrollWidth > el.clientWidth + 1) out.clipped.push({ el: name(el), text: txt(el) });
+        }
+        if (el.matches("a[href],button,input:not([type=hidden]),select,textarea,[role=button],[onclick],summary") && !off) {
+          const r = el.getBoundingClientRect();
+          const inline = s.display === "inline" && el.closest("p,li,td");  // 문장 안 링크는 크기 기준에서 뺀다 (WCAG 예외)
+          if (!inline) {
+            const sz = { el: name(el), text: txt(el), w: Math.round(r.width), h: Math.round(r.height) };
+            if (r.width < 24 || r.height < 24) out.tiny_targets.push(sz);
+            else if (mobile && (r.width < 44 || r.height < 44)) out.small_targets.push(sz);
+            if (hits.length < 150) hits.push([el, r]);
+          }
+        }
+      }
+      for (let i = 0; i < hits.length; i++) for (let j = i + 1; j < hits.length; j++) {
+        const [a, ra] = hits[i], [b, rb] = hits[j];
+        if (a.contains(b) || b.contains(a)) continue;
+        const w = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left), h = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
+        if (w > 4 && h > 4) out.overlap.push({ a: name(a), b: name(b) });
+      }
+      const sw = document.documentElement.scrollWidth;
+      if (sw > vw + 1) {
+        const wide = [...document.body.querySelectorAll("*")].filter((e) => vis(e) && e.getBoundingClientRect().right > vw + 1).slice(0, 5).map(name);
+        out.overflow = { page: sw, viewport: vw, wide };
+      }
+      for (const k of Object.keys(out)) if (Array.isArray(out[k])) out[k] = cap(out[k]);
+      return JSON.stringify({ issues: out, variety: { fonts: [...fonts], sizes: [...sizes].sort((a, b) => a - b), text_colors: colors.size } });
+    })()"""
+
     def run_actions(idx, acts, done):
         if idx != state["i"]:
             return
@@ -261,7 +351,10 @@ def main() -> int:
             after("")
         elif a.get("fill") is not None:
             view.page().runJavaScript(FILL_JS % json.dumps(a, ensure_ascii=False), 0, after)
-        elif a.get("click") is not None:
+        elif a.get("click") is not None or a.get("dblclick") is not None:
+            target_sel = a.get("click") if a.get("click") is not None else a.get("dblclick")
+            double = a.get("click") is None
+
             def clicked(raw):
                 from PySide6.QtCore import QPoint, Qt
                 from PySide6.QtTest import QTest
@@ -270,21 +363,24 @@ def main() -> int:
                 except ValueError:
                     r = {}
                 if r.get("missing"):
-                    return after("누를 요소 없음: " + str(a["click"]))
+                    return after("누를 요소 없음: " + str(target_sel))
                 if r.get("hidden"):
-                    return after("누를 요소가 화면에 보이지 않음 (크기 0): " + str(a["click"]))
+                    return after("누를 요소가 화면에 보이지 않음 (크기 0): " + str(target_sel))
                 if r.get("covered"):
-                    return after(f"누를 요소가 다른 요소({r.get('by')})에 가려져 있음: {a['click']}")
+                    return after(f"누를 요소가 다른 요소({r.get('by')})에 가려져 있음: {target_sel}")
                 z = view.page().zoomFactor() or 1.0
                 w = view.focusProxy() or view
                 view.activateWindow()
-                QTest.mouseClick(w, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
-                                 QPoint(int(r["x"] * z), int(r["y"] * z)))
+                at = QPoint(int(r["x"] * z), int(r["y"] * z))
+                if double:
+                    double_click(w, at)
+                else:
+                    QTest.mouseClick(w, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
                 after("")
             # 스크롤이 끝난 뒤 자리를 다시 재서 누른다
-            view.page().runJavaScript(AIM_JS % (json.dumps(a["click"]), "false"), 0,
+            view.page().runJavaScript(AIM_JS % (json.dumps(target_sel), "false"), 0,
                                       lambda _r: QTimer.singleShot(60, lambda: idx == state["i"] and view.page().runJavaScript(
-                                          AIM_JS % (json.dumps(a["click"]), "false"), 0, clicked)))
+                                          AIM_JS % (json.dumps(target_sel), "false"), 0, clicked)))
         elif a.get("press") is not None:
             def focused(raw):
                 try:
