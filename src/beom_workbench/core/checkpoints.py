@@ -142,6 +142,22 @@ class Checkpoints:
         diff = _git(self.shadow, self.root, "diff", "--cached", "--no-renames", base, *spec, check=False, index=idx).stdout
         return {"files": files, "diff": diff[:MAX_DIFF], "truncated": len(diff) > MAX_DIFF, "base": base}
 
+    def revert_paths(self, base: str, paths: list[str]) -> list[str]:
+        """파일 몇 개만 그 체크포인트 상태로 — 그때 없던 파일은 지운다. 툴킷 작업 파일(.beom)은 건드리지 않는다."""
+        done = []
+        for rel in paths:
+            if hidden(rel):
+                continue
+            target = (self.root / rel).resolve()
+            if not str(target).startswith(str(self.root.resolve())) or target == self.root.resolve():
+                continue
+            if _git(self.shadow, self.root, "cat-file", "-e", f"{base}:{rel}", check=False).returncode == 0:
+                _git(self.shadow, self.root, "checkout", "-q", base, "--", rel)
+            elif target.is_file():
+                target.unlink()
+            done.append(rel)
+        return done
+
     def restore(self, checkpoint: str) -> dict:
         """대상 폴더를 그 체크포인트 상태로 되돌린다. 되돌리기 전 상태도 체크포인트로 남겨 다시 되돌릴 수 있다."""
         known = {c["id"] for c in self.list()}

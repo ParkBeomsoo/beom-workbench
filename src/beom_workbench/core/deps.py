@@ -208,8 +208,13 @@ def _run(argv: list[str], root: Path, timeout: float) -> tuple[int, str]:
 
 def _install(item: dict, root: Path, timeout: float) -> dict:
     if item["kind"] == "node":
-        argv = (["cmd", "/d", "/c", "npm", "install", "--no-audit", "--no-fund"] if os.name == "nt"
-                else ["npm", "install", "--no-audit", "--no-fund"])
+        pm = node_manager(root)
+        args = {"npm": ["npm", "install", "--no-audit", "--no-fund"], "pnpm": ["pnpm", "install"], "yarn": ["yarn", "install"],
+                "bun": ["bun", "install"]}[pm]
+        if pm != "npm" and not shutil.which(pm):  # 프로젝트가 정한 관리자가 없다 — npm 으로 설치하면 잠금 파일이 둘이 된다
+            return {"kind": "node", "ok": False, "exit_code": 127,
+                    "output_tail": f"이 프로젝트는 {pm} 을(를) 쓰는데 이 PC 에 없음 — corepack enable 또는 {pm} 설치 뒤 다시"}
+        argv = ["cmd", "/d", "/c", *args] if os.name == "nt" else args
         code, out = _run(argv, root, timeout)
     else:
         py = venv_python(root)
@@ -261,6 +266,28 @@ def _permit(settings, run: dict | None, item: dict) -> None:
     inbox.update_run(settings, run["id"], lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [key]))))
 
 
+def node_manager(root: Path) -> str:
+    """프로젝트가 쓰는 패키지 관리자 — package.json 의 packageManager, 없으면 잠금 파일 (워크스페이스 맨 위까지)."""
+    for d in [root, *root.parents][:6]:
+        pj = d / "package.json"
+        try:
+            pmf = json.loads(pj.read_text(encoding="utf-8-sig")).get("packageManager", "") if pj.is_file() else ""
+        except (OSError, ValueError, AttributeError):
+            pmf = ""
+        for pm in ("pnpm", "yarn", "bun", "npm"):
+            if str(pmf).startswith(pm + "@"):
+                return pm
+        if (d / "pnpm-lock.yaml").is_file() or (d / "pnpm-workspace.yaml").is_file():
+            return "pnpm"
+        if (d / "yarn.lock").is_file():
+            return "yarn"
+        if (d / "bun.lock").is_file() or (d / "bun.lockb").is_file():
+            return "bun"
+        if (d / "package-lock.json").is_file() or (d / ".git").exists():
+            return "npm"
+    return "npm"
+
+
 def _npm_lockfile(at: Path) -> Path:
     """npm 이 잠금 파일을 쓰는 자리 — 워크스페이스의 한 패키지에서 설치해도 npm 은 워크스페이스 맨 위에 쓴다."""
     import json as _json
@@ -272,10 +299,14 @@ def _npm_lockfile(at: Path) -> Path:
         pj = d / "package.json"
         if d != at and pj.is_file():
             try:
-                if _json.loads(pj.read_text(encoding="utf-8")).get("workspaces"):
-                    return d / "package-lock.json"
+                ws = _json.loads(pj.read_text(encoding="utf-8")).get("workspaces")
             except (OSError, ValueError, AttributeError):
-                pass
+                ws = None
+            globs = ws.get("packages", []) if isinstance(ws, dict) else ws or []
+            import fnmatch
+            rel = at.resolve().relative_to(d.resolve()).as_posix()
+            if any(fnmatch.fnmatch(rel, str(g).rstrip("/")) for g in globs):
+                return d / "package-lock.json"
     return at / "package-lock.json"
 
 

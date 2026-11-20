@@ -137,8 +137,17 @@ def _stage(run: dict, st: dict | None) -> int:
         req = st.get("requirements") or {}
         if not req.get("total") or not g.get(port.GATE_REQ_CASES) or not plan.get("steps"):
             return 0
-        if not plan.get("approved") or (st["approvals"].get("criteria", st["approvals"]["pending"]) and not req.get("implemented")):
-            return 1
+        # 확인 단계 — 승인을 기다리는 실행은 계획 승인 전, 계획 승인만 끈 실행은 기준 승인 전. 끝까지 맡김은 마지막에 확인하니 없다.
+        # 승인한 뒤 구현하면서 케이스를 고쳐 생긴 확인 카드는 구현 단계 안의 카드다 (단계를 뒤로 돌리지 않는다)
+        criteria_open = st["approvals"].get("criteria", st["approvals"]["pending"]) and not req.get("implemented")
+        if run.get("revision_round") and run.get("revision_round") == run.get("round") and run.get("revision_touched") \
+                and st["approvals"].get("criteria", st["approvals"]["pending"]):
+            return 1  # 추가 요청 라운드에서 기준을 고쳐 확인을 기다린다 — 예전 승인·매핑을 보고 검증 단계로 건너뛰지 않는다
+        if run.get("confirm_at", "start") != "end":
+            if run.get("plan_approval", True) and not plan.get("approved"):
+                return 1
+            if not run.get("plan_approval", True) and criteria_open:
+                return 1
         if not g[port.GATE_MAPPED]:
             return 2
         return 3
@@ -660,6 +669,8 @@ def _activity(run: dict, asks: list, reviews: int = 0, license_open: bool = Fals
             return {"text": "비용 한도에 닿아 멈췄습니다 — '이어서'를 누르면 다시 한도까지 진행합니다 (한도는 라운드 규칙에서)"}
         if why == "hard_rounds":
             return {"text": "안전용 최대 라운드에 닿아 멈췄습니다 — 결과를 보고 '이어서'를 누르거나 고칠 점을 보내 주세요"}
+        if run.get("stalled"):  # 횟수 한도가 아니라 진전 없이 같은 라운드를 되풀이해서 멈춤
+            return {"text": "몇 라운드째 진전이 없어 멈췄습니다 — 마지막 보고에서 막힌 점(설치·결정 등)을 보고 답하거나 '이어서'를 누르세요"}
         return {"text": "반복 횟수 한도({0}회)에 닿아 멈췄습니다 — 실행 옵션에서 횟수를 늘리거나 끄고 '이어서'를 누르세요".replace(
             "{0}", str(run.get("max_rounds") or run.get("round") or 0))}
     if s == "waiting_approval" and license_open and not reviews:

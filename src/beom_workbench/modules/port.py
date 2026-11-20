@@ -159,6 +159,11 @@ def wb_port_verify(project_id: str, port_id: str, target_url: str | None = None,
     if run is not None:
         from beom_workbench.core import deps
         deps.ensure(settings, run, Path(run["target_root"]))  # 대상이 쓰는 의존성을 먼저 — 바뀐 것이 없으면 바로 지나간다
+        from beom_workbench.core import tasks
+        lack = tasks.ensure_command_tools(settings, run, [target_cmd, target_cli, source_cmd, source_cli])
+        if lack:  # 명령을 돌릴 도구가 없다 — 돌려서 이상하게 실패시키지 않는다 (툴킷이 설치를 물었고 사용자가 설치하지 않았다)
+            return {"ok": False, "error": f"{', '.join(lack)} 이(가) 이 PC 에 없어 검증 명령을 돌리지 않음 — 사용자가 설치하지 않기로 했다",
+                    "recovery": "설치를 다시 묻지 말고 빌드 없이 할 수 있는 만큼 한 뒤 wb_handoff 의 risks 에 하지 못한 검증을 적는다"}
     return port.verify(conn, proj, settings, port_id, target_url=target_url, target_cmd=target_cmd, target_cli=target_cli,
                        cases_file=cases_file, source_url=source_url, source_cmd=source_cmd, source_cli=source_cli,
                        trusted=trusted, source_image=source_image, concurrency=concurrency,

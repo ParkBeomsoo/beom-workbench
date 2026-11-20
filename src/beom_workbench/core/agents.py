@@ -216,6 +216,11 @@ def refresh_path(max_age: float = 30) -> None:
             return
         if "__OSS_PATH__" in out:
             fresh = [x for x in out.rsplit("__OSS_PATH__", 1)[-1].strip().split(os.pathsep) if x]
+    try:
+        from beom_workbench.core import prereqs
+        fresh += prereqs.managed_bins()  # 툴킷이 받아 둔 Maven·Gradle
+    except Exception:  # noqa: BLE001
+        pass
     have = os.environ.get("PATH", "").split(os.pathsep)
     if sys.platform == "win32":
         # 레지스트리 값(사용자 → 시스템)은 실제 순서가 아니다 — 지금 순서는 그대로 두고 새로 생긴 폴더만 뒤에 붙인다.
@@ -423,6 +428,12 @@ class ClaudeCode(Agent):
             # 다른 화면들이 쓰는 기존 공통 부품 — 편집 자동 허용(acceptEdits)에서도 이 파일들의 편집은 권한 처리기로 와서 사용자에게 묻는다
             ask = cfg.setdefault("permissions", {}).setdefault("ask", [])
             ask += [f"Edit(./{r})" for r in locked]  # Edit 규칙이 모든 편집 도구(Write·MultiEdit 포함)를 덮는다
+        if run.get("mode") == "request":
+            # 순서는 툴킷이 지킨다 — 계획 전(기다리는 실행이면 승인 전)에는 제품 파일 편집을 막는 문지기 (모델이 순서를 건너뛰어도)
+            gate = (f'"{Path(sys.executable).as_posix()}" -X utf8 -m beom_workbench.hookgate "{Path(settings.home).as_posix()}" '
+                    f'{run["id"]}')
+            cfg.setdefault("hooks", {}).setdefault("PreToolUse", []).append(
+                {"matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": gate, "timeout": 20}]})
         if cfg:
             sfile = d / "claude-settings.json"
             sfile.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")

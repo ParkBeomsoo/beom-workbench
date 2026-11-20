@@ -290,7 +290,8 @@ function permMenu(anchor, policy, set, openDetail) {
     onPick: (it) => it.id === "custom" ? openDetail() : set({ ...S.permModes.find((m) => m.id === it.id).policy }) });
 }
 function policyRows(policy, set) {
-  return h("div", { class: "prow-list" }, ...Object.entries(S.kinds).map(([k, t]) => h("div", { class: "prow" },
+  // 'shared'(기존 공통 부품 수정)는 계획에서 신고·승인하는 것 — 권한 표에서 미리 정하지 않는다 (작업 중 카드의 '항상'으로만)
+  return h("div", { class: "prow-list" }, ...Object.entries(S.kinds).filter(([k]) => k !== "shared").map(([k, t]) => h("div", { class: "prow" },
     h("span", { text: t }), segmented([["allow", "허용"], ["ask", "확인"], ["refuse", "거절"]], policy[k], (v) => set({ ...policy, [k]: v })))));
 }
 
@@ -1241,7 +1242,8 @@ function lookList(plan) {  // 디자인 컨셉 — 한두 줄 (예전 계획은 
 }
 function sharedList(plan) {  // 다른 화면들이 쓰는 기존 공통 부품을 고치는 신고 — 승인하면 그 파일을 고칠 수 있다
   const items = (plan.shared_changes || []).map((c) => h("li", { class: "basis" },
-    h("b", { text: c.file + " " }), h("span", { text: `(다른 화면 ${c.users}곳도 바뀜)` }), h("span", { text: " " + (c.why || "") })));
+    h("b", { text: c.file + " " }), h("span", { text: c.users ? `(다른 화면 ${c.users}곳도 바뀜)` : "(공통 스타일 — 다른 화면에도 걸림)" }),
+    h("span", { text: " " + (c.why || "") })));
   return items.length ? h("ul", { class: "looks" }, ...items) : null;
 }
 function layoutList(plan) {  // 새 프로젝트를 정석과 다른 폴더 구조로 만드는 근거 (사용자가 정한 구조 등)

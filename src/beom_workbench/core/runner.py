@@ -132,8 +132,7 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
      합격 케이스·화면 케이스도 그 방식으로 확인한다 (행 더블클릭으로 상세가 열리는 곳이면 actions 에 {"dblclick": "선택자"}).
      다 만든 뒤 툴킷이 새 화면을 다른 화면들의 실제 쓰임과 비교해 다른 곳을 알린다 — 고치거나, 일부러 다르게 했으면 보고에 이유를 쓴다.
      공통 부품(여러 화면이 쓰는 컴포넌트·공통 함수·공통 스타일·템플릿 조각)은 요청이 시키지 않으면 고치지 않는다 — 고치면 그것을 쓰는
-     다른 화면이 모두 바뀐다. 새 화면에 필요한 것이 없으면 새 화면 쪽에서 더하고, 꼭 바꿔야 하면 decisions 로 '현행 → 변경 · 영향 받는
-     화면'을 내서 사용자가 정한다. 디자인 점검이 원래 있던 공통 부품의 문제(작은 버튼·모바일 넘침 등)를 알리면 고치지 말고 인수인계
+     다른 화면이 모두 바뀐다. 새 화면에 필요한 것이 없으면 새 화면 쪽에서 더한다 (꼭 바꿔야 할 때는 아래 shared_changes 로). 디자인 점검이 원래 있던 공통 부품의 문제(작은 버튼·모바일 넘침 등)를 알리면 고치지 말고 인수인계
      follow_ups 에 남긴다. 꼭 바꿔야 하면(예: 메뉴가 공통 레이아웃에 있다) 계획(wb_plan_set)의 shared_changes 에
      [{file, why}] 로 신고한다 — 사용자가 계획 카드에서 보고 승인해야 고칠 수 있다. 툴킷은 승인 전에는 그 파일의 편집을 막는다
      (Claude: 편집마다 사용자에게 묻는다 / Codex: 파일을 읽기 전용으로 잠가 둔다 — 잠금을 풀려고 하지 않는다).
@@ -317,7 +316,8 @@ RULES = _with_scaffold(RULES)
 # '그 밖의 명령'이라 매번 묻는다. 사용자를 쓸데없이 부르지 않게 편집 도구를 쓰라고 알려 준다.
 EDIT_TOOLS_RULE = """[파일 쓰기]
 - 파일을 만들거나 고칠 때(.beom/cases.json 포함)는 셸 명령(Set-Content·Out-File·here-string·echo > 등) 대신 편집 도구(Write·Edit)를 쓴다.
-  편집 도구로 대상 폴더 안을 고치는 것은 묻지 않고 바로 되지만, 셸로 쓰는 것은 매번 사용자에게 묻는다."""
+  편집 도구로 대상 폴더 안을 고치는 것은 (계획·승인 뒤의 제품 파일과 .beom/ 은) 묻지 않고 바로 되지만, 셸로 쓰는 것은 매번
+  사용자에게 묻는다. 계획 전·승인 전의 제품 파일과 승인 안 된 공통 부품은 툴킷이 막는다 — 셸로 돌아가 쓰지 않는다."""
 
 
 # Codex 의 Windows 격리(제한된 토큰)에서는 Node 가 자식 프로세스를 만들지 못한다 (spawn EPERM) — Python 은 된다.
@@ -400,10 +400,18 @@ NO_WAIT_SWAPS = [
 ]
 
 
+PLAN_ONLY_SWAPS = [  # 계획 승인만 끈 실행 — 요구사항·합격 기준은 처음에 확인받고, 계획은 내되 승인은 기다리지 않는다
+    ("계획(wb_plan_set)을 쉬지 않고 한 번에 내고 라운드를 끝낸다. 사용자는 한 장으로\n  한 번에 확인한다.",
+     "계획(wb_plan_set)을 쉬지 않고 한 번에 내고 라운드를 끝낸다. 사용자는 기준을 확인하고, 계획은\n  승인을 기다리지 않는다 — 기준 승인 뒤 구현한다."),
+    ("제품 코드·설정 파일·그 밖의 미리보기는 승인 뒤에.", "제품 코드·설정 파일·그 밖의 미리보기는 기준 승인 뒤에."),
+    ("- 구현 전에는 계획(wb_plan_set)을 내고 승인을 기다린다.", "- 구현 전에는 계획(wb_plan_set)을 낸다 (계획 승인은 기다리지 않는다 — 기준 승인 뒤 구현)."),
+]
+
+
 def fit_rules(run: dict) -> str:
     rules = RULES
     if run.get("confirm_at") == "end" or not run.get("plan_approval", True):
-        for old, new in NO_WAIT_SWAPS:
+        for old, new in (NO_WAIT_SWAPS if run.get("confirm_at") == "end" else PLAN_ONLY_SWAPS):
             rules = rules.replace(old, new)
     if not has_assets(run):  # 먼저 — 이 절의 끝 표시('형태' 절 머리)를 아래에서 지우기 전에
         rules = _drop(rules, "assets")
@@ -484,7 +492,9 @@ STACK_MARKERS = {"package.json": "Node/JS", "pyproject.toml": "Python", "require
                  "build.gradle": "Java/Kotlin(Gradle)", "go.mod": "Go", "Cargo.toml": "Rust", "composer.json": "PHP",
                  "Gemfile": "Ruby", "pubspec.yaml": "Flutter", "*.csproj": ".NET", "index.html": "정적 웹"}
 DOC_EXT = {".md", ".txt", ".docx", ".pdf", ".xlsx", ".csv"}
-SCREEN_EXT = {".html", ".vue", ".tsx", ".jsx", ".svelte", ".xaml", ".ui"}
+# 화면 파일 — 화면 규칙 분석기와 같은 목록 (JSP·템플릿 프로젝트가 '화면 없음'으로 기록돼 공통 부품 보호가 빠지던 것)
+from beom_workbench.core.conventions import SCREEN_EXTS as _SCREEN_EXTS  # noqa: E402
+SCREEN_EXT = set(_SCREEN_EXTS) | {".xaml", ".ui"}
 
 
 def existing_assets(target_root: str | Path, limit: int = 4000) -> dict | None:
@@ -533,7 +543,7 @@ def shared_locked(run: dict) -> dict:
     """지금 고치면 안 되는 공통 부품 {경로: 쓰는 파일 수} — 계획의 shared_changes 로 신고했고 사용자가 승인했으면(승인을 기다리지
     않는 실행이면 신고만으로) 풀린다."""
     parts = run.get("shared_parts") or {}
-    if not parts:
+    if not parts or (run.get("policy") or {}).get("shared") == "allow":  # 사용자가 이 실행에서 공통 부품 수정을 '항상' 허락했다
         return {}
     plan = run.get("plan") or {}
     waits = run.get("plan_approval", True) and run.get("confirm_at", "start") != "end"
@@ -545,11 +555,14 @@ def lock_shared(settings: Settings, run: dict) -> list[str]:
     """승인 안 된 기존 공통 부품을 읽기 전용으로 — 잠근 것을 실행 기록에 남긴다 (비정상 종료 뒤에도 풀 수 있게)."""
     import stat
     root = Path(run["target_root"])
+    keep = inbox.run_dir(settings, run["id"]) / "shared-lock"
     done = []
     for rel in shared_locked(inbox.load_run(settings, run["id"])):
         f = root / rel
         try:
             if f.is_file() and os.access(f, os.W_OK):
+                (keep / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, keep / rel)  # 원래 내용 — 잠금을 돌아가 바뀌었으면 되돌린다
                 os.chmod(f, stat.S_IMODE(f.stat().st_mode) & ~(stat.S_IWRITE | stat.S_IWGRP | stat.S_IWOTH))
                 done.append(rel)
         except OSError:
@@ -559,8 +572,8 @@ def lock_shared(settings: Settings, run: dict) -> list[str]:
     return done
 
 
-def unlock_shared(settings: Settings, run: dict) -> None:
-    """잠근 공통 부품을 다시 쓸 수 있게."""
+def unlock_shared(settings: Settings, run: dict, only: set[str] | None = None) -> None:
+    """잠근 공통 부품을 다시 쓸 수 있게 (only: 그 파일들만 — 라운드 중에 신고가 받아들여진 것)."""
     import stat
     try:
         cur = inbox.load_run(settings, run["id"])
@@ -570,14 +583,33 @@ def unlock_shared(settings: Settings, run: dict) -> None:
     if not locked:
         return
     root = Path(cur["target_root"])
-    for rel in locked:
+    keep = inbox.run_dir(settings, run["id"]) / "shared-lock"
+    free = [rel for rel in locked if only is None or rel in only]
+    undone = []
+    for rel in free:
         f = root / rel
+        orig = keep / rel
         try:
             if f.is_file():
                 os.chmod(f, stat.S_IMODE(f.stat().st_mode) | stat.S_IWRITE)
+            # 잠금을 돌아가 바꿨거나(이름 바꾼 뒤 새로 씀) 지웠다 — 신고·승인 전이면 원래대로 (신고가 받아들여져 푸는 것은 그대로)
+            if only is None and orig.is_file() and (not f.is_file() or f.read_bytes() != orig.read_bytes()):
+                shutil.copy2(orig, f)
+                undone.append(rel)
+            orig.unlink(missing_ok=True)
         except OSError:
             pass
-    inbox.update_run(settings, run["id"], lambda r: r.update(shared_lock=[]))
+    if undone:
+        inbox.log(settings, run["id"], "note", tone="warn",
+                  text="잠근 공통 부품이 잠금을 돌아가 바뀌어 원래대로 되돌렸습니다: " + ", ".join(undone[:5])
+                       + " — 바꿔야 하면 계획의 shared_changes 로 신고해 승인을 받습니다")
+    inbox.update_run(settings, run["id"], lambda r: r.update(shared_lock=[x for x in (r.get("shared_lock") or []) if x not in free]))
+
+
+def shared_parts_unlocked(run: dict) -> list[str]:
+    """기존 공통 부품 중 지금 풀린 것 (신고가 받아들여졌거나 사용자가 '항상' 허락)."""
+    locked = shared_locked(run)
+    return [k for k in run.get("shared_parts") or {} if k not in locked]
 
 
 def new_project(run: dict) -> bool:
@@ -588,7 +620,7 @@ def new_project(run: dict) -> bool:
         return True
     if "code" not in ex:  # 예전 기록 — 스택 표시나 화면 파일이 있었으면 기존 프로젝트로 본다
         return not ex.get("stack") and not ex.get("screens")
-    return not ex["code"] and not ex.get("stack")
+    return not ex["code"] and not ex.get("stack") and not ex.get("screens")  # HTML·CSS 만 있는 기존 정적 사이트도 기존 프로젝트
 
 
 AGENT_FILES = ("AGENTS.md", "CLAUDE.md", "GEMINI.md", ".cursorrules", "CONVENTIONS.md", ".windsurfrules", "copilot-instructions.md")
@@ -812,7 +844,7 @@ def _brief(run: dict, st: dict | None) -> str:
                      + ", ".join(f"{k}({v}곳)" for k, v in list(locked.items())[:25]) + (" …" if len(locked) > 25 else ""))
     lines += _guides_lines(run.get("guides"))
     from beom_workbench.core import prereqs
-    pre = prereqs.brief_line(prereqs.needs(run["target_root"]))
+    pre = prereqs.brief_line(prereqs.needs(run["target_root"]), run.get("tools_declined"))
     if pre:
         lines.append(pre)
     if st:
@@ -832,7 +864,9 @@ def _brief(run: dict, st: dict | None) -> str:
     plan = run.get("plan") or {}
     if plan.get("steps"):
         done = sum(1 for x in plan["steps"] if x.get("status") == "done")
-        lines.append(f"[계획] {'승인됨' if plan.get('approved') else '승인 대기'} · {done}/{len(plan['steps'])} 단계 완료")
+        waits = run.get("plan_approval", True) and run.get("confirm_at", "start") != "end"
+        state = "승인됨" if plan.get("approved") else "승인 대기" if waits else "승인을 기다리지 않음"
+        lines.append(f"[계획] {state} · {done}/{len(plan['steps'])} 단계 완료")
     msgs = [m for m in run.get("messages") or [] if not m.get("delivered")]
     if msgs:
         lines.append("[사용자 추가 요청 — 이번 라운드에 반영]\n" + "\n".join(f"- {m['text']}" for m in msgs))
@@ -1117,7 +1151,9 @@ AUTO_ACTIVITY = {"wb_make_requirements": "요구사항을 정리했습니다 —
 
 # 추가 요청 라운드에서 진행 단계를 다시 계산하기 시작하는 도구 — 기준·계획을 고치거나 검증을 돌림.
 # 코드 편집은 넣지 않는다: 코드를 먼저 고친 뒤 요구사항을 더하면 '검증'에서 '구현'으로 뒤로 튀어 보였다 (기준을 고칠 때까지는 처음 단계)
-REVISION_WORK = {"wb_make_requirements", "wb_port_capture", "wb_plan_set", "wb_plan_progress", "wb_port_map", "wb_port_verify"}
+# 추가 요청 라운드에서 '손댔다'로 치는 도구 — 기준·계획·구현 위치를 실제로 바꾸는 것만 (진행 표시·검증은 예전 상태를 볼 뿐이라
+# 그것만으로 손댔다고 치면 예전 승인·매핑을 보고 '검증' 단계로 튀었다가 기준을 고칠 때 처음으로 내려갔다)
+REVISION_WORK = {"wb_make_requirements", "wb_port_capture", "wb_plan_set", "wb_port_map"}
 
 
 def auto_activity(tool: str, run: dict) -> str:
@@ -1479,8 +1515,9 @@ class Runner:
                               items=[{"tool": e.get("tool"), "input": mask_command(json.dumps(e.get("input"), ensure_ascii=False)[:300])}])
                     short = str(e.get("tool") or "").split("__")[-1]
                     self._note_outside_edit(run, short, e.get("input"))
-                    if short in REVISION_WORK and run.get("revision_round") == run.get("round") and not run.get("revision_touched"):
-                        run = self._set(revision_touched=True)
+                    if short in REVISION_WORK and run.get("revision_round") == run.get("round") and not run.get("revision_touched") \
+                            and self._progress_sig(inbox.load_run(self.settings, self.run_id)) != run.get("revision_sig"):
+                        run = self._set(revision_touched=True)  # 도구를 부른 것만으로는 아니다 (실패한 호출) — 기록이 실제로 바뀌었을 때
                     if short in AUTO_ACTIVITY:
                         self._set(activity={"text": auto_activity(short, inbox.load_run(self.settings, self.run_id)), "at": inbox._now()})
                     if short in ("wb_make_requirements", "wb_port_capture") and run.get("auto_approve_round") == run.get("round"):
@@ -1583,7 +1620,7 @@ class Runner:
             self._release()
 
     def _run(self) -> dict:
-        run = self._set(status="running")
+        run = self._set(status="running", stalled=False, stop_reason=None)  # 지난번에 멈춘 까닭은 새로 시작하면 지운다
         if run["round"] == 0:
             self._checkpoint(run, "시작 전")
         if run["mode"] in ("free", "plan"):
@@ -1625,7 +1662,10 @@ class Runner:
                 # 레퍼런스: 원본 라이선스 확인만 남았다 — 에이전트는 대신 못 하므로 라운드를 쓰지 않고 사람의 확인을 기다린다
                 license_wait = bool(st) and not st["gates"].get(port.GATE_LICENSE, True) and all(
                     v for k, v in st["gates"].items() if k != port.GATE_LICENSE)
-                stop = stop or license_wait
+                # 사람 확인 카드가 남았는데 지난 라운드가 진전 없이 끝났다 — 에이전트는 카드를 대신 처리할 수 없으니 라운드를 더 쓰지
+                # 않고 사용자 차례로 (예: 도구를 설치하지 않아 측정할 수 없다는 카드가 인수인계를 막고 같은 보고만 되풀이하던 것)
+                card_wait = bool(waiting) and stalls >= 1
+                stop = stop or license_wait or card_wait
                 if stop:
                     self._set(status="waiting_approval")
                     inbox.log(self.settings, self.run_id, "waiting_approval", items=len(waiting or []) + int(plan_pending))
@@ -1680,7 +1720,8 @@ class Runner:
             new_pass = bool(self._new_messages())
             nxt = run["round"] + 1
             # 라운드 번호와 '새 한 바퀴' 표시를 한 번에 — 따로 쓰면 그 사이 화면이 새 라운드를 이전 결과의 '검증' 단계로 보여 준다
-            run = self._set(round=nxt, **({"revision_round": nxt, "revision_touched": False} if new_pass else {}))
+            run = self._set(round=nxt, **({"revision_round": nxt, "revision_touched": False,
+                                           "revision_sig": self._progress_sig(run)} if new_pass else {}))
             prompt = _brief(run, st)
             if revising:
                 prompt += ("\n\n이번 라운드: 사용자가 승인하지 않고 고칠 점을 보냈다. 위 요청대로 요구사항·합격 케이스"
@@ -1700,13 +1741,20 @@ class Runner:
                            "사전 설계 결정(decisions: 형태·데이터 저장·스택·실행 방법, 화면이 있으면 디자인 방향)을 함께. "
                            "사용자는 기준·계획·결정을 처음에 한 번에 확인하고, 그 뒤로는 끝날 때까지 맡긴다. "
                            "추천으로 정할 수 없는 것만 지금 한 번에 묻는다. "
-                           + ("구현은 사용자 승인 뒤에 한다." if run.get("plan_approval", True) else "계획 없이 바로 구현해도 된다 — 기준 승인 뒤에."))
+                           + ("구현은 사용자 승인 뒤에 한다." if run.get("plan_approval", True)
+                              else "계획(wb_plan_set)은 내되 계획 승인은 기다리지 않는다 — 요구사항·합격 기준 승인 뒤 구현한다."))
             elif end_mode and not (st and st["complete"]) and not only_human_left:
                 prompt += ("\n\n이번 라운드: 사용자 확인은 마지막에 한 번 받는다 — 승인을 기다리지 말고 남은 구현·검증을 진행해 "
                            "승인 말고 다른 완료 조건을 모두 채운다. 진행을 막는 질문만 한다.")
             elif st and st["complete"] and not run.get("handoff"):
                 # 완료 조건을 다 채웠으면 계획이 없었더라도 인계로 — 끝난 일에 계획을 새로 내고 승인을 기다리지 않게
                 prompt += "\n\n이번 라운드: 완료 조건을 모두 채웠다. wb_handoff 로 인수인계를 남긴다 (코드는 바꾸지 않는다)."
+            elif run.get("tools_declined") and stalls >= 1 and not run.get("handoff"):
+                # 사용자가 설치하지 않기로 한 도구 때문에 남은 검증을 할 수 없는데 같은 보고만 되풀이했다 — 툴킷이 마무리를 정한다
+                names = ", ".join(run["tools_declined"])
+                prompt += (f"\n\n이번 라운드: 사용자가 {names} 을(를) 설치하지 않기로 해서 남은 빌드·실행 검증은 이 PC 에서 할 수 없다. "
+                           "다른 검증 환경을 찾거나 묻지 말고, 지금 wb_handoff 로 인수인계를 남긴다 — risks 에 하지 못한 검증과 "
+                           "사용자가 직접 확인할 방법을 적는다. 코드는 바꾸지 않는다.")
             elif plan_needed and (self._spec_settled(run) or waiting) and not (run.get("plan") or {}).get("steps"):
                 prompt += "\n\n이번 라운드: 구현 계획을 wb_plan_set 으로 낸다 (단계·바꿀 파일·실행할 명령). 코드는 아직 바꾸지 않는다."
             sent = [m for m in run.get("messages") or [] if not m.get("delivered")]
@@ -1760,7 +1808,8 @@ class Runner:
             msgs = [m for m in run.get("messages") or [] if not m.get("delivered")]
             nxt = run["round"] + 1
             revising = run["mode"] == "plan" and bool(run.get("revision")) and bool(msgs) and nxt > 1
-            run = self._set(round=nxt, **({"revision_round": nxt, "revision_touched": False} if revising else {}))
+            run = self._set(round=nxt, **({"revision_round": nxt, "revision_touched": False,
+                                           "revision_sig": self._progress_sig(run)} if revising else {}))
             if run["round"] == 1:
                 prompt = run.get("request") or ""
                 if msgs:

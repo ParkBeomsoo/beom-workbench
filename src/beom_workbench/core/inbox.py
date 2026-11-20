@@ -385,8 +385,9 @@ def decide(run: dict, kind: str) -> str:
     사용자가 '새 브랜치에서 작업'을 끈 실행에서는 그 밖의 명령과 같이 본다."""
     if kind == "branch" and not run.get("work_branch"):
         kind = "commands"
-    if kind == "shared":  # 어느 모드에서도 묻는다 — 사용자가 이 실행에서 '항상'으로 허락했을 때만 그대로
-        return "allow" if run["policy"].get("shared") == "allow" else "ask"
+    if kind == "shared":  # 어느 모드에서도 묻는다 — 사용자가 '항상'(허용)이나 '거절'로 정했을 때만 그대로
+        v = run["policy"].get("shared")
+        return v if v in ("allow", "refuse") else "ask"
     return run["policy"].get(kind, "ask")
 
 

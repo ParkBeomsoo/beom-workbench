@@ -1161,6 +1161,20 @@ class Api(QObject):
         tool = prereqs.TOOLS.get(tool_id)
         if not tool:
             raise ToolError("not_found", "모르는 도구입니다")
+        if tool_id in prereqs.MANAGED:  # winget·apt 에 쓸 만한 패키지가 없는 도구 — 공식 배포본을 받아 툴킷 폴더에 (체크섬 확인)
+            busy = self.__dict__.setdefault("_installing", set())
+            if tool_id not in busy:  # 두 번 눌러도 한 번만 받는다
+                busy.add(tool_id)
+
+                def work():
+                    try:
+                        res = prereqs.install(tool_id)
+                        self.__dict__.setdefault("_install_results", {})[tool_id] = res
+                    finally:
+                        busy.discard(tool_id)
+                threading.Thread(target=work, daemon=True).start()
+            return {"opened": False, "installing": True, "command": prereqs.install_command(tool_id),
+                    "last": self.__dict__.get("_install_results", {}).get(tool_id)}
         other = tool[4] if tool[4].startswith(("sudo ", "curl ")) else None  # Linux — 배포판 패키지 명령이 있으면 그대로
         cmd = tool[2] if os.name == "nt" else tool[3] if sys.platform == "darwin" else other
         if not cmd:

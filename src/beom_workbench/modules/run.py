@@ -46,6 +46,13 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
         inbox.log(settings, run["id"], "permission", tool=tool_name, permission_kind="commands", decision="refuse",
                   what=mask_command(str((input or {}).get("command"))[:160]), why="foreground_server")
         return json.dumps({"behavior": "deny", "message": inbox.SERVER_HINT}, ensure_ascii=False)
+    if tool_name in ("Bash", "PowerShell") and _SHELL_WRITE.search(str((input or {}).get("command") or "")):
+        from beom_workbench import hookgate
+        why = hookgate.verdict(run, "Write", {"file_path": str(root / "_shell_write")})
+        if why:  # 계획 전·승인 전에는 셸로도 제품 파일을 쓰지 않는다 (.beom 안 쓰기는 편집 도구로)
+            inbox.log(settings, run["id"], "permission", tool=tool_name, permission_kind="edit", decision="refuse", why="order")
+            return json.dumps({"behavior": "deny", "message": why + " 셸로 파일을 쓰지 않는다 — .beom/ 의 파일은 Write 도구로."},
+                              ensure_ascii=False)
     # 작업 폴더가 저장소의 하위 폴더면 그 저장소 안의 다른 폴더는 읽기만 묻지 않는다 (고치기는 묻는다)
     kind = inbox.classify(tool_name, input or {}, root, [settings.home], read_roots=inbox.read_roots(run, settings))
     users = inbox.shared_target(run, tool_name, input or {}) if kind == "edit" else 0
@@ -54,7 +61,10 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
     decision = inbox.decide(run, kind)
     native = inbox.native_permissions(run)
     mode = inbox.mode_of(run.get("policy") or {})
-    if native and mode in ("edits", "ask") and decision == "allow" and tool_name not in inbox.READ_TOOLS:
+    # 툴킷의 ask 규칙 때문에 여기로 온 공통 부품 편집인데 이미 풀렸다(신고 승인·'항상' 허락) — 사용자가 정한 것이니 다시 묻지 않는다
+    freed = kind == "shared" and decision == "allow" or (kind == "edit" and _shared_rel(run, tool_name, input or {}) in
+                                                        (run.get("shared_parts") or {}))
+    if native and mode in ("edits", "ask") and decision == "allow" and tool_name not in inbox.READ_TOOLS and not freed:
         # 에이전트가 자기 모드에서 물어본 것 — 툴킷이 분류해 대신 허용하지 않고 사용자에게 묻는다 (아래에서 사용자가 이미
         # '항상'으로 허락한 규칙·승인한 계획의 명령이면 그대로 허용). 읽기는 원본·툴킷이 찍은 화면 같은 정해진 자리만 허용된다
         decision = "ask"
@@ -126,9 +136,34 @@ REDIRECT_PROBE = ("짧은 코드로 동작을 알아보는 명령(python -c)은 
                   "값이 보이게 assert 에 넣는 것이 낫습니다).")
 REDIRECT_WRITE = ("셸 스크립트로 파일 내용을 바꾸는 명령은 사용자에게 물어야 하는 꼴이라 돌리지 않았습니다 (사용자에게 묻지도 "
                   "않았습니다). 대상 폴더 안의 파일은 Edit·Write 도구로 고칩니다 — 여러 곳을 한꺼번에 바꿔야 하면 Write 로 파일을 통째로 "
-                  "다시 씁니다 (묻지 않고 바로 됩니다).")
-_SHELL_WRITE = re.compile(r"\b(?:Set-Content|Add-Content|Out-File|New-Item\b[^;|]*-Value)\b|\[(?:System\.)?IO\.File\]::(?:Write|Append)"
-                          r"|(?<![<>\d])>{1,2}\s*['\"]?[\w.\\/:-]+\.\w+", re.I)
+                  "다시 씁니다 (계획·승인 뒤의 제품 파일과 .beom/ 은 묻지 않고 바로 된다 — 공통 부품은 신고·승인 뒤).")
+REDIRECT_INSTALL = ("의존성 설치는 mcp__beom-workbench__wb_deps 로 합니다 — 툴킷이 프로젝트 자리(.beom/venv·node_modules)에 설치하고 "
+                    "잠금 파일(package-lock.json)을 남긴다. 새 패키지는 requirements.txt·pyproject.toml·package.json 에 적은 뒤 wb_deps.")
+_INSTALL_RX = re.compile(r"(?:^|[\s;&|(])(?:(?:npm|pnpm|yarn|bun)(?:\.cmd)?\s+(?:install|i|add|ci)\b(?![^;&|]*\s(?:-g|--global)\b)|"
+                         r"(?:pip3?|uv\s+pip)\s+install\b|(?:python3?|py)(?:\.exe)?\s+-m\s+pip\s+install\b|poetry\s+(?:add|install)\b)", re.I)
+
+
+class _InstallCmd:
+    @staticmethod
+    def search(cmd: str):
+        return _INSTALL_RX.search(_QUOTED.sub("''", str(cmd)))
+
+
+INSTALL_CMD = _InstallCmd()
+_SHELL_WRITE_RX = re.compile(r"\b(?:Set-Content|Add-Content|Out-File|New-Item\b[^;|]*-Value)\b|\[(?:System\.)?IO\.File\]::(?:Write|Append)"
+                             r"|(?<![<>\d=\-])>{1,2}(?![=>])\s*['\"]?[\w.\\/:-]+\.\w+", re.I)
+_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\`]|\\.|`.)*\"")
+
+
+class _ShellWrite:
+    """셸로 파일을 쓰는 명령인가 — 따옴표 안의 글(rg "=> res.data" 같은 검색어)은 빼고 본다."""
+
+    @staticmethod
+    def search(cmd: str):
+        return _SHELL_WRITE_RX.search(_QUOTED.sub("''", str(cmd)))
+
+
+_SHELL_WRITE = _ShellWrite()
 # 파이썬 실행기 옵션(-X utf8 · -W ignore · -B -u 등) 뒤의 -c
 _PY_PROBE = re.compile(r"(?:^|[\s;&|(\\/])(?:python3?|py)(?:\.exe)?\"?\s+(?:-[XW]\s*\S+\s+|-[BuIEsSOq]+\s+)*-c\s", re.I)
 
@@ -148,6 +183,8 @@ def _redirect(run: dict, tool_name: str, inp: dict, kind: str, decision: str) ->
         return REDIRECT_REMOVE
     if _SHELL_WRITE.search(cmd):
         return REDIRECT_WRITE
+    if INSTALL_CMD.search(cmd):
+        return REDIRECT_INSTALL
     task = inbox.task_like(cmd)
     if task and tasks.available(Path(run["target_root"]), task):
         return REDIRECT_TASK
@@ -220,8 +257,8 @@ def wb_deps() -> dict:
 
 @mcp.tool()
 def wb_run(command: str, timeout: int = 600) -> dict:
-    """격리 밖에서 명령 하나를 돌린다 — 자체 샌드박스에서 인터넷이 막힌 에이전트(Codex)가 패키지 설치(npm install·pip install 등)나
-    격리 안에서 안 되는 빌드를 돌릴 때. 권한 규칙을 그대로 거친다: 명령의 종류(빌드·명령 실행 등)와 '격리 없이 실행'이 모두 허용이면
+    """격리 밖에서 명령 하나를 돌린다 — 자체 샌드박스에서 인터넷이 막힌 에이전트(Codex)가 격리 안에서 안 되는 명령을 돌릴 때.
+    의존성 설치(npm install·pip install 등)는 wb_deps, 테스트·빌드는 wb_task 로 한다 (여기로 보내면 그쪽으로 돌려보낸다). 권한 규칙을 그대로 거친다: 명령의 종류(빌드·명령 실행 등)와 '격리 없이 실행'이 모두 허용이면
     바로 돌고, 아니면 사용자에게 카드로 묻는다 (시스템 변경·게시·브랜치 바꾸기는 거절). 대상 폴더에서 PowerShell(Windows)·sh 로
     돌리고 종료 코드와 끝 출력을 돌려준다. 시간이 넘으면 끝낸다 (기본 600초, 최대 1800초).
     결과물(README·스크립트)에는 이 도구 이야기를 쓰지 않는다 — 사용자는 평소처럼 npm install 을 친다."""
@@ -245,6 +282,9 @@ def wb_run(command: str, timeout: int = 600) -> dict:
                   decision="refuse", what=mask_command(cmd[:160]))
         return {"ok": False, "error": f"규칙상 허용되지 않음 ({inbox.KINDS.get(kind if dk == 'refuse' else 'unsandboxed')}): {cmd[:200]}",
                 "recovery": "다른 방법을 쓰거나 wb_person_ask 로 사용자에게 이유와 함께 묻는다"}
+    if INSTALL_CMD.search(cmd):  # 설치는 툴킷이 프로젝트의 .beom/venv·node_modules 에 한다 — 셸로 깔면 엉뚱한 파이썬에 들어간다
+        inbox.log(settings, run["id"], "permission", tool="mcp:wb_run", permission_kind=kind, decision="redirect", what=mask_command(cmd[:160]))
+        return {"ok": False, "error": REDIRECT_INSTALL}
     known = inbox.approved_command(run, cmd) or inbox.matches_rule(run, cmd, root)
     if not known and (dk != "allow" or du != "allow"):
         from beom_workbench.core import tasks
@@ -402,12 +442,55 @@ def _design_pick(picks: list[dict]) -> dict | None:
             or next((d for d in picks if DESIGN_TOPIC.search(d["topic"]) and not DESIGN_NOT.search(d["topic"])), None))
 
 
+from beom_workbench.core.scaffold import LOCKFILES  # noqa: E402 — 잠금 파일 목록은 한 곳
+
+
+def _undo_code_before_plan(run: dict, prev: dict) -> list[str]:
+    """요청사항 실행의 첫 계획 — 그 전에 만들거나 고친 제품 파일을 시작 전 상태로 되돌린다. Claude 는 편집 문지기(hookgate)가 미리
+    막지만 Codex 는 편집을 자기 격리 안에서 바로 해서 툴킷이 미리 막을 길이 없다 — 순서는 모델이 아니라 툴킷이 지킨다.
+    툴킷 작업 파일(.beom)과 의존성 설치가 만든 잠금 파일은 둔다."""
+    if run.get("mode") != "request" or prev.get("steps") or (prev.get("history") or []):
+        return []
+    from beom_workbench.core.checkpoints import Checkpoints
+    try:
+        cp = Checkpoints(inbox.run_dir(settings, run["id"]), run["target_root"])
+        cps = cp.list()
+        start = next((c for c in reversed(cps) if c.get("label") == "시작 전"), None)
+        if not start:
+            return []
+        files = [f["path"] for f in cp.changes(start["id"])["files"] if Path(f["path"]).name not in LOCKFILES]
+        if not files:
+            return []
+        cp.snapshot("계획 전 코드 되돌리기 전")  # 되돌린 것도 체크포인트에서 다시 꺼낼 수 있게 (사용자가 그 사이 고친 것 포함)
+        done = cp.revert_paths(start["id"], files)
+    except Exception:  # noqa: BLE001 — 되돌리기가 실패해도 계획은 받는다 (다음 확인이 다시 본다)
+        return []
+    if done:
+        inbox.log(settings, run["id"], "note", tone="warn", text="계획 전에 만든 제품 파일을 되돌렸습니다: " + ", ".join(done[:5]))
+    return done
+
+
+def _shared_rel(run: dict, tool: str, inp: dict) -> str | None:
+    if tool not in inbox.FILE_TOOLS:
+        return None
+    path = inp.get("file_path") or inp.get("notebook_path")
+    try:
+        return Path(path).resolve().relative_to(Path(run["target_root"]).resolve()).as_posix() if path else None
+    except (OSError, ValueError):
+        return None
+
+
+STYLE_EXTS = (".css", ".scss", ".sass", ".less")
+
+
 def _shared_gate(run: dict, steps: list[dict], changes: list[dict] | None, prev: dict) -> tuple[list[dict], str | None]:
     """기존 화면 쪽 공통 부품을 고치는 계획 — 신고(shared_changes: 파일·이유)가 있어야 한다. 사용자가 계획 카드에서 보고 승인한다."""
     parts = run.get("shared_parts") or {}
-    if not parts:
-        return [], None
     norm = lambda f: _path_part(f).replace("\\", "/").lstrip("./")  # noqa: E731
+    root = Path(run["target_root"])
+    style = lambda f: f.lower().endswith(STYLE_EXTS) and (root / f).is_file() and bool(run.get("existing"))  # noqa: E731
+    if not parts and not any(style(norm(c.get("file", ""))) for c in changes or [] if isinstance(c, dict)):
+        return [], None
     if changes is None:
         changes = prev.get("shared_changes") or []  # 다시 낸 계획 — 앞의 신고를 이어 받는다
     out, bad = [], []
@@ -415,12 +498,12 @@ def _shared_gate(run: dict, steps: list[dict], changes: list[dict] | None, prev:
         if not isinstance(c, dict) or not str(c.get("file", "")).strip():
             continue
         f, why = norm(c["file"]), str(c.get("why", "")).strip()
-        if f not in parts:
-            bad.append(f"{f} — 공통 부품 목록에 없음 (그냥 고치면 된다)")
+        if f not in parts and not style(f):
+            bad.append(f"{f} — 다른 화면들이 쓰는 기존 공통 부품이 아님 (신고 없이 고친다)")
         elif not why:
             bad.append(f"{f} — why(왜 꼭 고쳐야 하는지, 다른 화면에 무엇이 달라지는지)가 비어 있음")
         else:
-            out.append({"file": f, "why": why[:300], "users": parts[f]})
+            out.append({"file": f, "why": why[:300], "users": parts.get(f, 0)})  # 0: 공통 스타일 (쓰는 화면 수를 세지 않는다)
     if bad:
         return [], "shared_changes 를 고친다: " + "; ".join(bad)
     declared = {c["file"] for c in out}
@@ -528,7 +611,7 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
                  look: list[str] | None = None, previews: list[str] | None = None, follows: list[dict] | None = None,
                  design_basis: str = "", rules_checked: list[str] | None = None, layout_basis: str = "",
                  shared_changes: list[dict] | None = None) -> dict:
-    """구현 계획을 낸다 — 사용자가 앱에서 승인한 뒤 구현한다. steps: [{title, files?: [...], commands?: [...], requirements?: ["R1"]}].
+    """구현 계획을 낸다 — 승인을 기다리는 실행이면 사용자가 앱에서 승인한 뒤 구현한다 (끝까지 맡김·계획 승인 끔은 이어서 구현). steps: [{title, files?: [...], commands?: [...], requirements?: ["R1"]}].
     decisions: 사전 설계 결정 [{topic: "데이터 저장", choice: "SQLite 파일", options: ["JSON 파일"], why: "한 줄"}] — 형태(웹·앱·API)·
     데이터 저장·스택·실행 방법·디자인 방향처럼 결과를 크게 가르는 것. 사용자가 승인하며 대안으로 바꿀 수 있다.
     look: 디자인 컨셉 1~2줄, 전문 용어 없이 (사용자용). 색·글꼴 같은 수치는 계획에 쓰지 말고 구현의 토큰 파일에.
@@ -611,7 +694,10 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
     def put(r):
         old = r.get("plan") or {}
         history = (old.get("history") or []) + ([{"steps": old["steps"], "summary": old.get("summary")}] if old.get("steps") else [])
-        r["plan"] = {"steps": clean, "summary": summary.strip()[:1000], "approved": False, "history": history[-5:],
+        # 계획을 승인하며 결정을 바꾼 바로 그 라운드에 결정에 맞춰 다시 낸 계획은 사용자 결정의 결과다 — 다시 묻지 않는다
+        keep = bool(old.get("approved")) and r.get("auto_approve_round") == r.get("round")
+        r["plan"] = {"steps": clean, "summary": summary.strip()[:1000], "approved": keep, "history": history[-5:],
+                     **({"approved_via": "decision-change"} if keep else {}),
                      "at": inbox._now(), **({"design": design.strip()[:6000]} if design.strip() else {}),
                      **({"decisions": picks[:10]} if picks else {}), **({"look": lines} if lines else {}),
                      **({"previews": shots} if shots else {}), **({"follows": rules} if rules else {}),
@@ -620,6 +706,16 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
                      **({"shared_changes": shared} if shared else {}),
                      **({"rules_checked": read} if read else {})}
     out = _update(put)
+    early = _undo_code_before_plan(run, prev) if run is not None and out.get("ok") else []
+    if out["ok"] and shared and run is not None:
+        from beom_workbench.core import runner as runner_core
+        runner_core.unlock_shared(settings, run, only=set(runner_core.shared_parts_unlocked(inbox.load_run(settings, run["id"]))))
+    if early:
+        out["reverted_before_plan"] = early
+        waits_now = run.get("plan_approval", True) and run.get("confirm_at", "start") != "end"
+        out["warning"] = ("계획 전에 만든 제품 파일을 시작 전 상태로 되돌렸다 (" + ", ".join(early[:6]) + (" …" if len(early) > 6 else "")
+                          + ") — 순서는 합격 케이스 → 계획 → (승인) → 구현이다. "
+                          + ("사용자가 승인한 뒤 계획대로 다시 만든다" if waits_now else "계획대로 다시 만든다"))
     if out["ok"]:
         inbox.log(settings, os.environ["BEOM_WORKBENCH_RUN"], "plan", steps=len(clean))
         if look_errors:
@@ -627,7 +723,8 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
         if rule_errors:
             out["follows_errors"] = rule_errors
     if bad:
-        out["warning"] = "미리보기로 쓸 수 없는 경로(대상 폴더 .beom/ 안 png 만): " + ", ".join(bad)
+        out["warning"] = ((out["warning"] + " / ") if out.get("warning") else "") + \
+            "미리보기로 쓸 수 없는 경로(대상 폴더 .beom/ 안 png 만): " + ", ".join(bad)
     waits = run is None or (run.get("plan_approval", True) and run.get("confirm_at", "start") != "end")
     return {**out, "note": "사용자 승인 전에는 코드를 바꾸지 않는다" if waits
             else "이 실행은 계획 승인을 기다리지 않는다 — 이어서 구현·검증한다 (사용자는 마지막에 확인한다)"}
@@ -694,6 +791,9 @@ def wb_handoff(summary: str, how_to_run: str | list[str], risks: str | list[str]
         notice = _license_notice(run)
         if notice:  # 허용형 원본도 저작권 표기는 남겨야 한다 — 빠뜨린 채 인계하지 않게
             return {"ok": False, "error": "원본 저작권 표기가 대상에 없음 — 남긴 뒤 다시 인계한다", **notice}
+    finish = _finish_checks(run) if run is not None else []
+    if finish:  # 계획 때는 계획한 파일만 보았다 — 다 만든 실제 파일로 정석 구조·버전 고정 파일을 다시 본다
+        return {"ok": False, "error": "인계 전에 고칠 것: " + finish[0], "problems": finish[1:]}
     data = {"summary": summary.strip()[:1500], "how_to_run": _items(how_to_run), "risks": _items(risks, 6),
             "follow_ups": _items(follow_ups, 6), "at": inbox._now()}
     if changes:
@@ -704,6 +804,59 @@ def wb_handoff(summary: str, how_to_run: str | list[str], risks: str | list[str]
     if out["ok"]:
         inbox.log(settings, os.environ["BEOM_WORKBENCH_RUN"], "handoff")
     return out
+
+
+def _finish_checks(run: dict) -> list[str]:
+    """새 프로젝트를 넘기기 전 — 실제 파일이 그 언어의 정석 구조인지(사용자가 구조를 정했으면 빼고), Node 의존성이 있으면 버전을
+    고정하는 잠금 파일이 있고 커밋에서 빠지지 않는지. 이미 있던 프로젝트는 그 프로젝트의 방식을 따르므로 보지 않는다."""
+    from beom_workbench.core import deps, layout, runner as runner_core, scaffold
+    if run.get("mode") not in ("request", "reference") or not runner_core.new_project(run):
+        return []
+    root = Path(run["target_root"])
+    # 넘길 때는 깨지는 것(설정 파일 없음 등)만 막는다 — 배치·테스트 위치 같은 정리 규칙은 계획 때 알렸다
+    out = [] if (run.get("plan") or {}).get("layout_basis") else scaffold.check([], scaffold.files_now(root), hard_only=True)
+    at = layout.root_for(root, "node")
+    pj = at / "package.json"
+    try:
+        pkg = json.loads(pj.read_text(encoding="utf-8")) if pj.is_file() else {}
+    except (OSError, ValueError):
+        pkg = {}
+    if isinstance(pkg, dict) and (pkg.get("dependencies") or pkg.get("devDependencies")):
+        from beom_workbench.core.scaffold import NODE_LOCKS
+        homes = [at, deps._npm_lockfile(at).parent]
+        locks = [h / n for h in dict.fromkeys(homes) for n in NODE_LOCKS if (h / n).is_file()]
+        if not locks:
+            out.append("의존성 버전을 고정하는 잠금 파일(package-lock.json 등)이 없음 — wb_deps 로 설치하면 만들어진다 (설치·테스트를 "
+                       "셸로 돌렸으면 wb_deps·wb_task 로 다시)")
+        elif all(_ignored(root, x) for x in locks):
+            out.append(f"{locks[0].name} 이(가) .gitignore 에 걸려 커밋되지 않음 — 버전을 고정하는 파일이라 .gitignore 에서 뺀다")
+    return out
+
+
+def _ignored(root: Path, f: Path) -> bool:
+    """git 이 무시하는 파일인가 — 저장소면 git 에 묻고, 아니면 .gitignore 의 줄을 이름으로 견준다."""
+    import fnmatch
+    import subprocess
+    try:
+        r = subprocess.run(["git", "check-ignore", "-q", str(f)], cwd=root, capture_output=True, timeout=20)
+        if r.returncode in (0, 1):
+            return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        pass
+    gi = root / ".gitignore"
+    try:
+        lines = [x.strip().strip("/") for x in gi.read_text(encoding="utf-8").splitlines() if x.strip() and not x.startswith("#")]
+    except OSError:
+        return False
+    ignored = False
+    rel = f.resolve().relative_to(root.resolve()).as_posix() if f.resolve().is_relative_to(root.resolve()) else f.name
+    for pat in lines:  # git 처럼 뒤의 줄이 앞의 줄을 덮는다
+        neg = pat.startswith("!")
+        pat = pat[1:] if neg else pat
+        pat = pat[3:] if pat.startswith("**/") else pat
+        if fnmatch.fnmatch(f.name, pat) or fnmatch.fnmatch(rel, pat):
+            ignored = not neg
+    return ignored
 
 
 def _pending_approvals(run: dict) -> int:
@@ -953,7 +1106,10 @@ def wb_design_check(files: list[str] | None = None, url: str | None = None, path
     inbox.log(settings, run["id"], "screen_shots", shots=[x["shot"] for x in report if x["shot"]])
     total = sum(len(x["fix"]) for x in report)
     return {"ok": True, "fix_count": total, "pages": report,
-            "next": "fix 를 고친 뒤 다시 점검한다 — 대비는 토큰의 색을, 크기는 패딩·최소 높이를 고친다" if total else "고칠 것 없음 — advice 를 보고 다듬는다"}
+            "next": (("fix 를 고친 뒤 다시 점검한다 — 대비는 토큰의 색을, 크기는 패딩·최소 높이를 고친다" if not run.get("existing") else
+                      "fix 중 새로 만든 화면 파일·새 클래스에서 오는 것은 고치고 다시 점검한다. 원래 있던 디자인 토큰·공통 부품·전역 "
+                      "스타일에서 오는 것은 고치지 않고 인수인계 follow_ups 에 남긴다 (고치면 다른 화면이 모두 바뀐다)")
+                     if total else "고칠 것 없음 — advice 를 보고 다듬는다")}
 
 
 @mcp.tool()

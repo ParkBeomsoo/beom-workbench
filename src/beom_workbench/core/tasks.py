@@ -119,10 +119,13 @@ def command(root: Path, kind: str, task: str, paths: list[str], name: str) -> st
         return {"test": "go test ./..." + (f' -run "{name}"' if name else ""), "typecheck": "go vet ./...",
                 "build": "go build ./...", "lint": "go vet ./..."}.get(task)
     if kind == "maven":
-        return {"test": "mvn -q test" + (f' -Dtest="{name}"' if name else ""), "build": "mvn -q package -DskipTests",
-                "typecheck": "mvn -q compile"}.get(task)
+        wrap = (root / "mvnw.cmd").is_file() if os.name == "nt" else (root / "mvnw").is_file()
+        m = ("mvnw.cmd" if os.name == "nt" else "./mvnw") if wrap else "mvn"
+        one = f' -Dtest="{name}" -Dsurefire.failIfNoSpecifiedTests=false' if name else ""  # 여러 모듈이면 그 테스트가 없는 모듈도 있다
+        return {"test": f"{m} -q test{one}", "build": f"{m} -q package -DskipTests", "typecheck": f"{m} -q compile"}.get(task)
     if kind == "gradle":
-        g = "gradlew" if (root / "gradlew").is_file() or (root / "gradlew.bat").is_file() else "gradle"
+        wrap = (root / "gradlew.bat").is_file() if os.name == "nt" else (root / "gradlew").is_file()
+        g = ("gradlew.bat" if os.name == "nt" else "./gradlew") if wrap else "gradle"
         return {"test": f"{g} test" + (f' --tests "{name}"' if name else ""), "build": f"{g} build -x test",
                 "typecheck": f"{g} compileJava"}.get(task)
     if kind == "dotnet":
@@ -171,7 +174,7 @@ def _summary(kind: str, text: str) -> str | None:
 
 def needs_outside(cmd: str) -> bool:
     from beom_workbench.core import inbox
-    return inbox.needs_unsandboxed(cmd)
+    return inbox.needs_unsandboxed(cmd) or bool(re.match(r"\s*(?:\./)?(?:mvnw?|gradlew?)(?:\.cmd|\.bat)?\b", cmd or "", re.I))
 
 
 def permit_outside(settings, run: dict, what: str, key: str = "outside:node") -> bool:
@@ -252,24 +255,32 @@ def run_task(settings, run: dict, task: str, *, path: str = "", paths: list[str]
         inbox.update_run(settings, run["id"],
                          lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [f"task:{task}"]))))
         run = inbox.load_run(settings, run["id"])
+    plan, missing = ensure_tools(settings, run, plan)
+    if not plan:
+        names = ", ".join(sorted({m["missing_tool"] for m in missing}))
+        return {"ok": False, "task": task, "results": missing, "missing_tools": sorted({m["missing_tool"] for m in missing}),
+                "note": f"{names} 이(가) 이 PC 에 없어 돌리지 않았다 — 사용자가 설치하지 않기로 했다. 같은 명령을 셸로 돌리거나 설치를 "
+                        "다시 묻지 말고, 빌드 없이 할 수 있는 만큼 한 뒤 남은 확인(빌드·테스트)을 인수인계의 risks 에 적는다"}
     before = deps.junk(base)
     files_before = _tracked_files(base) if task == "test" else None
-    results = _execute(settings, run, root, plan, timeout)
+    results = missing + _execute(settings, run, root, plan, timeout)
     cleaned = deps.clean_junk(base, before)
     left = _drop_test_leftovers(base, files_before) if files_before is not None else []
     if left and run is not None:
         inbox.log(settings, run["id"], "note", tone="warn", text="테스트가 대상 폴더에 남긴 파일을 지웠습니다: " + ", ".join(left[:5]))
     return {"ok": all(r["ok"] for r in results), "task": task, "results": results,
             **({"cleaned": cleaned} if cleaned else {}),
-            **({"test_leftovers": left, "note": "테스트가 대상 폴더에 파일을 남겨 지웠다 (" + ", ".join(left[:5]) + ") — 테스트는 임시 폴더"
+            **({"test_leftovers": left, "note": "테스트가 대상 폴더에 파일을 남겨 .beom/test-leftovers 로 옮겼다 (" + ", ".join(left[:5]) + ") — 테스트는 임시 폴더"
                 "(pytest 의 tmp_path·os.tmpdir() 등)를 써야 한다. 앱이 실행 중 만드는 데이터 파일이면 테스트에서 그 경로를 임시 폴더로 "
                 "바꾸고, 사용자에게 넘길 폴더에 시험 데이터가 남지 않게 고친다"} if left else {})}
 
 
 # 테스트가 만들어도 되는 것 — 빌드 결과·캐시·스냅숏·잠금 파일 (지우지 않는다)
 _TEST_OUTPUT = re.compile(r"(^|/)(target|build|dist|bin|obj|out|coverage|htmlcov|\.next|\.nyc_output|__snapshots__|"
-                          r"[^/]+\.egg-info|node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache)(/|$)|"
-                          r"\.(snap|pyc|tsbuildinfo|lcov)$|(^|/)(Cargo\.lock|package-lock\.json|\.coverage[^/]*)$")
+                          r"[^/]+\.egg-info|node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
+                          r"[^/]+-snapshots|testdata|test-results|playwright-report|reports|\.tox|\.gradle|\.hypothesis|\.svelte-kit|"
+                          r"\.angular|\.nuxt|\.turbo|\.cache|migrations)(/|$)|"
+                          r"\.(snap|pyc|tsbuildinfo|lcov|golden)$|(^|/)(\.coverage[^/]*|junit[^/]*\.xml|next-env\.d\.ts)$")
 
 
 def _tracked_files(base: Path, limit: int = 20000) -> set[str] | None:
@@ -289,15 +300,125 @@ def _drop_test_leftovers(base: Path, before: set[str] | None) -> list[str]:
         return []
     after = _tracked_files(base) or set()
     gone = []
-    for rel in sorted(after - before):
-        if _TEST_OUTPUT.search(rel):
-            continue
-        try:
-            (base / rel).unlink()
+    from beom_workbench.core.scaffold import LOCKFILES
+    new = [rel for rel in sorted(after - before)
+           if not _TEST_OUTPUT.search(rel) and rel.split("/")[-1] not in LOCKFILES
+           and not any(part.startswith(".") for part in rel.split("/")[:-1])]  # 숨은 폴더는 도구들의 자리
+    new = [rel for rel in new if not _git_ignored(base, rel)]  # 프로젝트가 무시하기로 한 것은 결과물에 섞이지 않는다
+    stash = base / ".beom" / "test-leftovers"
+    for rel in new:
+        try:  # 지우지 않고 옮긴다 — 정상 산출물을 잘못 골랐어도 되찾을 수 있게
+            dst = stash / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            (base / rel).replace(dst)
             gone.append(rel)
         except OSError:
             pass
     return gone
+
+
+def _git_ignored(base: Path, rel: str) -> bool:
+    try:
+        r = subprocess.run(["git", "check-ignore", "-q", rel], cwd=base, capture_output=True, timeout=20)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+TOOL_OF = {"node": "node", "rust": "cargo", "go": "go", "maven": "java", "gradle": "java", "dotnet": "dotnet"}
+INSTALL_NOW = "툴킷이 지금 설치 (권장)"
+INSTALLED = "직접 설치했습니다 — 계속"
+DECLINED = "설치하지 않음 — 빌드 없이 마무리 (완료로 보지 않음)"
+
+
+def ensure_tools(settings, run: dict | None, plan: list[tuple]) -> tuple[list[tuple], list[dict]]:
+    """돌릴 명령의 언어 도구(go·cargo·node·JDK·dotnet)가 이 PC 에 있는지 먼저 본다. 없으면 '명령 실패(종료 코드 1)'로 돌려주지 않고
+    툴킷이 사용자에게 설치를 묻는다 — 설치했다고 하면 정말 있는지 다시 보고, 설치하지 않기로 하면 그 실행에서 다시 묻지 않는다.
+    (모델이 설치를 묻고 답을 받은 뒤 도구가 없는 채로 라운드를 되풀이하던 것을 막는다.) 돌릴 것과 건너뛴 결과를 돌려준다."""
+    from beom_workbench.core import inbox, prereqs
+    from beom_workbench.core.agents import refresh_path
+
+    def tools_of(item: tuple) -> set[str]:
+        """그 명령에 필요한 도구 — Maven·Gradle 은 래퍼(mvnw·gradlew)가 없으면 mvn·gradle 자체가 있어야 한다 (JDK 만으로는 안 된다)."""
+        k, cmd = item[0], str(item[2])
+        if k.startswith("_cmd_"):  # 검증 명령의 첫 낱말로 정한 도구
+            return {k[5:]}
+        if k == "maven":
+            return {"java"} if cmd.lstrip().startswith(("mvnw", "./mvnw")) else {"java", "mvn"}
+        if k == "gradle":
+            return {"java"} if "gradlew" in cmd else {"java", "gradle"}
+        if k == "rust" and sys.platform == "win32":
+            return {"cargo", "msvc"}  # Windows 의 Rust 는 MSVC 링커(link.exe)가 있어야 링크한다
+        return {TOOL_OF[k]} if k in TOOL_OF else set()
+    need = {t for item in plan for t in tools_of(item)}
+    if not need:
+        return plan, []
+    refresh_path()
+    missing = {t for t in need if not prereqs._has(t)}
+    for tool in sorted(missing):
+        if run is None or tool in (inbox.load_run(settings, run["id"]).get("tools_declined") or []):
+            continue
+        name, why = prereqs.TOOLS[tool][0], prereqs.TOOLS[tool][1]
+        how = prereqs.install_command(tool) or "직접 설치"
+        lead = ""
+        for _ in range(3):  # 설치가 안 됐으면 두 번 더 묻고, 그래도 없으면 설치하지 않은 것으로 본다
+            ans = inbox.ask(settings, run["id"], "question", {
+                "question": f"{lead}이 프로젝트를 빌드·테스트하려면 {name} 이(가) 필요한데 이 PC 에 없습니다 ({why}). "
+                            f"툴킷이 설치할까요? 방법: {how}" + (" — 패키지 약관에 동의하고 설치하며, 관리자 확인 창이 뜰 수 있습니다"
+                                                            if sys.platform == "win32" and tool not in prereqs.MANAGED else ""),
+                "choices": [INSTALL_NOW, INSTALLED, DECLINED]})
+            choice = ans.get("choice") or ""
+            if choice == INSTALL_NOW:
+                inbox.log(settings, run["id"], "note", tone="", text=f"{name} 을(를) 설치하는 중입니다 — {how}")
+                res = prereqs.install(tool)
+                inbox.log(settings, run["id"], "deps", dep=tool, ok=res["ok"], files=[], error=res.get("error"))
+            elif choice != INSTALLED:
+                break
+            refresh_path(max_age=0)
+            if prereqs._has(tool):
+                missing.discard(tool)
+                inbox.log(settings, run["id"], "note", tone="", text=f"{name} 설치를 확인했습니다 — 이어서 빌드·테스트합니다")
+                break
+            err = res.get("error") if choice == INSTALL_NOW else None
+            lead = (f"{name} 설치가 끝나지 않았습니다 ({err}). " if err else
+                    f"아직 {name} 을(를) 찾지 못했습니다 (설치 뒤 새 PATH 를 못 읽었으면 앱을 다시 켜야 할 수 있습니다). ")
+        if tool in missing:
+            inbox.update_run(settings, run["id"], lambda r, t=tool: r.update(
+                tools_declined=list(dict.fromkeys((r.get("tools_declined") or []) + [t]))))
+            inbox.log(settings, run["id"], "note", tone="warn", text=f"{name} 없이 진행합니다 — 빌드·테스트는 인수인계에 남은 확인으로 적습니다")
+    keep = [p for p in plan if not (tools_of(p) & missing)]
+    skipped = []
+    for p in plan:
+        lack = sorted(tools_of(p) & missing)
+        if lack:
+            skipped.append({"kind": p[0], "task": p[1], "command": p[2], "ok": False, "skipped": True, "missing_tool": lack[0],
+                            "error": f"{prereqs.TOOLS[lack[0]][0]} 이(가) 이 PC 에 없어 돌리지 않음"})
+    return keep, skipped
+
+
+CMD_TOOL = {"go": "go", "cargo": "cargo", "mvn": "mvn", "gradle": "gradle", "dotnet": "dotnet", "node": "node", "npm": "node",
+            "npx": "node", "java": "java", "javac": "java"}
+
+
+def ensure_command_tools(settings, run: dict | None, cmds: list[str | None]) -> list[str]:
+    """검증 명령(go run . · mvn spring-boot:run …)을 돌릴 도구 — wb_task 와 같이 없으면 툴킷이 설치를 묻는다. 끝내 없는 도구 이름."""
+    import shlex
+    plan = []
+    for c in cmds:
+        if not c:
+            continue
+        try:
+            head = Path(shlex.split(str(c), posix=False)[0].strip('"')).name.lower()
+        except ValueError:
+            continue
+        head = re.sub(r"\.(exe|cmd|bat)$", "", head)
+        if head in CMD_TOOL:
+            plan.append(("_cmd_" + CMD_TOOL[head], "verify", str(c)))
+    if not plan:
+        return []
+    _, skipped = ensure_tools(settings, run, plan)
+    from beom_workbench.core import prereqs
+    return sorted({prereqs.TOOLS[x["missing_tool"]][0] for x in skipped})
 
 
 def result_of(kind: str, task: str, cmd: str, code: int, out: str) -> dict:
@@ -378,10 +499,11 @@ def project_checks(settings, run: dict | None, root: Path, done: dict | None = N
                    else "사용자가 검증 때 테스트 실행을 거절함")
             return results + [{"kind": k, "task": t, "command": c, "ok": False, "skipped": True, "error": why} for k, t, c, _ in plan]
         run = inbox.load_run(settings, run["id"])
+    plan, missing = ensure_tools(settings, run, plan)
     out = _execute(settings, run, root, plan)
     for item, res in zip(plan, out):
         _scope_to_target(res, Path(item[3]), root)
-    return results + out
+    return results + missing + out
 
 
 _TYPE_ERR = re.compile(r"^(?P<p>[^\s(:][^\s(]*?\.(?:tsx?|mts|cts|jsx?|py))(?:\(\d+,\d+\)|:\d+(?::\d+)?): error", re.M)
@@ -458,6 +580,17 @@ def remove(settings, run: dict, paths: list[str]) -> dict:
             own.append((rel, p))
             continue
         existed = _existed(settings, run, rel)
+        # 순서·공통 부품 막기는 지우기에도 — 계획 전(기다리는 실행이면 승인 전)에 원래 있던 제품 파일을, 승인 안 된 공통 부품을 지우지 않는다
+        if existed is not False:
+            from beom_workbench import hookgate
+            from beom_workbench.core import runner as runner_core
+            why = hookgate.verdict(run, "Write", {"file_path": str(p)})
+            if why:
+                refused.append(f"{rel} ({why})")
+                continue
+            if rel in runner_core.shared_locked(run):
+                refused.append(f"{rel} (다른 화면들이 쓰는 기존 공통 부품 — 계획의 shared_changes 로 신고·승인 뒤에)")
+                continue
         if existed is False and not _snapshot_skips(rel):
             own.append((rel, p))
         else:

@@ -31,6 +31,10 @@ STANDARDS: list[tuple[str, str]] = [
             "비밀값은 .env.example 로 이름만"),
 ]
 
+# 의존성 버전을 고정하는 잠금 파일 — 커밋하고, 지우거나 되돌리지 않는다 (한 곳에서)
+LOCKFILES = {"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb", "Cargo.lock",
+             "poetry.lock", "uv.lock", "go.sum", "Pipfile.lock", "composer.lock", "Gemfile.lock", "packages.lock.json"}
+NODE_LOCKS = ("package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb")
 CODE_EXTS = (".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".svelte", ".go", ".rs", ".java", ".kt", ".cs", ".php",
              ".rb", ".swift", ".c", ".cpp", ".h")
 PY_MANIFESTS = {"pyproject.toml", "requirements.txt", "setup.py", "setup.cfg", "Pipfile"}
@@ -68,64 +72,102 @@ def files_now(root: Path, limit: int = 3000) -> set[str]:
     return out
 
 
-def check(planned: list[str], present: set[str] | None = None) -> list[str]:
-    """계획한 파일(과 이미 만든 파일)이 그 언어의 정석 구조에서 분명히 벗어나는 곳 — 사람이 읽는 한 줄씩."""
+MANIFEST_NAMES = {"package.json", "pyproject.toml", "requirements.txt", "setup.py", "setup.cfg", "Pipfile", "go.mod", "Cargo.toml",
+                  "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "composer.json"}
+
+
+def _project_roots(files: set[str]) -> list[str]:
+    """설정 파일이 있는 폴더 — 하나의 저장소 안 여러 하위 프로젝트(frontend/·backend/, Gradle 멀티 프로젝트, Cargo 워크스페이스)."""
+    roots = {""}
+    for f in files:
+        name = f.split("/")[-1]
+        if name in MANIFEST_NAMES or name.endswith((".csproj", ".sln", ".fsproj")):
+            roots.add(f.rsplit("/", 1)[0] if "/" in f else "")
+    return sorted(roots, key=lambda r: -len(r))
+
+
+def check(planned: list[str], present: set[str] | None = None, hard_only: bool = False) -> list[str]:
+    """계획한 파일(과 이미 만든 파일)이 그 언어의 정석 구조에서 분명히 벗어나는 곳 — 사람이 읽는 한 줄씩.
+    설정 파일이 있는 폴더마다(하위 프로젝트마다) 따로 본다. hard_only: 깨지는 것만 (설정 파일 없음 등) — 인수인계 때.
+    그 밖의 정리 규칙(모듈 배치·테스트 위치·README·.gitignore)은 계획 때 알린다."""
     files = {_norm(f) for f in planned if _norm(f)} | {_norm(f) for f in present or set()}
     files = {f for f in files if not f.startswith(".beom/") and "*" not in f}
+    roots = _project_roots(files)
+    groups: dict[str, set[str]] = {r: set() for r in roots}
+    for f in files:
+        r = next(r for r in roots if r == "" or f.startswith(r + "/"))
+        groups[r].add(f[len(r) + 1:] if r else f)
+    out: list[str] = []
+    for r in sorted(groups, key=len):
+        for line in _check_one(groups[r], hard_only):
+            out.append(f"{r}/: {line}" if r else line)
+    if not hard_only:  # README·.gitignore 는 저장소 맨 위에서 한 번 (하위 프로젝트마다 묻지 않는다)
+        top = {f for f in files if "/" not in f}
+        code = [f for f in files if f.lower().endswith(CODE_EXTS)]
+        deps = any(f.split("/")[-1] in MANIFEST_NAMES for f in files) or any(f.lower().endswith((".py", ".ts", ".go", ".rs", ".java", ".cs"))
+                                                                              for f in files)
+        if len(code) >= 3 and not any(t.lower().startswith("readme") for t in top):
+            out.append("README 가 없음 — 설치·실행·테스트 명령을 적는다")
+        if deps and len(code) >= 3 and ".gitignore" not in top:
+            out.append(".gitignore 가 없음 — 이 스택의 의존성·캐시·빌드 결과 폴더를 뺀다")
+    return out
+
+
+def _check_one(files: set[str], hard_only: bool) -> list[str]:
     names = {f.split("/")[-1] for f in files}
     top = {f for f in files if "/" not in f}
     ext = lambda e: [f for f in files if f.lower().endswith(e)]  # noqa: E731
     code = [f for f in files if f.lower().endswith(CODE_EXTS)]
-    out: list[str] = []
+    hard: list[str] = []
+    soft: list[str] = []
 
     py = ext(".py")
     if py:
-        if len(py) >= 2 and not (PY_MANIFESTS & top):  # 파일 하나짜리 스크립트는 그 파일 하나로 충분하다
-            out.append("파이썬 프로젝트 설정 파일이 없음 — 맨 위에 pyproject.toml (의존성·pytest 설정, CLI 면 [project.scripts]) "
-                       "또는 requirements.txt")
+        code_py = [f for f in py if not re.match(r"(test_.*|.*_test|conftest)\.py$", f.split("/")[-1])]
+        if len(code_py) >= 2 and not (PY_MANIFESTS & top):  # 파일 하나짜리 스크립트는 (테스트가 붙어도) 그 파일 하나로 충분하다
+            hard.append("파이썬 프로젝트 설정 파일이 없음 — 맨 위에 pyproject.toml (의존성·pytest 설정, CLI 면 [project.scripts]) "
+                        "또는 requirements.txt")
         tests = [f for f in py if re.match(r"(test_.*|.*_test)\.py$", f.split("/")[-1])]
         loose = [f for f in tests if not re.search(r"(^|/)tests?/", f)]
-        if loose:
-            out.append(f"테스트가 코드 사이에 있음 ({', '.join(sorted(loose)[:3])}) — tests/ 폴더에")
+        if loose and len(code_py) >= 3:  # 작은 앱(main.py + test_main.py)은 나란히 두는 것도 흔하다
+            soft.append(f"테스트가 코드 사이에 있음 ({', '.join(sorted(loose)[:3])}) — tests/ 폴더에")
         mods = [f for f in py if f in top and f not in PY_ROOT_OK and f not in tests]
-        if len(mods) >= 2:
-            out.append(f"파이썬 모듈 {len(mods)}개가 맨 위에 흩어져 있음 ({', '.join(sorted(mods)[:4])}) — 패키지 폴더 "
-                       "<이름>/ (배포할 라이브러리면 src/<이름>/) 에 넣고 __init__.py 를 둔다")
+        if len(mods) >= 4:
+            soft.append(f"파이썬 모듈 {len(mods)}개가 맨 위에 흩어져 있음 ({', '.join(sorted(mods)[:4])}) — 패키지 폴더 "
+                        "<이름>/ (배포할 라이브러리면 src/<이름>/) 에 넣고 __init__.py 를 둔다")
 
     js_typed = ext(".ts") + ext(".tsx") + ext(".jsx") + ext(".vue") + ext(".svelte")
     if js_typed or "package.json" in top:
         if "package.json" not in top:
-            out.append("package.json 이 없음 — 의존성과 scripts(start·test·build)를 적는다")
-        if (ext(".ts") or ext(".tsx")) and "tsconfig.json" not in names:
-            out.append("TypeScript 인데 tsconfig.json 이 없음")
+            hard.append("package.json 이 없음 — 의존성과 scripts(start·test·build)를 적는다")
+        if ([f for f in ext(".ts") if not f.endswith(".d.ts")] or ext(".tsx")) and "tsconfig.json" not in names:
+            hard.append("TypeScript 인데 tsconfig.json 이 없음")
         src_top = [f for f in top if f.lower().endswith((".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".svelte"))
                    and not JS_ROOT_OK.search(f)]
-        if len(src_top) >= 2:
-            out.append(f"소스 {len(src_top)}개가 맨 위에 있음 ({', '.join(sorted(src_top)[:4])}) — src/ 에")
+        # 빌드 없는 정적 웹(맨 위 index.html, 번들러 없음)이 Node 테스트 때문에 package.json 을 둔 것은 '정적 웹' 표를 따른다
+        static_site = "index.html" in top and not js_typed and not any(re.match(r"(vite|webpack|rollup|next|nuxt|svelte|astro)\\.config\\.", f)
+                                                                       for f in top)
+        if len(src_top) >= 4 and not static_site:  # 작은 Node 서버(server.js·db.js)는 맨 위에 두는 것도 흔하다
+            soft.append(f"소스 {len(src_top)}개가 맨 위에 있음 ({', '.join(sorted(src_top)[:4])}) — src/ 에")
 
     if ext(".go") and "go.mod" not in top:
-        out.append("go.mod 가 없음 — go mod init <모듈 경로>")
+        hard.append("go.mod 가 없음 — go mod init <모듈 경로>")
     rs = ext(".rs")
     if rs:
         if "Cargo.toml" not in top:
-            out.append("Cargo.toml 이 없음 — cargo 프로젝트로")
+            hard.append("Cargo.toml 이 없음 — cargo 프로젝트로")
         odd = [f for f in rs if not re.match(r"(src|tests|benches|examples)/", f) and f != "build.rs"]
         if odd:
-            out.append(f"Rust 소스가 src/·tests/ 밖에 있음 ({', '.join(sorted(odd)[:3])})")
+            soft.append(f"Rust 소스가 src/·tests/ 밖에 있음 ({', '.join(sorted(odd)[:3])})")
     jv = ext(".java") + ext(".kt")
     if jv:
         odd = [f for f in jv if not re.match(r"(src|test|tests)/", f)]
         if odd:
-            out.append(f"Java·Kotlin 소스가 src/ 밖에 있음 ({', '.join(sorted(odd)[:3])}) — src/main/java/<패키지 경로>/ "
-                       "(빌드 도구 없이면 src/<패키지 경로>/)")
-    if ext(".cs") and not ext(".csproj"):
-        out.append(".csproj 가 없음 — dotnet new 로 만든 프로젝트 틀대로")
+            soft.append(f"Java·Kotlin 소스가 src/ 밖에 있음 ({', '.join(sorted(odd)[:3])}) — src/main/java/<패키지 경로>/ "
+                        "(빌드 도구 없이면 src/<패키지 경로>/)")
+    if ext(".cs") and not (ext(".csproj") or ext(".fsproj")):
+        hard.append(".csproj 가 없음 — dotnet new 로 만든 프로젝트 틀대로")
     if ext(".php") and len(ext(".php")) >= 3 and "composer.json" not in top:
-        out.append("composer.json 이 없음")
+        soft.append("composer.json 이 없음")
 
-    deps_dirs = py or js_typed or "package.json" in top or rs or ext(".go") or jv or ext(".cs")
-    if len(code) >= 3 and "README.md" not in top and "readme.md" not in {t.lower() for t in top}:
-        out.append("README.md 가 없음 — 설치·실행·테스트 명령을 적는다")
-    if deps_dirs and len(code) >= 3 and ".gitignore" not in top:
-        out.append(".gitignore 가 없음 — 이 스택의 의존성·캐시·빌드 결과 폴더를 뺀다")
-    return out
+    return hard if hard_only else hard + soft

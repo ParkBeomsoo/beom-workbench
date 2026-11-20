@@ -697,7 +697,12 @@ def _next_step_request(gates: dict, *, req_state, capture, diff, human, adequacy
         return (f"요구사항마다 합격 케이스(expect + req) 작성 후 wb_port_capture — 케이스 없는 요구사항: {missing}. "
                 "기대값은 사용자 요청에서 정하고 대상 코드 출력을 베끼지 않는다")
     pending = [h for h in human if not h["approved"]]
-    if pending and any(h["kind"] in ("requirements", "expectation", "case_change") for h in pending):
+    run = _auto_run() or {}
+    end_mode = run.get("confirm_at") == "end"
+    if pending and any(h["kind"] in ("requirements", "expectation", "case_change") for h in pending) and not end_mode:
+        if run.get("mode") == "request" and not (run.get("plan") or {}).get("steps"):
+            return (f"사용자 확인 대기 {len(pending)}건 — 계획(wb_plan_set)까지 낸 뒤 라운드를 끝낸다 (사용자가 기준과 계획을 한 번에 "
+                    "본다). 승인은 사용자가 앱에서 한다")
         return f"사용자 승인 대기 {len(pending)}건 — 구현 전에 요구사항·합격 기준을 확인받는다: {APPROVE}"
     if not gates[GATE_MAPPED]:
         left = req_state["total"] - req_state["implemented"]
@@ -2873,7 +2878,11 @@ def _screen_rules(conn, settings, proj: dict, port_id: str, root: Path, fp: str)
     since = None
     if rec.get("sources_file") and (folder / rec["sources_file"]).is_file():
         since = (folder / rec["sources_file"]).stat().st_mtime  # 원래 소스를 기록한 시각 — 기록 밖이어도 그 전부터 있던 파일은 새 것이 아니다
-    found = conventions.differences(root, base, since=since) + conventions.shared_edits(root, base)
+    run = _auto_run() or {}
+    plan = run.get("plan") or {}
+    waits = run.get("plan_approval", True) and run.get("confirm_at", "start") != "end"
+    allowed = {c["file"] for c in plan.get("shared_changes") or []} if (plan.get("approved") or not waits) else set()
+    found = conventions.differences(root, base, since=since) + conventions.shared_edits(root, base, allowed=allowed)
     cid = "chk_" + uuid.uuid4().hex[:12]
     with ledger.tx(conn):
         conn.execute("INSERT INTO port_check (id, port_id, kind, cases, passed, failed, detail, evidence_id, created_at) "

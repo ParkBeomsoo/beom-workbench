@@ -34,7 +34,8 @@ POPUP_CALL_SKIP = re.compile(r"^(?i:close|hide|dismiss|remove|destroy|add|is|has
 # 컴포넌트 태그: <DataGrid …>, <data-grid …>, <v-data-table …> — 앞이 글자·점·괄호면 타입 인자(Array<Foo>)라 뺀다
 TAG_RX = re.compile(r"(?<![\w.$\])])<([A-Z][\w.]*|[a-z][\w]*(?:-[\w]+)+|[a-z]\w*:[A-Za-z][\w.\-]*)(?=[\s/>])")
 CLOSE_RX = re.compile(r"</([A-Z][\w.]*|[a-z][\w]*(?:-[\w]+)+|[a-z]\w*:[A-Za-z][\w.\-]*)\s*>")
-TAG_PREFIX_SKIP = {"c", "fn", "fmt", "sql", "x", "jsp", "th", "svelte", "xsl", "xlink", "xml", "v", "o", "w", "spring"}
+TAG_PREFIX_SKIP = {"c", "fn", "fmt", "sql", "x", "jsp", "th", "svelte", "xsl", "xlink", "xml", "v", "o", "w", "spring", "form", "sec",
+                   "tiles", "layout", "sj", "s"}  # 프레임워크가 주는 태그 라이브러리 (프로젝트의 공통 부품이 아니다)
 # 공통 조각을 끼워 넣는 꼴 — 화면들이 같은 조각(검색 영역·그리드·페이지 이동)을 쓰는 것도 규칙이다
 INCLUDE_RXS = [
     re.compile(r"<%@\s*include\s+file\s*=\s*[\"']([^\"']+)"),                                   # JSP 정적 include
@@ -46,6 +47,14 @@ INCLUDE_RXS = [
     re.compile(r"Html\.(?:Render)?Partial(?:Async)?\(\s*\"([^\"]+)\"|<partial\s+name\s*=\s*\"([^\"]+)\""),  # Razor
     re.compile(r"\b(?:include|require)(?:_once)?\s*\(?\s*[\"']([^\"']+\.php)"),                   # PHP
     re.compile(r"<#include\s+[\"']([^\"']+)|#parse\s*\(\s*[\"']([^\"']+)"),                      # FreeMarker·Velocity
+    re.compile(r"layout:decorate\s*=\s*[\"']~?\{?\s*([\w./-]+)"),                                # Thymeleaf 레이아웃
+    re.compile(r"\bLayout\s*=\s*\"([^\"]+)\""),                                                 # Razor 레이아웃
+    re.compile(r"@(?:include|extends|component)\s*\(\s*[\"']([\w./-]+)[\"']"),                    # Blade
+    re.compile(r"\{\{-?\s*include\s*\(\s*[\"']([^\"']+)[\"']"),                                  # Twig include()
+    re.compile(r"\{%-?\s*render\s+[\"']([^\"']+)[\"']"),                                          # Liquid
+    re.compile(r"<%[-=]?\s*include\s+([\w./-]+)\s*%>"),                                            # EJS 옛 문법
+    re.compile(r"<tiles:insertAttribute\s+name\s*=\s*[\"']([^\"']+)"),                              # Apache Tiles
+    re.compile(r"\{\{#>\s*([\w./-]+)"),                                                          # Handlebars 레이아웃 조각
 ]
 # 템플릿 매크로 정의 (Jinja·Twig·Nunjucks) — 공통 함수처럼 여러 화면이 부른다
 MACRO_RX = re.compile(r"\{%-?\s*macro\s+(\w+)\s*\(")
@@ -1041,6 +1050,8 @@ def _resolve_ref(t: Path, user: Path, ref: str, by_tail: dict[str, list[str]]) -
     return hits[0] if len(hits) == 1 else None
 
 
+TYPE_DIRS = re.compile(r"/(?:types?|typings|@types|constants?|consts|locales?|lang|i18n/(?:locales?|messages?|[a-z]{2}(?:-[A-Z]{2})?))/"
+                       r"|/(?:types?|constants?)\.[jt]sx?$", re.I)
 DATA_DIRS = re.compile(r"/(?:api|apis|services?|stores?|repositor(?:y|ies)|models?|dao|mocks?|data|queries|graphql|slices|reducers)/", re.I)
 
 
@@ -1065,15 +1076,33 @@ def shared_parts(target: Path, min_users: int = 2, top: int = 300) -> dict[str, 
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for m in REF_RX.finditer(text):
-            got = _resolve_ref(t, f, m.group(1), by_tail)
+        refs = [m.group(1) for m in REF_RX.finditer(text)]
+        for rx in INCLUDE_RXS:  # Thymeleaf·Razor·Blade·EJS·Handlebars 같은 include·레이아웃도
+            refs += [next((g for g in m.groups() if g), "") for m in rx.finditer(text)]
+        for ref in refs:
+            if not ref or "${" in ref or "{{" in ref:
+                continue
+            got = _resolve_ref(t, f, ref.split("::")[0].strip(), by_tail)
             if got and got != r and got in rels:
                 users.setdefault(got, set()).add(r)
     screen = lambda r: r.lower().endswith(SCREEN_EXTS)  # noqa: E731
+
+    def additive(r: str) -> bool:
+        """새 화면이 덧붙이는 것이 보통인 파일 — 타입·상수·번역, 다시 내보내기만 하는 index (잠그면 새 타입·새 부품 하나에도 막힌다)."""
+        if TYPE_DIRS.search("/" + r) or r.endswith(".d.ts"):
+            return True
+        if Path(r).stem == "index":
+            try:
+                body = [x.strip() for x in (t / r).read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
+            except OSError:
+                return False
+            return bool(body) and all(x.startswith(("export ", "//", "/*", "*")) and (" from " in x or not x.startswith("export "))
+                                      for x in body)
+        return False
     out: dict[str, int] = {}
     for r, us in users.items():
         # 데이터 쪽 모듈(api·services·store·mock)은 새 화면이 함수를 더하는 것이 보통의 확장 방식이다 — 화면 쪽 공통 부품이 아니다
-        if r.lower().endswith(STYLE_EXTS) or (not screen(r) and DATA_DIRS.search("/" + r)):
+        if r.lower().endswith(STYLE_EXTS) or (not screen(r) and DATA_DIRS.search("/" + r)) or additive(r):
             continue
         # 화면 파일(컴포넌트·템플릿)이거나, 화면 파일들이 불러 쓰는 JS — 서버 코드끼리만 쓰는 파일은 아니다
         if len(us) >= min_users and (screen(r) or sum(1 for u in us if screen(u)) >= min_users):
@@ -1084,7 +1113,7 @@ def shared_parts(target: Path, min_users: int = 2, top: int = 300) -> dict[str, 
     return dict(sorted(out.items(), key=lambda kv: -kv[1])[:top])
 
 
-def shared_edits(target: Path, base: dict, min_users: int = 2) -> list[dict]:
+def shared_edits(target: Path, base: dict, min_users: int = 2, allowed: set[str] | frozenset = frozenset()) -> list[dict]:
     """원래 있던 공통 부품(여러 파일이 불러 쓰는 컴포넌트·공통 함수 파일·공통 스타일·템플릿 조각)을 이번 작업이 고친 곳.
     고치면 그것을 쓰는 다른 화면들이 모두 함께 바뀐다 — 요청이 시킨 일이 아니면 사용자가 알아야 한다."""
     t = Path(target).resolve()
@@ -1092,7 +1121,7 @@ def shared_edits(target: Path, base: dict, min_users: int = 2) -> list[dict]:
         return []
     edited = []
     for rel, ent in base.items():
-        if "text" not in ent or "/.beom/" in "/" + rel:
+        if "text" not in ent or "/.beom/" in "/" + rel or rel in allowed:  # 사용자가 계획에서 승인한 공통 부품 변경
             continue
         p = t / rel
         try:
