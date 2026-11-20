@@ -441,7 +441,9 @@ def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | Non
         d = json.loads(rules["detail"]) if isinstance(rules["detail"], str) else rules["detail"] or {}
         found = d.get("findings") or []
         if found:
-            items.append({"item_id": "screen_rules", "kind": "screen_rules", "fingerprint": _sha(found),
+            # 지문은 파일·내용으로만 — 줄 번호를 넣으면 다른 곳을 고쳐 줄이 밀릴 때마다 승인한 카드가 다시 뜬다
+            fp = _sha(sorted({(f["at"].rsplit(":", 1)[0], f["summary"]) for f in found}))
+            items.append({"item_id": "screen_rules", "kind": "screen_rules", "fingerprint": fp,
                           "summary": f"다른 화면들과 다르게 만든 곳 {len(found)}개 — 같은 부품을 이 프로젝트의 다른 화면들이 쓰는 방식과 "
                                      "다르게 썼습니다 (근거는 다른 화면의 코드). 일부러 다르게 한 것이 맞으면 승인하세요",
                           "detail": {"files": [f"{f['at']} {f['summary']}" + (f" ← {f['evidence'][0]}" if f.get("evidence") else "")

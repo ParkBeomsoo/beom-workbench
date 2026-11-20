@@ -21,8 +21,15 @@ from beom_workbench.core import layout
 
 UI_EXTS = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".html", ".htm", ".jsp", ".ejs", ".hbs",
            ".njk", ".twig", ".erb", ".cshtml", ".razor", ".php", ".ftl", ".vm")
+# 화면 파일 — 이것이 있어야 화면이 있는 프로젝트·작업이다. .js/.ts 는 서버·CLI 에도 있어서 화면 판단에 쓰지 않는다
+# (화면 코드 분석에는 UI_EXTS 전체를 읽는다).
+SCREEN_EXTS = (".jsx", ".tsx", ".vue", ".svelte", ".html", ".htm", ".jsp", ".ejs", ".hbs", ".njk", ".twig", ".erb", ".cshtml",
+               ".razor", ".ftl", ".vm")
 FILE_MAX, COUNT_MAX = 400_000, 3000
 POPUP_RX = re.compile(r"popup|modal|dialog|layer|drawer|bottomsheet|팝업", re.I)
+# 팝업을 '여는' 호출 — 이름에 팝업 낱말이 있고 닫기·숨기기·더하기가 아닌 것 (closePopup·hideModal·map.addLayer·player 는 아니다)
+POPUP_CALL_RX = re.compile(r"(?i:popup|modal|dialog|drawer|bottomsheet|팝업)|(?:^|[a-z_])Layer|^layer")
+POPUP_CALL_SKIP = re.compile(r"^(?i:close|hide|dismiss|remove|destroy|add|is|has|get)(?![a-z])")  # 뒤 글자는 대소문자 구분 (closePopup 의 P)
 
 # 컴포넌트 태그: <DataGrid …>, <data-grid …>, <v-data-table …> — 앞이 글자·점·괄호면 타입 인자(Array<Foo>)라 뺀다
 TAG_RX = re.compile(r"(?<![\w.$\])])<([A-Z][\w.]*|[a-z][\w]*(?:-[\w]+)+)(?=[\s/>])")
@@ -38,8 +45,27 @@ DEF_RX = re.compile(r"(?:\bfunction\s+([A-Za-z_$][\w$]*)\s*\(|\b(?:const|let|var
                     r"(?:function\b|\([^()]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>))")
 CALL_RX = re.compile(r"(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(")
 IMPORT_RX = re.compile(r"import\s+(?:(\w+)\s*,?\s*)?(?:\{([^}]*)\})?\s*from\s*['\"]([^'\"]+)['\"]")
-EVENT_NAMES = re.compile(r"^(?:on[A-Z_]|on[a-z]+$|@|v-on:|on:|\(\w)|click|dblclick|doubleclick|select|change|submit|keydown|keyup",
-                         re.I)
+DOM_EVENTS = {"click", "dblclick", "contextmenu", "change", "input", "submit", "reset", "keydown", "keyup", "keypress", "focus",
+              "blur", "mouseover", "mouseout", "mouseenter", "mouseleave", "mousedown", "mouseup", "scroll", "load", "select",
+              "drag", "drop", "dragstart", "dragend", "touchstart", "touchend", "wheel", "paste", "copy", "cut"}
+# 위젯 옵션의 이벤트 꼴: ondblClickRow·onSelectRow·onclick — onlyLeaf·once·selectable·rowSelection 은 이벤트가 아니다
+WIDGET_EVENT = re.compile(r"^on(?:dbl)?(?:click|select|change|key|mouse|focus|blur|submit|input|load|row|cell|drag|drop|sort|page|check)",
+                          re.I)
+
+
+def _is_event(name: str) -> bool:
+    """이벤트 이름인가 — JSX onX, Vue @x·v-on:x, Svelte on:x, Angular (x), DOM onx, 위젯 옵션 ondblClickRow 꼴."""
+    if name.startswith(("@", "v-on:", "on:")) or (name.startswith("(") and name.endswith(")")):
+        return True
+    if re.match(r"on[A-Z]", name):
+        return True
+    low = name.lower()
+    return low.startswith("on") and (low[2:] in DOM_EVENTS or bool(WIDGET_EVENT.match(name)))
+
+
+def _event_name(name: str) -> str:
+    """수식어를 뗀 이벤트 이름 — @click.stop → @click, v-on:keyup.enter → v-on:keyup."""
+    return name.split(".")[0] if name.startswith(("@", "v-on:", "on:")) else name
 RAW_KINDS = [  # 공통 부품을 두고 직접 만드는 흔한 꼴 — 프로젝트에 이름이 닮은 공통 부품이 여럿 쓰일 때만 알린다
     ("표", re.compile(r"<table\b", re.I), re.compile(r"grid|table|sheet|list", re.I)),
     ("팝업·대화 상자", re.compile(r"<dialog\b|\bwindow\.open\s*\(|\bwindow\.confirm\s*\(|(?<![\w.])confirm\s*\(|(?<![\w.])alert\s*\(", re.I),
@@ -279,8 +305,9 @@ def _popup_calls(text: str) -> list[tuple[int, int, str]]:
     정의(function openPopup(…))는 뺀다."""
     out = []
     for m in re.finditer(r"(?<![\w$])([A-Za-z_$][\w$.]*)\s*\(", text):
-        name = m.group(1)
-        if not POPUP_RX.search(name.split(".")[-1]) or re.search(r"function\s*$", text[max(0, m.start() - 12):m.start()]):
+        last = m.group(1).split(".")[-1]
+        if (not POPUP_CALL_RX.search(last) or POPUP_CALL_SKIP.match(last)
+                or re.search(r"function\s*$", text[max(0, m.start() - 12):m.start()])):
             continue
         open_paren = m.end() - 1
         j = _match_close(text, open_paren, 8000)
@@ -308,14 +335,34 @@ def _blocks(text: str) -> list[tuple[int, int]]:
 
 
 
-def _innermost(blocks: list[tuple[int, int]], pos: int) -> tuple[int, int] | None:
-    best = None
-    for a, b in blocks:
-        if a > pos:
-            break
-        if a < pos < b and (best is None or a > best[0]):
-            best = (a, b)
-    return best
+class _Blocks:
+    """중괄호 블록 묶음 — 자리를 품은 가장 안쪽 블록을 빨리 찾는다 (시작 자리로 이분 탐색 + 부모 사슬)."""
+
+    def __init__(self, blocks: list[tuple[int, int]]):
+        import bisect
+        self._bisect = bisect.bisect_right
+        self.blocks = blocks
+        self.starts = [a for a, _ in blocks]
+        self.parent = [-1] * len(blocks)
+        stack: list[int] = []
+        for i, (a, b) in enumerate(blocks):
+            while stack and blocks[stack[-1]][1] < a:
+                stack.pop()
+            self.parent[i] = stack[-1] if stack else -1
+            stack.append(i)
+
+    def innermost(self, pos: int) -> tuple[int, int] | None:
+        i = self._bisect(self.starts, pos) - 1
+        while i >= 0:
+            a, b = self.blocks[i]
+            if a < pos < b:
+                return (a, b)
+            i = self.parent[i]
+        return None
+
+
+def _innermost(blocks, pos: int) -> tuple[int, int] | None:
+    return (blocks if isinstance(blocks, _Blocks) else _Blocks(sorted(blocks))).innermost(pos)
 
 
 def _first_arg_name(text: str, open_paren: int) -> str | None:
@@ -325,10 +372,26 @@ def _first_arg_name(text: str, open_paren: int) -> str | None:
 
 
 def _key(seg: str, keys: dict) -> None:
-    m = re.match(r"\s*['\"]?([A-Za-z_$][\w$]*)['\"]?\s*(?::\s*(.*)|\()", seg, re.S)
+    """옵션 객체의 한 칸 — 'key: 값', 'key() {…}', 줄임 키 'columns', 앞에 붙은 주석은 건너뛴다. 펼침(...x)은 뺀다."""
+    while True:  # 앞의 주석만 지운다 (값 안의 'http://' 같은 글은 그대로)
+        s2 = seg.lstrip()
+        if s2.startswith("//"):
+            k = s2.find("\n")
+            seg = "" if k < 0 else s2[k + 1:]
+        elif s2.startswith("/*"):
+            k = s2.find("*/")
+            seg = "" if k < 0 else s2[k + 2:]
+        else:
+            seg = s2
+            break
+    m = re.match(r"(?:async\s+|get\s+|set\s+)?['\"]?([A-Za-z_$][\w$]*)['\"]?\s*(?::\s*(.*)|\()", seg, re.S)
     if m:
         v = (m.group(2) or "").strip()
         keys.setdefault(m.group(1), v.strip("'\"") if re.fullmatch(r"-?\d+(?:\.\d+)?|true|false|null|'[^']*'|\"[^\"]*\"", v) else None)
+        return
+    m = re.fullmatch(r"([A-Za-z_$][\w$]*)\s*", seg)
+    if m:
+        keys.setdefault(m.group(1), None)
 
 
 def _line_of(starts: list[int], pos: int) -> int:
@@ -365,19 +428,22 @@ def parse(path: Path, rel: str) -> dict:
     pranges = _popup_ranges(text)
 
     pcalls = _popup_calls(text)
-    blocks = _blocks(text)
-    pblocks = {_innermost(blocks, a) for a, _, _ in pcalls}
+    blocks = _Blocks(_blocks(text))
+    pblocks = {blocks.innermost(a) for a, _, _ in pcalls}
+    pnames: set[str] = set()  # 팝업 호출 인자에 나온 이름들 (그릴 자리를 팝업에 넘겼나)
+    for _, _, args in pcalls:
+        pnames |= set(re.findall(r"(?<![\w$.])[A-Za-z_$][\w$]*", args))
 
     def in_popup(pos: int, open_paren: int = -1) -> bool:
         """팝업 안 — 팝업 파일, 팝업 컴포넌트 태그 안, 팝업 함수 호출의 인자 안, 또는 첫 인자(그릴 자리)를 팝업에 넘김."""
         if file_popup or any(a <= pos < b for a, b in pranges) or any(a <= pos < b for a, b, _ in pcalls):
             return True
         # 같은 블록(누르면 도는 함수 하나)에서 팝업을 열고 그 안에 그린다 — 그릴 자리가 몇 단계를 거쳐 팝업에 들어가도
-        blk = _innermost(blocks, pos)
+        blk = blocks.innermost(pos)
         if blk is not None and blk in pblocks:
             return True
         first = _first_arg_name(text, open_paren) if open_paren >= 0 else None
-        return bool(first) and any(re.search(r"(?<![\w$.])" + re.escape(first) + r"(?![\w$])", args) for _, _, args in pcalls)
+        return bool(first) and first in pnames
 
     def ex(pos: int) -> tuple[int, str]:
         ln = _line_of(starts, pos)
@@ -396,11 +462,12 @@ def parse(path: Path, rel: str) -> dict:
         name = m.group(1)
         body, _ = _tag_body(text, m.end())
         attrs = _attrs(body)
-        events = sorted(a for a in attrs if EVENT_NAMES.search(a) and not a.startswith(":") or a.startswith(("@", "v-on:", "on:")))
+        at = {_event_name(a): ex(m.end() + max(0, body.find(a)))[0] for a in attrs}
+        events = sorted({_event_name(a) for a in attrs if _is_event(a)})
         ln, code = ex(m.start())
-        at = {a: ex(m.end() + max(0, body.find(a)))[0] for a in attrs}
         uses.append({"name": name, "kind": "component", "line": ln, "code": code, "events": events, "at": at,
-                     "attrs": {k: v for k, v in attrs.items() if k not in events}, "popup": in_popup(m.start()) and not POPUP_RX.search(name)})
+                     "attrs": {k: v for k, v in attrs.items() if not _is_event(k)},
+                     "popup": in_popup(m.start()) and not POPUP_RX.search(name)})
     var_of: dict[str, dict] = {}
     for rx, kind in ((NEW_RX, "constructor"), (PLUGIN_RX, "widget")):
         for m in rx.finditer(text):
@@ -410,7 +477,7 @@ def parse(path: Path, rel: str) -> dict:
             paren = text.rfind("(", m.start(), m.end())
             brace = _arg_object(text, paren) if paren >= 0 else -1
             opts = _object_keys(text, brace) if brace >= 0 else {}
-            events = sorted(k for k in opts if EVENT_NAMES.search(k))
+            events = sorted(k for k in opts if _is_event(k))
             ln, code = ex(m.start())
             at = {k: ex(text.find(k, brace) if brace >= 0 and text.find(k, brace) >= 0 else m.start())[0] for k in opts}
             u = {"name": name if kind == "constructor" else "$." + name, "kind": kind, "line": ln, "code": code, "at": at,
@@ -439,9 +506,15 @@ def parse(path: Path, rel: str) -> dict:
         if ev:
             evs[ev] += 1
             ev_ex.setdefault(ev, ex(m.start()))
-    calls = Counter(c for c in CALL_RX.findall(text) if c not in JS_WORDS)
-    return {"uses": uses, "defs": defs, "imports": imports, "events": evs, "event_ex": ev_ex, "calls": calls, "in_popup": in_popup,
-            "text": text, "lines": lines}
+    call_at: dict[str, list[int]] = {}
+    for m in CALL_RX.finditer(text):
+        c = m.group(1)
+        if c in JS_WORDS or re.search(r"\bfunction\s+$", text[max(0, m.start() - 12):m.start()]):
+            continue
+        call_at.setdefault(c, []).append(m.start())
+    calls = Counter({c: len(v) for c, v in call_at.items()})
+    return {"uses": uses, "defs": defs, "imports": imports, "events": evs, "event_ex": ev_ex, "calls": calls, "call_at": call_at,
+            "in_popup": in_popup, "starts": starts, "text": text, "lines": lines}
 
 
 # ---------------------------------------------------------------- 모으기
@@ -450,35 +523,34 @@ def parse(path: Path, rel: str) -> dict:
 def _local_function_uses(parsed: dict[str, dict]) -> None:
     """프로젝트가 직접 만든 함수 중 여러 화면이 부르는 것 (openPopup·createGrid 같은 공통 함수) — 부른 곳을 쓰임으로 더한다."""
     defined: dict[str, str] = {}
+    def_count: Counter = Counter()
     for rel, p in parsed.items():
         for d in p["defs"]:
             defined.setdefault(d, rel)
+            def_count[d] += 1
     callers = Counter()
     for rel, p in parsed.items():
         for name in p["calls"]:
             if name in defined and defined[name] != rel:
                 callers[name] += 1
-    for name, n in callers.items():
-        if n < 2 or len(name) < 4:
-            continue
-        rx = re.compile(r"(?<![\w$.])" + re.escape(name) + r"\s*\(")
-        for rel, p in parsed.items():
-            if defined[name] == rel or name not in p["calls"]:
+    # 공통 함수: 한 곳에서 정의하고 여러 화면이 부르는 것. 화면마다 같은 이름으로 따로 정의한 함수(fn_search)는 공통이 아니다.
+    shared = {name for name, n in callers.items() if n >= 2 and len(name) >= 4 and def_count[name] == 1}
+    for rel, p in parsed.items():
+        text, starts = p["text"], p["starts"]
+        for name in shared & set(p["call_at"]):
+            if defined[name] == rel:
                 continue
-            starts = [0] + [m.end() for m in re.finditer("\n", p["text"])]
-            for m in rx.finditer(p["text"]):
-                brace = m.end()
-                while brace < len(p["text"]) and p["text"][brace] in " \t\r\n":
-                    brace += 1
+            for pos in p["call_at"][name]:
+                open_paren = text.find("(", pos)
                 # 인자 중 객체 리터럴이 있으면 그 키를 옵션으로 (첫 인자가 식이어도)
-                ob = _arg_object(p["text"], m.end() - 1)
-                opts = _object_keys(p["text"], ob) if ob >= 0 else {}
-                events = sorted(x for x in opts if EVENT_NAMES.search(x))
-                ln = _line_of(starts, m.start())
+                ob = _arg_object(text, open_paren) if open_paren >= 0 else -1
+                opts = _object_keys(text, ob) if ob >= 0 else {}
+                events = sorted(x for x in opts if _is_event(x))
+                ln = _line_of(starts, pos)
                 p["uses"].append({"name": name + "()", "kind": "function", "line": ln, "source": defined[name],
                                   "code": p["lines"][ln - 1].strip()[:110] if 0 < ln <= len(p["lines"]) else "",
                                   "events": events, "attrs": {x: v for x, v in opts.items() if x not in events},
-                                  "popup": p["in_popup"](m.start(), m.end() - 1)})
+                                  "popup": p["in_popup"](pos, open_paren)})
 
 
 def collect(target: Path, files: list[Path] | None = None) -> tuple[Path, dict[str, dict]]:
@@ -576,7 +648,12 @@ def scan(target: Path, near: list[str] | None = None, like: str = "") -> dict:
 
 def similar(t: Path, parsed: dict[str, dict], shared: dict[str, dict], near: list[str], like: str, top: int = 6) -> list[dict]:
     """지금 만들·고칠 화면과 비슷한 기존 화면 — 같은 폴더(+3), 같은 공통 부품(+2씩), 이름에 말이 들어감(+4), 내용에 들어감(+1)."""
-    near_rel = [os.path.relpath((t / n).resolve(), t).replace("\\", "/") for n in near]
+    near_rel = []
+    for n in near:
+        try:
+            near_rel.append(os.path.relpath((t / n).resolve(), t).replace("\\", "/"))
+        except ValueError:  # 다른 드라이브 — 이 프로젝트의 파일이 아니다
+            continue
     near_dirs = {str(Path(n).parent) for n in near_rel}
     near_parts = set()
     for n in near_rel:
@@ -606,8 +683,10 @@ def similar(t: Path, parsed: dict[str, dict], shared: dict[str, dict], near: lis
 # ---------------------------------------------------------------- 만든 뒤: 다른 화면들과 다른 곳
 
 
-def changed_ui(target: Path, base: dict) -> list[str]:
-    """원래 소스 기록과 비교해 새로 생기거나 바뀐 화면 코드 (대상 폴더 기준 경로)."""
+def changed_ui(target: Path, base: dict, since: float | None = None) -> list[str]:
+    """원래 소스 기록과 비교해 새로 생기거나 바뀐 화면 코드 (대상 폴더 기준 경로).
+    기록에 없는 파일이 모두 새 파일은 아니다 — 기록은 파일 수·크기 한도에서 끊기고, 예전 기록에는 화면 틀(HTML·JSP)이 없다.
+    since(기록한 시각)가 있으면 기록에 없더라도 그 전부터 그대로 있던 파일은 새 파일로 보지 않는다."""
     t = Path(target).resolve()
     _, files = ui_files(t)
     out = []
@@ -617,6 +696,11 @@ def changed_ui(target: Path, base: dict) -> list[str]:
             continue
         ent = base.get(rel)
         if ent is None:
+            try:
+                if since is not None and p.stat().st_mtime < since:
+                    continue  # 기록 밖이지만 작업 전부터 그대로 있던 파일
+            except OSError:
+                continue
             out.append(rel)
             continue
         try:
@@ -627,14 +711,16 @@ def changed_ui(target: Path, base: dict) -> list[str]:
     return out
 
 
-def differences(target: Path, base: dict, min_refs: int = 3) -> list[dict]:
+def differences(target: Path, base: dict, min_refs: int = 3, since: float | None = None) -> list[dict]:
     """새로 만들거나 고친 화면이 같은 부품을 다른 화면들과 다르게 쓰는 곳. 기준은 다른 화면들의 실제 쓰임 —
     다수(60% 이상)가 쓰는 이벤트가 없음, 거의 아무도(10% 이하) 안 쓰는 이벤트를 씀, 다수(80% 이상)가 같은 값으로 두는 옵션이
     없거나 다름, 공통 부품을 여러 화면이 쓰는데 직접 만듦. 고친 파일은 원래 있던 쓰임과 다른 것만 (원래부터 그랬던 건 빼고)."""
     t = Path(target).resolve()
-    changed = set(changed_ui(t, base))
+    changed = set(changed_ui(t, base, since))
     if not changed or not base:
         return []
+    # 원래 내용을 기록하지 못한(큰) 파일은 원래부터 있던 차이와 이번 작업의 차이를 가를 수 없다 — 탓하지 않는다
+    unknown_old = {rel for rel in changed if rel in base and "text" not in base[rel]}
     _, parsed = collect(t)
     refs = _shared(parsed, exclude=changed, min_files=1)
     old_uses: dict[str, set] = {}
@@ -644,7 +730,7 @@ def differences(target: Path, base: dict, min_refs: int = 3) -> list[dict]:
             tmp = parse_text(ent["text"], rel)
             old_uses[rel] = {(u["name"], tuple(u["events"]), tuple(sorted(u["attrs"].items(), key=str))) for u in tmp["uses"]}
     out = []
-    for rel in sorted(changed):
+    for rel in sorted(changed - unknown_old):
         p = parsed.get(rel)
         if not p:
             continue
@@ -732,11 +818,12 @@ def check_evidence(target: Path, refs: list[str]) -> tuple[list[str], list[str]]
     top = layout.repo_top(t) or t
     ok, bad = [], []
     for r in refs:
-        m = re.match(r"\s*(.+?):(\d+)(?:\s.*)?$", str(r))
+        m = re.match(r"\s*(.+?)(?::(\d+)(?:[-:]\d+)?|#L(\d+)(?:-L?\d+)?)(?:\s.*)?$", str(r))
         if not m:
             bad.append(f"{r} — '파일:줄' 꼴이 아님")
             continue
-        rel, line = m.group(1).strip(), int(m.group(2))
+        rel, line = m.group(1).strip(), int(m.group(2) or m.group(3))
+        rel = rel[2:] if rel.startswith(("./", ".\\")) else rel
         f = next((c for c in ((t / rel).resolve(), (top / rel).resolve()) if c.is_file() and c.is_relative_to(top)), None)
         if f is None:
             bad.append(f"{r} — 그런 파일이 없음")
@@ -754,10 +841,13 @@ def check_evidence(target: Path, refs: list[str]) -> tuple[list[str], list[str]]
 
 def has_screens(target: Path, at_least: int = 3, before: float | None = None) -> bool:
     """기존 화면이 여럿 있는 프로젝트인가 (그때만 '기존 규칙 따름' 근거를 요구한다).
-    before: 이 시각(작업 시작) 전에 있던 파일만 센다 — 이번 작업이 새로 만든 화면은 '기존'이 아니다."""
+    before: 이 시각(작업 시작) 전에 있던 파일만 센다 — 이번 작업이 새로 만든 화면은 '기존'이 아니다.
+    화면 파일(HTML·JSX·Vue·템플릿…)만 센다 — .js/.ts 만 있는 서버·CLI 는 화면이 있는 프로젝트가 아니다."""
     _, files = ui_files(target)
     n = 0
     for f in files:
+        if not f.name.lower().endswith(SCREEN_EXTS):
+            continue
         try:
             if before is None or f.stat().st_mtime < before:
                 n += 1

@@ -74,7 +74,7 @@ def wb_port_map(project_id: str, port_id: str, updates: list[dict] | None = None
 @enveloped("port.accept")
 def wb_port_accept(project_id: str, port_id: str, cases: list[str], reason: str, actor: str = "agent") -> dict:
     """의도적인 동작 차이 허용 '제안' (케이스 이름 패턴, * 가능 — 예: "*~json.items.0.price=소수문자열"). 사유 필수.
-    제안만 기록된다 — 사용자가 wb_port_approve 확인 창(또는 터미널 port-approve)에서 승인해야 게이트가 통과한다."""
+    제안만 기록된다 — 사용자가 앱의 승인 카드(앱 밖이면 터미널 port-approve)에서 승인해야 게이트가 통과한다. 에이전트는 승인하지 않는다."""
     conn, _ = project.load(settings, project_id)
     return port.accept(conn, port_id, cases, reason, actor)
 

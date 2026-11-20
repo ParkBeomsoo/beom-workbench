@@ -199,7 +199,7 @@ def _native_shot(run: dict, app, width, height) -> dict:
 def wb_deps() -> dict:
     """의존성 준비 — package.json·requirements.txt·pyproject.toml 을 쓰거나 고친 뒤 부른다. 툴킷이 같은 자리에 설치한다
     (Node: 프로젝트 node_modules · Python: .beom/venv 에 의존성과 pytest·coverage). 내용이 바뀔 때만 다시 설치하고, 권한 규칙대로
-    한 번 묻는다. npm install·pip install·가상 환경 만들기를 직접 하지 않는다. 결과의 python 으로 파이썬 테스트를 돌린다.
+    한 번 묻는다. npm install·pip install·가상 환경 만들기를 직접 하지 않는다. 테스트는 wb_task 로 (명령에는 경로 없이 python).
     검증(wb_port_verify)·화면 찍기는 돌기 전에 스스로 이것을 부른다."""
     from beom_workbench.core import deps
     run = _run()
@@ -303,6 +303,28 @@ def wb_activity(text: str) -> dict:
     return out
 
 
+def _started(run: dict) -> float | None:
+    """작업을 시작한 시각 (초 단위로 잘려 기록되니 1초 여유)."""
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(run["created_at"]).timestamp() + 1
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
+def _screen_files(steps: list[dict]) -> list[str]:
+    """계획이 만들·고칠 화면 파일 — HTML·JSX·Vue·템플릿·스타일. .js/.ts 만으로는 화면 작업이 아니다 (서버·CLI 도 .js/.ts)."""
+    from beom_workbench.core import conventions
+    exts = conventions.SCREEN_EXTS + (".css", ".scss", ".sass", ".less")
+    return [x for s in steps for x in s["files"] if str(x).lower().endswith(exts)]
+
+
+def _path_part(ref: str) -> str:
+    """'경로:줄' · '경로:줄-줄' · '경로#L줄' 에서 경로만 — D:\\repo\\a.md 같은 드라이브 문자는 그대로 둔다."""
+    import re as _re
+    return _re.sub(r"(?::\d+(?:[-:]\d+)?|#L\d+(?:-L?\d+)?)(?:\s.*)?$", "", str(ref).strip())
+
+
 def _follows(run: dict | None, steps: list[dict], follows: list[dict] | None) -> tuple[list[dict] | None, list[str]]:
     """계획의 '기존 규칙 따름' — 근거(파일:줄)가 실제 기존 코드인지 확인한다. 기존 화면이 여럿 있는 프로젝트에서 화면 파일을
     만들·고치는 계획인데 근거가 없으면 (None, [이유…]) — 계획을 받지 않는다. 틀린 근거는 빼고 알린다."""
@@ -318,15 +340,9 @@ def _follows(run: dict | None, steps: list[dict], follows: list[dict] | None) ->
         errors += [f"근거 확인 실패: {b}" for b in bad]
         if ok:
             rules.append({"rule": str(f["rule"]).strip()[:200], "evidence": ok})
-    ui = [x for s in steps for x in s["files"] if str(x).lower().endswith(conventions.UI_EXTS)]
-    started = None
-    try:
-        from datetime import datetime
-        started = datetime.fromisoformat(run["created_at"]).timestamp() + 1  # 시각은 초 단위로 잘려 기록된다
-    except (KeyError, ValueError, TypeError):
-        pass
-    if ui and conventions.has_screens(root, before=started):
-        files = {e.split(":")[0] for r in rules for e in r["evidence"]}
+    ui = _screen_files(steps)
+    if ui and conventions.has_screens(root, before=_started(run)):
+        files = {_path_part(e) for r in rules for e in r["evidence"]}
         if len(files) < 2:
             return None, ["기존 화면이 있는 프로젝트에서 화면(" + ", ".join(ui[:3]) + ")을 만들거나 고치는 계획인데, 다른 화면들의 규칙을 "
                           "확인한 근거가 없음 — wb_ui_conventions(near=[만들·고칠 파일])로 비슷한 기존 화면과 공통 부품의 쓰임을 보고, "
@@ -340,16 +356,19 @@ def _rules_checked(run: dict | None, checked: list[str] | None, rules: list[dict
     if run is None:
         return [], None
     g = run.get("guides") or {}
-    must = [*g.get("agents", []), *g.get("hubs", [])]
-    some = g.get("docs", [])
-    if not must and not some:
-        return [], None
     root = Path(run["target_root"]).resolve()
 
     def norm(x: str) -> Path:
-        return (root / str(x).split(":")[0].strip()).resolve()
+        return (root / _path_part(x)).resolve()
 
+    # 에이전트 지시는 대상 폴더와 그 위의 것만 이번 작업에 적용된다 (옆 패키지·하위 폴더의 AGENTS.md 는 그 폴더를 고칠 때)
+    on_path = {root, *root.parents}
+    must = [a for a in g.get("agents", []) if norm(a).parent in on_path] + list(g.get("hubs", []))
+    some = g.get("docs", [])
     said = [str(x) for x in checked or []][:30]
+    if not must and not some:  # 찾아 둔 규칙 문서가 없다 — 묻지 않고, 에이전트가 읽었다고 밝힌 것은 남긴다
+        return [x for x in said if norm(x).exists()], None
+
     got = {norm(x) for x in said} | {norm(e) for r in rules or [] for e in r["evidence"]}
     missing = [m for m in must if norm(m) not in got]
     doc_ok = not some or any(norm(d) in got or any(p.is_relative_to(norm(d)) for p in got) for d in some)
@@ -364,7 +383,15 @@ def _rules_checked(run: dict | None, checked: list[str] | None, rules: list[dict
                 " — 읽고 rules_checked=[\"문서 경로\", …] 로 남기고, 따를 조항은 follows 근거(문서:줄)로 든다")
 
 
-DESIGN_TOPIC = re.compile(r"디자인|design|분위기|스타일|톤|look", re.I)
+# 화면 디자인 방향 결정 — 'API design'·'코드 스타일'·'DB 스키마 디자인' 은 아니다
+DESIGN_TOPIC = re.compile(r"디자인|(?:visual|ui|ux|screen|web)\s*design|design\s*direction|look\s*(?:&|and)\s*feel|룩앤필|시안", re.I)
+DESIGN_NOT = re.compile(r"\b(?:api|db|database|schema|data|code|system|architecture)\b|스키마|데이터|코드|아키텍처|구조", re.I)
+
+
+def _design_pick(picks: list[dict]) -> dict | None:
+    """디자인 방향 결정 — 시안이 붙은 결정이 먼저, 없으면 주제가 화면 디자인인 결정."""
+    return (next((d for d in picks if d.get("looks") or d.get("shots")), None)
+            or next((d for d in picks if DESIGN_TOPIC.search(d["topic"]) and not DESIGN_NOT.search(d["topic"])), None))
 
 
 def _design_gate(run: dict, steps: list[dict], picks: list[dict], look: list[str], basis: str) -> str | None:
@@ -372,18 +399,12 @@ def _design_gate(run: dict, steps: list[dict], picks: list[dict], look: list[str
     규칙에 '반드시'라고 적어도 같은 에이전트가 어떤 때는 하고 어떤 때는 건너뛰었다 — 계획을 받을 때 확인한다.
     빼는 경우: 화면이 없는 작업, 기존 화면이 여럿 있는 프로젝트(기존 디자인을 따른다), 사용자가 정한 디자인(design_basis),
     화면 엔진이 없는 설치. 참고 화면은 웹 접속이 규칙상 막혔거나 사용자가 거절했으면 뺀다."""
-    from datetime import datetime
-
-    from beom_workbench.core import conventions, screens
-    ui = [x for s in steps for x in s["files"] if str(x).lower().endswith(conventions.UI_EXTS)]
-    design = next((d for d in picks if DESIGN_TOPIC.search(d["topic"])), None)
-    if not (ui or look or design) or basis.strip() or not screens.available():
+    from beom_workbench.core import conventions, runner as runner_core, screens
+    ui = _screen_files(steps)
+    design = _design_pick(picks)
+    if not (ui or design) or basis.strip() or not screens.available() or not runner_core.ui_task(run):
         return None
-    try:
-        started = datetime.fromisoformat(run["created_at"]).timestamp() + 1
-    except (KeyError, ValueError, TypeError):
-        started = None
-    if conventions.has_screens(Path(run["target_root"]), before=started):
+    if conventions.has_screens(Path(run["target_root"]), before=_started(run)):
         return None
     problems = []
     evs = [e.get("kind") for e in inbox.events(settings, run["id"])[0]]
@@ -391,10 +412,12 @@ def _design_gate(run: dict, steps: list[dict], picks: list[dict], look: list[str
         problems.append("참고 화면을 아직 보지 않았다 — mcp__beom-workbench__wb_design_refs 로 같은 분야의 잘 만든 서비스 2~4곳을 찍어 "
                         "보고 (사용자가 거절하면 그대로 진행)")
     shots = (design or {}).get("shots") or {}
+    # 다시 낸 계획 — 앞서 시안을 그림으로 보여 줬으면(사용자가 이미 보고 골랐으면) 다시 붙이라고 하지 않는다
+    seen_before = max((len(d.get("shots") or {}) for d in ((run.get("plan") or {}).get("decisions") or [])), default=0)
     broken = [x for d in picks for x in d.get("sian_broken") or []]
     if broken:
         problems.append("시안이 휴대폰 화면에서 깨진다 — 고쳐서 다시 낸다: " + " · ".join(broken[:6]))
-    if len(shots) < 2:
+    if len(shots) < 2 and seen_before < 2:
         problems.append("'디자인 방향' 결정에 방향이 확실히 다른 시안을 선택지 2개 이상 그림으로 붙여야 한다 — 핵심 화면 한 장씩 "
                         ".beom/looks/a.html 처럼 만들고 decisions 의 그 결정에 looks={\"선택지\": \".beom/looks/a.html\", …} "
                         "(선택지 이름은 choice·options 와 똑같이)" + ("" if design else " — 그 결정이 아직 없다"))
@@ -498,6 +521,16 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
             else:
                 bad.append(str(x))
     lines = [str(x).strip()[:200] for x in look or [] if str(x).strip()][:6]
+    prev = (run or {}).get("plan") or {}
+    if rules_checked is None and prev.get("rules_checked"):
+        rules_checked = list(prev["rules_checked"])
+    old_design = _design_pick(prev.get("decisions") or [])
+    new_design = _design_pick(picks)
+    if old_design and new_design and not new_design.get("looks") and old_design.get("shots"):
+        keep = [new_design["choice"], *new_design["options"]]
+        carried = {k: v for k, v in old_design["shots"].items() if k in keep}
+        if carried:
+            new_design["shots"] = carried
     rules, rule_errors = _follows(run, clean, follows)
     if rule_errors and rules is None:
         return {"ok": False, "error": rule_errors[0], "problems": rule_errors[1:]}
@@ -529,7 +562,9 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
             out["follows_errors"] = rule_errors
     if bad:
         out["warning"] = "미리보기로 쓸 수 없는 경로(대상 폴더 .beom/ 안 png 만): " + ", ".join(bad)
-    return {**out, "note": "사용자 승인 전에는 코드를 바꾸지 않는다"}
+    waits = run is None or (run.get("plan_approval", True) and run.get("confirm_at", "start") != "end")
+    return {**out, "note": "사용자 승인 전에는 코드를 바꾸지 않는다" if waits
+            else "이 실행은 계획 승인을 기다리지 않는다 — 이어서 구현·검증한다 (사용자는 마지막에 확인한다)"}
 
 
 @mcp.tool()

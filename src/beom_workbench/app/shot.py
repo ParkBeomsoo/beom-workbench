@@ -330,7 +330,11 @@ def main() -> int:
             const t = n.textContent.replace(/\s+/g, "");
             if (t.length < 3) continue;
             const rg = document.createRange(); rg.selectNodeContents(n);
-            const lines = new Set([...rg.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top))).size;
+            // 한 줄 안에서도 대체 글꼴 조각은 위치가 조금씩 다르다 — 줄 높이의 절반 넘게 떨어져야 다른 줄
+            const lh = parseFloat(s.lineHeight) || parseFloat(s.fontSize) * 1.2;
+            const tops = [...rg.getClientRects()].filter((r) => r.width > 0).map((r) => r.top).sort((a, b) => a - b);
+            let lines = tops.length ? 1 : 0;
+            for (let i = 1; i < tops.length; i++) if (tops[i] - tops[i - 1] > lh * 0.5) lines++;
             if (lines >= 2 && t.length / lines < 3) out.broken_wrap.push({ el: name(el), text: txt(el), lines });
             break;
           }

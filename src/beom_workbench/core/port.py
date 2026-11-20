@@ -642,6 +642,10 @@ def project_why(gates: dict) -> str:
     return gates.get("_project_why") or "프로젝트 테스트·타입 검사 실패"
 
 
+# 승인은 사용자의 일 — 에이전트에게 승인 도구·명령을 가리키지 않는다
+APPROVE = '사용자가 앱의 승인 카드(앱 밖이면 터미널의 beom-workbench port-approve)에서 승인한다 — 무엇을 확인받는지 말하고 라운드를 끝낸다. AI 가 대신 승인할 수 없음'
+
+
 def _adequacy_state(src: dict | None, tgt: dict | None, fp_now: str) -> dict:
     if src is not None:
         ok = src["failed"] == 0 and src["cases"] > 0
@@ -649,38 +653,37 @@ def _adequacy_state(src: dict | None, tgt: dict | None, fp_now: str) -> dict:
                 **({} if ok else {"why": f"케이스가 실행하지 못한 슬라이스 함수 {src['failed']}개"})}
     if tgt is not None:
         if tgt["detail"].get("target_fp") != fp_now:
-            return {"ok": False, "basis": "대상 커버리지", "why": "측정 뒤 대상 코드가 바뀜 — 다시 verify --target-coverage-report"}
+            return {"ok": False, "basis": "대상 커버리지", "why": "측정 뒤 대상 코드가 바뀜 — wb_port_verify 를 다시 돌리면 툴킷이 다시 잰다"}
         ok = tgt["failed"] == 0 and tgt["cases"] > 0
         return {"ok": ok, "basis": "대상 커버리지",
                 **({} if ok else {"why": f"케이스가 실행하지 못한 ported 대상 {tgt['failed']}개"})}
     return {"ok": False, "basis": None,
-            "why": "커버리지 미측정 (원본 capture --coverage-report 또는 verify --target-coverage-report)"}
+            "why": "케이스 실행 범위를 아직 재지 않음 — wb_port_verify 를 돌리면 툴킷이 잰다 (측정 명령·도구를 따로 만들지 않는다)"}
 
 
 def _next_step(gates: dict, *, counts, capture, diff, human, adequacy, finished) -> str:
     if not gates[GATE_INTEGRITY]:
         return "기록이 툴킷 밖에서 바뀜 — 사용자에게 알리고, 바뀐 단계를 툴킷으로 다시 실행 (capture·verify·map)"
     if not gates[GATE_MAPPED]:
-        return f"port-map 으로 남은 {counts.get('pending', 0)}개 매핑 (ported 는 '경로:줄', omitted·replaced 는 사유)"
+        return f"wb_port_map 으로 남은 {counts.get('pending', 0)}개 매핑 (ported 는 '경로:줄', omitted·replaced 는 사유)"
     if not gates[GATE_TARGETS]:
-        return "port-map --follow (이동한 대상) 또는 바뀐 대상 다시 매핑"
+        return "wb_port_map(follow=true) 로 이동한 대상을 따라가거나 바뀐 대상 다시 매핑"
     if capture is None:
-        return "port-capture 로 원본 응답(골든) 저장"
+        return "wb_port_capture 로 원본 응답(골든) 저장"
     if not gates[GATE_DIFF]:
-        return f"port-verify — {diff['why']}"
+        return f"wb_port_verify — {diff['why']}"
     if not gates.get(GATE_PROJECT, True):
-        return f"{project_why(gates)} — 고친 뒤 port-verify (테스트·타입 검사는 툴킷이 검증 때 함께 돌린다)"
+        return f"{project_why(gates)} — 고친 뒤 wb_port_verify (테스트·타입 검사는 툴킷이 검증 때 함께 돌린다)"
     if not gates[GATE_ADEQUACY] and not adequacy.get("user_card"):
-        return f"케이스 보강 또는 커버리지 측정 — {adequacy['why']}"
+        return f"케이스 보강 뒤 wb_port_verify — {adequacy['why']}"
     if not gates[GATE_HUMAN]:
         n = sum(1 for h in human if not h["approved"])
-        return (f"사용자 승인 대기 {n}건 — 사용자에게 내용을 설명하고 승인을 요청 (MCP wb_port_approve 확인 창, "
-                "또는 사용자가 터미널에서 직접 beom-workbench port-approve). AI 가 대신 승인할 수 없음")
+        return f"사용자 승인 대기 {n}건 — {APPROVE}"
     if not gates[GATE_LICENSE]:
         return "라이선스 경고 확인 (사용자 판단 필요)"
     if not finished or not finished.get("valid"):
-        return "port-finish 로 완료 판정 받기 (완료 보고는 port-finish 결과로만)"
-    return "완료 — port-finish 판정 유효"
+        return "wb_port_finish 로 완료 판정 받기 (완료 보고는 그 결과로만)"
+    return "완료 — wb_port_finish 판정 유효"
 
 
 def _next_step_request(gates: dict, *, req_state, capture, diff, human, adequacy, finished) -> str:
@@ -688,32 +691,31 @@ def _next_step_request(gates: dict, *, req_state, capture, diff, human, adequacy
     if not gates[GATE_INTEGRITY]:
         return "기록이 툴킷 밖에서 바뀜 — 사용자에게 알리고, 바뀐 단계를 툴킷으로 다시 실행"
     if not req_state["total"]:
-        return "make-req 로 요구사항 목록 작성 (사용자 요청을 확인 가능한 문장으로 나눔)"
+        return "wb_make_requirements 로 요구사항 목록 작성 (사용자 요청을 확인 가능한 문장으로 나눔)"
     if capture is None or not gates[GATE_REQ_CASES]:
         missing = ", ".join(req_state["uncovered"]) if capture is not None else "전체"
-        return (f"요구사항마다 합격 케이스(expect + req) 작성 후 port-capture — 케이스 없는 요구사항: {missing}. "
+        return (f"요구사항마다 합격 케이스(expect + req) 작성 후 wb_port_capture — 케이스 없는 요구사항: {missing}. "
                 "기대값은 사용자 요청에서 정하고 대상 코드 출력을 베끼지 않는다")
     pending = [h for h in human if not h["approved"]]
     if pending and any(h["kind"] in ("requirements", "expectation", "case_change") for h in pending):
-        return (f"사용자 승인 대기 {len(pending)}건 — 구현 전에 요구사항·합격 기준을 사용자에게 보여 주고 승인받기 "
-                "(MCP wb_port_approve 확인 창, 앱의 승인 카드, 또는 사용자가 터미널에서 port-approve). AI 가 대신 승인할 수 없음")
+        return f"사용자 승인 대기 {len(pending)}건 — 구현 전에 요구사항·합격 기준을 확인받는다: {APPROVE}"
     if not gates[GATE_MAPPED]:
         left = req_state["total"] - req_state["implemented"]
-        return f"구현 후 port-map 으로 요구사항 {left}개의 구현 위치(경로:줄) 기록"
+        return f"구현 후 wb_port_map 으로 요구사항 {left}개의 구현 위치(경로:줄) 기록"
     if not gates[GATE_TARGETS]:
-        return "port-map --follow (이동한 구현 위치) 또는 바뀐 위치 다시 매핑"
+        return "wb_port_map(follow=true) 로 이동한 구현 위치를 따라가거나 바뀐 위치 다시 매핑"
     if not gates[GATE_DIFF]:
-        return f"port-verify — {diff['why']}"
+        return f"wb_port_verify — {diff['why']}"
     if not gates.get(GATE_PROJECT, True):
-        return f"{project_why(gates)} — 고친 뒤 port-verify (테스트·타입 검사는 툴킷이 검증 때 함께 돌린다)"
+        return f"{project_why(gates)} — 고친 뒤 wb_port_verify (테스트·타입 검사는 툴킷이 검증 때 함께 돌린다)"
     if not gates[GATE_ADEQUACY] and not adequacy.get("user_card"):
-        return f"port-verify 로 구현 코드 실행 확인 (측정은 툴킷이 한다) — {adequacy['why']}"
+        return f"wb_port_verify 로 구현 코드 실행 확인 (측정은 툴킷이 한다) — {adequacy['why']}"
     if not gates[GATE_HUMAN]:
         n = sum(1 for h in human if not h["approved"])
-        return f"사용자 승인 대기 {n}건 — 사용자에게 내용을 설명하고 승인 요청. AI 가 대신 승인할 수 없음"
+        return f"사용자 승인 대기 {n}건 — {APPROVE}"
     if not finished or not finished.get("valid"):
-        return "port-finish 로 완료 판정 받기 (완료 보고는 port-finish 결과로만)"
-    return "완료 — port-finish 판정 유효"
+        return "wb_port_finish 로 완료 판정 받기 (완료 보고는 그 결과로만)"
+    return "완료 — wb_port_finish 판정 유효"
 
 
 def agent_status(conn, port_id: str) -> dict:
@@ -2049,6 +2051,10 @@ def _load_cases(path: Path) -> tuple[dict, list[dict]]:
             raise ToolError("invalid_request", f"케이스 {name}: new(원본에 없는 동작)는 expect(기대값)가 필요함")
         if "expect" in c and (not isinstance(c["expect"], dict) or not EXPECT_KEYS & set(c["expect"])):
             raise ToolError("invalid_request", f"케이스 {name}: expect 는 {sorted(EXPECT_KEYS)} 중 하나 이상을 가진 객체")
+        # 모르는 기대값 키는 거절 — "stdout" 같은 오타가 조용히 무시되면 그 기대는 확인되지 않은 채 통과한다
+        if isinstance(c.get("expect"), dict) and set(c["expect"]) - EXPECT_KEYS:
+            raise ToolError("invalid_request", f"케이스 {name}: expect 의 모르는 키 {sorted(set(c['expect']) - EXPECT_KEYS)} — "
+                            f"쓸 수 있는 키는 {sorted(EXPECT_KEYS)}")
         # 함수 케이스의 status 는 'ok'(정상 반환)·'raised'(예외) — 숫자를 쓰면 승인된 뒤 검증에서 늘 어긋나 케이스를 다시 고치게 된다
         if "call" in c and isinstance(c.get("expect"), dict) and "status" in c["expect"] and c["expect"]["status"] not in ("ok", "raised"):
             raise ToolError("invalid_request", f"케이스 {name}: 함수 호출 케이스의 expect.status 는 \"ok\"(정상 반환) 또는 \"raised\"(예외) — "
@@ -2859,10 +2865,15 @@ def _screen_rules(conn, settings, proj: dict, port_id: str, root: Path, fp: str)
     """기존 화면 규칙 — 새로 만들거나 고친 화면이 같은 부품을 다른 화면들의 실제 쓰임과 다르게 쓰는 곳 (conventions 모듈).
     원래 소스 기록이 없으면(새 프로젝트) None. 다른 곳이 있으면 사용자 확인 카드로 올린다."""
     from beom_workbench.core import conventions
-    base = guard.baseline_sources(conn, port_id, _port_dir(settings, proj, port_id))
+    folder = _port_dir(settings, proj, port_id)
+    base = guard.baseline_sources(conn, port_id, folder)
     if not base:
         return None
-    found = conventions.differences(root, base)
+    rec = guard.baseline(conn, port_id) or {}
+    since = None
+    if rec.get("sources_file") and (folder / rec["sources_file"]).is_file():
+        since = (folder / rec["sources_file"]).stat().st_mtime  # 원래 소스를 기록한 시각 — 기록 밖이어도 그 전부터 있던 파일은 새 것이 아니다
+    found = conventions.differences(root, base, since=since)
     cid = "chk_" + uuid.uuid4().hex[:12]
     with ledger.tx(conn):
         conn.execute("INSERT INTO port_check (id, port_id, kind, cases, passed, failed, detail, evidence_id, created_at) "

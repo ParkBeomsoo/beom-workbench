@@ -504,8 +504,8 @@ DEV_SERVER = re.compile(
     r"|(?:python3?|py)\s+manage\.py\s+runserver\b|dotnet\s+(?:watch|run)\b(?!.*--no-launch)"
     r")", re.I)
 SERVER_HINT = ("개발 서버처럼 끝나지 않는 명령은 앞에서 돌리면 돌아오지 않아 라운드가 멈춥니다. "
-               "띄워 둘 거면 백그라운드로(run_in_background) 실행하고, 화면·동작 확인은 검증 도구(target_cmd·target_url·화면 케이스)로 하세요 — "
-               "검증 도구는 서버를 띄우고 확인한 뒤 끝냅니다.")
+               "셸에서 서버를 띄우지 마세요 (띄운 서버는 남습니다). 화면은 wb_screen_shot(url·cmd), 동작 확인은 검증(wb_port_verify 의 "
+               "target_cmd·target_url·화면 케이스)으로 하세요 — 툴킷이 서버를 띄우고 확인한 뒤 끝냅니다.")
 
 
 # Windows 격리(쓰기 제한 토큰)에서는 Node 가 파이프로 자식 프로세스를 띄우지 못한다 (spawn EPERM) — 이름 있는 파이프의

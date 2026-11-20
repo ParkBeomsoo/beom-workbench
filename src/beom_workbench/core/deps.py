@@ -337,7 +337,8 @@ def status(root: Path) -> dict:
         out["node"] = {"node_modules": os.path.relpath(noderoot / "node_modules", root).replace("\\", "/")}
     if py.is_file():
         out["python"] = {"python": os.path.relpath(py, root).replace("\\", "/"),
-                         "note": "파이썬 테스트·실행은 이 python 으로 — 의존성과 pytest·coverage 가 들어 있다"}
+                         "note": "의존성과 pytest·coverage 가 여기 들어 있다 — 테스트는 wb_task(task=\"test\"), 명령에는 경로 없이 "
+                                 "python 이라고 쓴다 (이 python 이 PATH 앞에 있다)"}
         if src_layout(pyroot):
             out["python"]["src"] = ("src 폴더가 이 python 의 import 경로에 있다 — pytest pythonpath 설정·sys.path 조작·"
                                     "conftest 를 프로젝트에 넣지 않아도 된다")
