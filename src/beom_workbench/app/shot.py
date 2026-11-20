@@ -1,7 +1,10 @@
 """화면 확인 — 페이지를 보이지 않는 창(Qt WebEngine)에 띄워 글자·요소가 있는지 보고 스크린샷을 남긴다.
 
-    python -m beom_workbench.app.shot '{"pages": [{"url": "...", "out": "a.png", "width": 1280, "height": 800,
-                                                  "visible": ["주문하기"], "selectors": ["form button"], "wait_ms": 800}]}'
+    python -m beom_workbench.app.shot  < '{"pages": [{"url": "...", "out": "a.png", "width": 1280, "height": 800,
+                                                    "visible": ["주문하기"], "selectors": ["form button"], "wait_ms": 800}]}'
+
+명세는 표준 입력으로 받는다 — 명령줄 인자로 주면 화면 케이스가 많을 때 Windows 명령줄 한도(32K 글자)를 넘어 실행 자체가
+안 된다 (WinError 206). 인자로 준 것도 받는다 (손으로 한 장 찍을 때).
 
 여러 페이지를 브라우저 엔진 하나로 차례대로 연다 (엔진 시작이 가장 오래 걸린다). 페이지마다 새 비공개 프로필이라 앞 케이스가
 저장한 것(localStorage·쿠키)이 다음 케이스로 넘어가지 않는다 — 케이스는 서로 독립이다. 결과는 표준 출력 마지막 줄 JSON:
@@ -17,10 +20,10 @@ from pathlib import Path
 
 
 def main() -> int:
-    spec = json.loads(sys.argv[1])
+    spec = json.loads(sys.argv[1] if len(sys.argv) > 1 else sys.stdin.buffer.read().decode("utf-8"))
     pages = spec.get("pages") or [spec]
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
+    os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --disable-lcd-text")  # 스크린샷에 글자 색 번짐(서브픽셀) 없이
     from PySide6.QtCore import QTimer, QUrl
     from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
     from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -176,6 +179,22 @@ def main() -> int:
         def shoot():
             if idx != state["i"]:
                 return
+            # 웹 글꼴이 다 올 때까지 (최대 4초) — 한글 웹 글꼴은 글자 범위마다 나눠 받아서, 일찍 찍으면 몇 글자만 대체 글꼴로 보이고
+            # 디자인 점검도 대체 글꼴 크기로 잰다. 화면 크기를 바꾸면 새로 보이는 글자의 글꼴 조각을 더 받는다.
+            if not cur.get("_fonts_done"):
+                cur.setdefault("_fonts_t", 0)
+
+                def fonts(status):
+                    if idx != state["i"]:
+                        return
+                    if status == "loading" and cur["_fonts_t"] < 4000:
+                        cur["_fonts_t"] += 150
+                        QTimer.singleShot(150, shoot)
+                        return
+                    cur["_fonts_done"] = True
+                    shoot()
+                view.page().runJavaScript("document.fonts ? document.fonts.status : 'loaded'", 0, fonts)
+                return
             if p.get("audit") and "audit" not in cur:  # 디자인 점검 — 찍기 전에 이 크기 그대로 잰다
                 def audited(r):
                     try:
@@ -287,7 +306,7 @@ def main() -> int:
         let b = { r: 255, g: 255, b: 255 };
         for (let i = layers.length - 1; i >= 0; i--) { const c = layers[i]; b = { r: c.r * c.a + b.r * (1 - c.a), g: c.g * c.a + b.g * (1 - c.a), b: c.b * c.a + b.b * (1 - c.a) }; }
         return b; };
-      const out = { contrast: [], small_text: [], tiny_targets: [], small_targets: [], clipped: [], overlap: [], overflow: null };
+      const out = { contrast: [], small_text: [], tiny_targets: [], small_targets: [], clipped: [], overlap: [], broken_wrap: [], overflow: null };
       const fonts = new Set(), sizes = new Set(), colors = new Set(), hits = [];
       for (const el of (document.body ? document.body.querySelectorAll("*") : [])) {
         if (!vis(el) || ["SCRIPT", "STYLE", "SVG", "PATH"].includes(el.tagName.toUpperCase())) continue;
@@ -305,6 +324,16 @@ def main() -> int:
           }
           if (fs < 12) out.small_text.push({ el: name(el), text: txt(el), size: fs });
           if (/(hidden|clip)/.test(s.overflow + s.overflowX) && el.scrollWidth > el.clientWidth + 1) out.clipped.push({ el: name(el), text: txt(el) });
+          // 한두 글자씩 줄이 바뀜 (칸이 좁아 '꽃다/발'처럼 낱말이 쪼개짐) — 글 줄 상자를 실제로 센다
+          for (const n of el.childNodes) {
+            if (n.nodeType !== 3) continue;
+            const t = n.textContent.replace(/\s+/g, "");
+            if (t.length < 3) continue;
+            const rg = document.createRange(); rg.selectNodeContents(n);
+            const lines = new Set([...rg.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top))).size;
+            if (lines >= 2 && t.length / lines < 3) out.broken_wrap.push({ el: name(el), text: txt(el), lines });
+            break;
+          }
         }
         if (el.matches("a[href],button,input:not([type=hidden]),select,textarea,[role=button],[onclick],summary") && !off) {
           const r = el.getBoundingClientRect();

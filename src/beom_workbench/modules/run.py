@@ -334,6 +334,36 @@ def _follows(run: dict | None, steps: list[dict], follows: list[dict] | None) ->
     return rules[:12], errors
 
 
+def _rules_checked(run: dict | None, checked: list[str] | None, rules: list[dict] | None) -> tuple[list[str], str | None]:
+    """대상 저장소의 규칙 문서(작업을 시작할 때 찾아 지시에 넣은 것)를 읽었다고 밝혔는지 — 에이전트 지시(AGENTS.md 등)·규칙 허브는
+    모두, 정책·가이드 문서는 하나 이상. follows 근거로 든 문서도 읽은 것으로 친다. 규칙 문서가 없으면 묻지 않는다."""
+    if run is None:
+        return [], None
+    g = run.get("guides") or {}
+    must = [*g.get("agents", []), *g.get("hubs", [])]
+    some = g.get("docs", [])
+    if not must and not some:
+        return [], None
+    root = Path(run["target_root"]).resolve()
+
+    def norm(x: str) -> Path:
+        return (root / str(x).split(":")[0].strip()).resolve()
+
+    said = [str(x) for x in checked or []][:30]
+    got = {norm(x) for x in said} | {norm(e) for r in rules or [] for e in r["evidence"]}
+    missing = [m for m in must if norm(m) not in got]
+    doc_ok = not some or any(norm(d) in got or any(p.is_relative_to(norm(d)) for p in got) for d in some)
+    if not missing and doc_ok:
+        return [x for x in said if norm(x).exists()], None
+    parts = []
+    if missing:
+        parts.append("에이전트 지시·규칙 허브 " + ", ".join(missing))
+    if not doc_ok:
+        parts.append("정책·가이드 문서(" + ", ".join(some[:5]) + ") 중 이번 작업에 닿는 것")
+    return [], ("대상 저장소의 규칙 문서를 읽었다고 밝히지 않음: " + " · ".join(parts) +
+                " — 읽고 rules_checked=[\"문서 경로\", …] 로 남기고, 따를 조항은 follows 근거(문서:줄)로 든다")
+
+
 DESIGN_TOPIC = re.compile(r"디자인|design|분위기|스타일|톤|look", re.I)
 
 
@@ -361,6 +391,9 @@ def _design_gate(run: dict, steps: list[dict], picks: list[dict], look: list[str
         problems.append("참고 화면을 아직 보지 않았다 — mcp__beom-workbench__wb_design_refs 로 같은 분야의 잘 만든 서비스 2~4곳을 찍어 "
                         "보고 (사용자가 거절하면 그대로 진행)")
     shots = (design or {}).get("shots") or {}
+    broken = [x for d in picks for x in d.get("sian_broken") or []]
+    if broken:
+        problems.append("시안이 휴대폰 화면에서 깨진다 — 고쳐서 다시 낸다: " + " · ".join(broken[:6]))
     if len(shots) < 2:
         problems.append("'디자인 방향' 결정에 방향이 확실히 다른 시안을 선택지 2개 이상 그림으로 붙여야 한다 — 핵심 화면 한 장씩 "
                         ".beom/looks/a.html 처럼 만들고 decisions 의 그 결정에 looks={\"선택지\": \".beom/looks/a.html\", …} "
@@ -371,8 +404,13 @@ def _design_gate(run: dict, steps: list[dict], picks: list[dict], look: list[str
             ". 사용자가 브랜드·디자인을 이미 정해 주었으면 design_basis 에 근거를 적는다")
 
 
+SIAN_BROKEN = ("가로로 넘침", "글자가 잘림", "한두 글자씩 줄바뀜", "누르는 곳끼리 겹침")
+
+
 def _shoot_looks(run: dict, picks: list[dict]) -> list[str]:
-    """디자인 방향 시안(HTML)을 찍어 결정에 붙인다 — {"선택지": ".beom/looks/a.png"}. 시안은 대상 폴더의 .beom 안 HTML 만."""
+    """디자인 방향 시안(HTML)을 찍어 결정에 붙인다 — {"선택지": ".beom/looks/a.png"}. 시안은 대상 폴더의 .beom 안 HTML 만.
+    찍을 때 디자인 점검도 한다 — 사용자는 시안 그림을 보고 고른다. 가로로 넘치거나 글자가 쪼개진 시안은 '방향'이 아니라 깨진 화면이라
+    결정에 sian_broken 으로 남겨(계획을 받지 않는다) 고쳐 다시 내게 한다."""
     from beom_workbench.common.response import ToolError
     from beom_workbench.core import screens
     root = Path(run["target_root"]).resolve()
@@ -394,7 +432,7 @@ def _shoot_looks(run: dict, picks: list[dict]) -> list[str]:
     with screens.serve_folder(root) as srv:
         pages = []
         for i, (d, label, f) in enumerate(jobs):
-            spec = {"file": f.relative_to(root).as_posix(), "mobile": True, "wait_ms": 600}
+            spec = {"file": f.relative_to(root).as_posix(), "mobile": True, "wait_ms": 600, "audit": True}
             pg = screens.page_spec(spec, None, root, str(out_dir / f"look-{i + 1}.png"), file_base=srv.base)
             pg["full_page"] = False  # 첫 화면 그대로 — 카드 안에서 비교하기 좋게
             pages.append(pg)
@@ -405,6 +443,10 @@ def _shoot_looks(run: dict, picks: list[dict]) -> list[str]:
     for (d, label, f), r in zip(jobs, got):
         if r.get("ok"):
             d.setdefault("shots", {})[label] = Path(r["out"]).resolve().relative_to(root).as_posix()
+            fix, _ = _design_findings(r.get("audit")) if r.get("audit") else ([], [])
+            broken = [x for x in fix if any(k in x for k in SIAN_BROKEN)]
+            if broken:
+                d.setdefault("sian_broken", []).extend(f"{f.name} (모바일 390px): {x}" for x in broken[:4])
         else:
             errors.append(f"시안을 찍지 못함: {f.name} {(r.get('errors') or [''])[0]}")
     return errors
@@ -413,7 +455,7 @@ def _shoot_looks(run: dict, picks: list[dict]) -> list[str]:
 @mcp.tool()
 def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decisions: list[dict] | None = None,
                  look: list[str] | None = None, previews: list[str] | None = None, follows: list[dict] | None = None,
-                 design_basis: str = "") -> dict:
+                 design_basis: str = "", rules_checked: list[str] | None = None) -> dict:
     """구현 계획을 낸다 — 사용자가 앱에서 승인한 뒤 구현한다. steps: [{title, files?: [...], commands?: [...], requirements?: ["R1"]}].
     decisions: 사전 설계 결정 [{topic: "데이터 저장", choice: "SQLite 파일", options: ["JSON 파일"], why: "한 줄"}] — 형태(웹·앱·API)·
     데이터 저장·스택·실행 방법·디자인 방향처럼 결과를 크게 가르는 것. 사용자가 승인하며 대안으로 바꿀 수 있다.
@@ -424,6 +466,8 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
     follows: 기존 화면이 있는 프로젝트에서 화면을 만들·고칠 때 — 다른 화면들에서 확인한 규칙과 근거
     [{rule: "목록에서 상세는 행 더블클릭", evidence: ["src/pages/OrderList.jsx:8", "src/pages/UserList.jsx:8"]}]. 근거는 지금 있는
     코드의 파일:줄이어야 하고 (툴킷이 확인한다), 규칙 전체에 걸쳐 서로 다른 기존 파일 2개 이상. 사용자가 계획 카드에서 본다.
+    rules_checked: 지시의 [작업 규칙·정책] 에 나온 문서 중 읽은 것 ["../../AGENTS.md", "docs/conventions.md"] — 에이전트 지시·규칙
+    허브는 모두, 정책·가이드 문서는 이번 작업에 닿는 것을 (툴킷이 확인한다). 그 문서에서 따를 조항은 follows 의 근거(문서:줄)로.
     새로 만드는 화면이면 '디자인 방향' 결정에 시안(looks)을 선택지 2개 이상 붙여야 하고, 그 전에 참고 화면(wb_design_refs)을
     찍어 봐야 한다 — 툴킷이 확인한다. 사용자가 브랜드·디자인을 정해 주었으면 design_basis 에 그 근거(요청·첨부의 어디)를 적는다.
     계획을 다시 내면 이전 승인은 풀린다."""
@@ -457,10 +501,15 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
     rules, rule_errors = _follows(run, clean, follows)
     if rule_errors and rules is None:
         return {"ok": False, "error": rule_errors[0], "problems": rule_errors[1:]}
+    read, read_error = _rules_checked(run, rules_checked, rules)
+    if read_error:
+        return {"ok": False, "error": read_error}
     look_errors = _shoot_looks(run, picks) if run is not None else []
     gate = _design_gate(run, clean, picks, lines, design_basis) if run is not None else None
     if gate:
         return {"ok": False, "error": gate, **({"look_errors": look_errors} if look_errors else {})}
+    for d in picks:  # 깨진 시안 표시는 확인용 — 계획에는 남기지 않는다
+        d.pop("sian_broken", None)
 
     def put(r):
         old = r.get("plan") or {}
@@ -469,7 +518,8 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
                      "at": inbox._now(), **({"design": design.strip()[:6000]} if design.strip() else {}),
                      **({"decisions": picks[:10]} if picks else {}), **({"look": lines} if lines else {}),
                      **({"previews": shots} if shots else {}), **({"follows": rules} if rules else {}),
-                     **({"design_basis": design_basis.strip()[:300]} if design_basis.strip() else {})}
+                     **({"design_basis": design_basis.strip()[:300]} if design_basis.strip() else {}),
+                     **({"rules_checked": read} if read else {})}
     out = _update(put)
     if out["ok"]:
         inbox.log(settings, os.environ["BEOM_WORKBENCH_RUN"], "plan", steps=len(clean))
@@ -696,6 +746,8 @@ def _design_findings(audit: dict | None) -> tuple[list[str], list[str]]:
         fix.append(f"가로로 넘침 — 페이지 {o['page']}px > 화면 {o['viewport']}px ({', '.join(o.get('wide') or [])})")
     for c in iss.get("clipped") or []:
         fix.append(f"글자가 잘림 — {c['el']} '{c['text']}'")
+    for c in iss.get("broken_wrap") or []:
+        fix.append(f"글자가 한두 글자씩 줄바뀜 ({c['lines']}줄) — 칸을 넓히거나 word-break: keep-all — {c['el']} '{c['text']}'")
     for o in iss.get("overlap") or []:
         fix.append(f"누르는 곳끼리 겹침 — {o['a']} · {o['b']}")
     for t in iss.get("small_text") or []:

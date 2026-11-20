@@ -115,7 +115,7 @@ def capture(pages: list[dict], timeout: float | None = None, coverage_dir: Path 
         raise ToolError("capability_unavailable", "화면 케이스에는 앱 구성요소가 필요함",
                         recovery="pip install 'beom-workbench[app]' (PySide6 WebEngine)")
     # 결과는 UTF-8 로 받는다 — Windows 기본 코드 페이지(cp949)로 나오면 한글 확인 결과가 깨진다
-    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu",
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --disable-lcd-text",
                PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     if coverage_dir is not None:
         import socket
@@ -131,7 +131,8 @@ def capture(pages: list[dict], timeout: float | None = None, coverage_dir: Path 
     if timeout is None:  # 엔진 시작 + 페이지마다 (페이지 한도 30초 + 측정 연결·기록)
         timeout = 90 + 50 * len(pages)
     try:
-        proc = subprocess.run([sys.executable, "-m", "beom_workbench.app.shot", json.dumps({"pages": pages})],
+        # 명세는 표준 입력으로 — 명령줄로 주면 케이스가 많을 때 Windows 명령줄 한도(32K)를 넘어 실행이 안 된다 (WinError 206)
+        proc = subprocess.run([sys.executable, "-m", "beom_workbench.app.shot"], input=json.dumps({"pages": pages}).encode("utf-8"),
                               capture_output=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         raise ToolError("timeout", f"화면 확인이 {int(timeout)}초 안에 끝나지 않음 (페이지 {len(pages)}개)",

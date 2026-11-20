@@ -113,7 +113,8 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
 - 기존 자산 맞추기 — 대상 폴더에 이미 코드·문서가 있거나 [넣을 저장소 분석]·[원본 프로젝트]·첨부 문서가 있으면, 새로 만들기 전에
   그것부터 파악해 맞춘다. 새 기능은 '원래 있던 사람이 만든 것처럼' 들어가야 한다.
   1) 언어·프레임워크·폴더 구조·명명·테스트 방식 — 같은 것을 쓴다 (새 라이브러리는 꼭 필요할 때만, 이유와 함께 decisions 로).
-  2) 업무 규칙 — [작업 규칙·정책] 줄의 문서부터 읽는다 (허브 README 에 작업 유형별 읽기 순서가 있으면 그 순서로, 관련 도메인
+  2) 업무 규칙 — [작업 규칙·정책] 줄의 문서부터 읽는다 (대상 폴더 위 저장소 맨 위의 것도 — 경로가 ../ 로 시작한다. 읽은 문서는
+     wb_plan_set 의 rules_checked 에, 따를 조항은 follows 근거(문서:줄)로 남긴다 — 툴킷이 확인한다) (허브 README 에 작업 유형별 읽기 순서가 있으면 그 순서로, 관련 도메인
      정책은 모두). 정책 문서·README·검증 로직·오류 문구·용어를 그대로 따른다. 기존 정책과 부딪치면 기존 정책이 이긴다 — 바꿔야 하면
      '현행 → 변경 · 이유'를 decisions 로 내서 사용자가 정하게 한다. 정책에 없어 새로 정하는 규칙은 '신규(추천)'으로 표시하고
      기존 조항과 겹치거나 부딪치지 않는지 확인한 근거(문서·절)를 함께 남긴다. 저장소의 브랜치·커밋 규칙이 있으면 [작업 브랜치]가 우선이다.
@@ -202,6 +203,7 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
      4 배수 간격·모서리). 이미 쓰는 프레임워크·컴포넌트 라이브러리·디자인 시스템이 있으면 그것이 먼저다.
   3) 화면의 주인공을 정한다: 화면마다 사용자가 가장 먼저 봐야 할 것 하나(예: 이번 달 남은 돈)를 가장 크게, 나머지는 위계를 낮춘다.
      숫자·금액은 고정폭 숫자(tabular-nums)와 단위, 표는 오른쪽 정렬, 수입·지출 같은 의미는 색만이 아니라 기호(+, −)로도.
+     한글 글은 word-break: keep-all 로 낱말이 줄 끝에서 쪼개지지 않게 한다 ('아/름', '꽃다/발' 처럼 갈라지면 읽기 어렵다).
   4) 상태와 손맛: 빈 상태(무엇을 하면 되는지 한 줄 + 첫 행동 버튼), 로딩, 오류, 지우기 전 확인·되돌리기, 저장됐다는 짧은 알림,
      키보드 포커스, 호버·누름 상태, 0.15~0.2초의 절제된 전환. 입력 오류는 사용자가 그 칸을 건드리거나 제출한 뒤에만 보인다 —
      처음 연 화면에 빨간 오류 문구가 떠 있으면 안 된다 (처음 화면을 찍어 확인한다).
@@ -254,9 +256,10 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   질문에 받은 답·정한 것은 '정한 것' 한 줄로 묶는다.
 - 지금 하는 일은 mcp__beom-workbench__wb_activity 로 한 줄 알린다 (예: "order.rs 에 할인 계산 추가 중") — 단계가 바뀔 때 한 번만
   (도구 호출 하나도 턴을 쓴다. 계획 단계 표시 wb_plan_progress 의 note 로 함께 알려도 된다).
-- 첫 라운드 순서: 필요하면 질문 → 요구사항(wb_make_requirements) → 합격 케이스(.beom/cases.json → wb_port_capture) → 계획(wb_plan_set)을
-  쉬지 않고 한 번에 내고 라운드를 끝낸다. 사용자는 셋을 한 장으로 한 번에 확인한다. 승인 전에는 .beom/cases.json 말고 아무 파일도
-  만들지 않는다 — 미리보기 화면·시안·제품 코드·설정 파일 모두 승인 뒤에. 보고에 없는 것(예: 미리보기)을 올렸다고 쓰지 않는다.
+- 첫 라운드 순서: 필요하면 질문 → 요구사항(wb_make_requirements) → 합격 케이스(.beom/cases.json → wb_port_capture) → (새 화면이면
+  참고 화면 찍기 → 디자인 방향 시안 .beom/looks/*.html) → 계획(wb_plan_set)을 쉬지 않고 한 번에 내고 라운드를 끝낸다. 사용자는 한 장으로
+  한 번에 확인한다. 승인 전에 만드는 파일은 .beom/cases.json 과 .beom/looks/ 의 시안뿐이다 — 시안은 사용자가 계획 카드에서 보고
+  고르라고 승인 전에 만든다. 제품 코드·설정 파일·그 밖의 미리보기는 승인 뒤에. 보고에 없는 것(예: 미리보기)을 올렸다고 쓰지 않는다.
 - 승인한 뒤 사용자가 바꾼 결정을 반영하느라 요구사항·케이스를 고치면, 그 라운드의 변경은 툴킷이 사용자 결정으로 보고 자동 승인한다
   — 다시 확인을 기다리지 말고 이어서 구현한다.
 - 구현 전에는 계획(wb_plan_set)을 내고 승인을 기다린다. 계획을 보는 사람은 개발자가 아닐 수 있다 — 무엇을 승인하는지 알 수 있게:
@@ -464,52 +467,88 @@ def existing_assets(target_root: str | Path, limit: int = 4000) -> dict | None:
     return {"files": files, "stack": sorted(stack), "docs": docs, "screens": screens}
 
 
-AGENT_FILES = ("AGENTS.md", "CLAUDE.md", "GEMINI.md", ".cursorrules", "CONVENTIONS.md")
+AGENT_FILES = ("AGENTS.md", "CLAUDE.md", "GEMINI.md", ".cursorrules", "CONVENTIONS.md", ".windsurfrules", "copilot-instructions.md")
 RULE_DIR = re.compile(r"(^|[-_ .])(rules?|polic(y|ies)|guides?|guidelines?|conventions?|standards?|harness|storyboards?|"
                       r"design[-_ ]?system)($|[-_ .])|정책|규칙|가이드|스토리보드|기획", re.I)
+# 규칙 폴더가 아니어도 이름이 규칙인 문서 하나 — docs/코딩규칙.md, STYLEGUIDE.md, CONTRIBUTING.md, frontend-guide.md
+RULE_FILE = re.compile(r"(^|[-_ .])(rules?|polic(y|ies)|guides?|guidelines?|conventions?|standards?|style[-_ ]?guide|contributing|"
+                       r"coding|code[-_ ]?style|design[-_ ]?system|ui[-_ ]?kit)($|[-_ .])|정책|규칙|가이드|컨벤션|표준|스타일|개발[-_ ]?지침",
+                       re.I)
+DOC_EXTS = (".md", ".mdx", ".txt", ".pdf", ".docx", ".adoc", ".rst")
+GUIDE_DEPTH = 3
 
 
 def guides(target_root: str | Path) -> dict | None:
-    """대상 폴더 안의 규칙·정책 문서와 저장소 목록 — 사용자가 대화창에 붙이지 않아도 에이전트가 먼저 읽게 지시에 싣는다.
+    """대상 폴더가 속한 저장소의 규칙·정책 문서와 저장소 목록 — 사용자가 대화창에 붙이지 않아도 에이전트가 먼저 읽게 지시에 싣는다.
     hubs: 규칙 폴더의 README (읽기 체인이 있는 허브), agents: AGENTS.md·CLAUDE.md 같은 에이전트 지시,
-    docs: 정책·가이드·스토리보드 폴더, repos: 여러 저장소를 모은 작업 공간이면 저장소마다 이름과 스택."""
+    docs: 정책·가이드·스토리보드 폴더와 이름이 규칙인 문서, repos: 여러 저장소를 모은 작업 공간이면 저장소마다 이름과 스택.
+    대상 폴더 아래만 보면 하위 폴더를 대상으로 줄 때 저장소 맨 위의 규칙(AGENTS.md, docs/conventions…)을 놓친다 — 대상 폴더에서
+    저장소 맨 위까지 올라가며 에이전트 지시를 찾고, 저장소 맨 위부터 내려가며 규칙 문서를 찾는다. 경로는 대상 폴더 기준 (위는 ../)."""
     from beom_workbench.core import workbranch
 
-    root = Path(target_root)
+    root = Path(target_root).resolve()
     if not root.is_dir():
         return None
+    top = workbranch.repo_top(root)
+    top = Path(top).resolve() if top else None
     hubs, agents, docs = [], [], []
+    covered: list[Path] = []
+    seen_dirs: set[Path] = set()
 
     def rel(p: Path) -> str:
-        return p.relative_to(root).as_posix()
+        return os.path.relpath(p, root).replace("\\", "/")
 
-    def scan(d: Path, depth: int) -> None:
+    def add(lst: list, p: Path, suffix: str = "") -> None:
+        v = rel(p) + suffix
+        if v not in lst:
+            lst.append(v)
+
+    def scan(d: Path, depth: int, level: int) -> None:
+        if d in seen_dirs:
+            return
+        seen_dirs.add(d)
         for n in AGENT_FILES:
             if (d / n).is_file():
-                agents.append(rel(d / n))
-        if depth == 0:
-            return
+                add(agents, d / n)
+        if (d / ".github" / "copilot-instructions.md").is_file():
+            add(agents, d / ".github" / "copilot-instructions.md")
         try:
-            subs = sorted(x for x in d.iterdir() if x.is_dir() and x.name not in SKIP_DIRS and not x.name.startswith("."))
+            items = sorted(d.iterdir())
         except OSError:
             return
-        for x in subs:
-            if RULE_DIR.search(x.name):
+        if not any(d.is_relative_to(c) for c in covered):
+            for f in items:
+                if f.is_file() and f.suffix.lower() in DOC_EXTS and f.name not in AGENT_FILES and RULE_FILE.search(f.stem):
+                    add(docs, f)
+        if depth == 0:
+            return
+        for x in (x for x in items if x.is_dir() and x.name not in SKIP_DIRS and not x.name.startswith(".")):
+            if RULE_DIR.search(x.name):  # 규칙 폴더 안의 하위 규칙 폴더도 (허브의 policies/ 처럼) — 낱개 문서만 겹치지 않게
                 readme = next((x / n for n in ("README.md", "readme.md", "README.ko.md", "INDEX.md") if (x / n).is_file()), None)
-                if readme and (x / ".git").exists() or readme and depth == 2:
-                    hubs.append(rel(readme))
+                if readme and ((x / ".git").exists() or level == 0):
+                    add(hubs, readme)
+                    covered.append(x)
                 elif any(x.glob("*.md")) or any(x.glob("*.pdf")) or any(x.glob("*.docx")):
-                    docs.append(rel(x) + "/")
-            scan(x, depth - 1)
+                    add(docs, x, "/")
+                    covered.append(x)
+            scan(x, depth - 1, level + 1)
 
-    scan(root, 2)
+    if top and top != root and root.is_relative_to(top):
+        for d in [p for p in root.parents if p.is_relative_to(top)]:  # 대상 폴더 위 → 저장소 맨 위: 그 자리의 에이전트 지시
+            for n in AGENT_FILES:
+                if (d / n).is_file():
+                    add(agents, d / n)
+        scan(root, GUIDE_DEPTH, 0)
+        scan(top, GUIDE_DEPTH, 0)  # 저장소 전체의 규칙 문서 (대상 폴더 쪽은 이미 봤다)
+    else:
+        scan(root, GUIDE_DEPTH, 0)
     repos = []
-    if not workbranch.repo_top(root):
+    if not top:
         for r in workbranch.child_repos(root)[:40]:
             st = sorted({name for marker, name in STACK_MARKERS.items()
                          if (r / marker).is_file() or (marker.startswith("*") and any(r.glob(marker)))})
             repos.append({"name": rel(r), "stack": st})
-    out = {"hubs": hubs[:6], "agents": agents[:10], "docs": docs[:10], "repos": repos}
+    out = {"hubs": hubs[:6], "agents": agents[:10], "docs": docs[:15], "repos": repos}
     return out if any(out.values()) else None
 
 
@@ -1754,7 +1793,12 @@ class Runner:
         except ToolError:
             state = None
         cps = Checkpoints(inbox.run_dir(self.settings, self.run_id), run["target_root"]).list()
-        return json.dumps([state, run.get("plan"), run.get("handoff"), cps[0]["id"] if cps else None],
+        # 계획은 단계·상태·승인만 — 단계 메모는 진전이 아니다. 막힌 에이전트가 라운드마다 '같은 오류로 막힘' 메모만 고쳐서
+        # 진전으로 세어 1분짜리 라운드가 끝없이 이어졌다 (도구 오류로 검증이 안 되던 실행).
+        plan = run.get("plan") or {}
+        plan_sig = [[(s.get("title"), s.get("status")) for s in plan.get("steps") or []], plan.get("approved"),
+                    plan.get("decisions"), plan.get("follows")]
+        return json.dumps([state, plan_sig, run.get("handoff"), cps[0]["id"] if cps else None],
                           ensure_ascii=False, default=str, sort_keys=True)
 
     def _settle_orphans(self) -> bool:

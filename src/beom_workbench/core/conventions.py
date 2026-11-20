@@ -83,20 +83,69 @@ def ui_files(target: Path, limit: int = COUNT_MAX) -> tuple[Path, list[Path]]:
     return base, out
 
 
-def _tag_body(text: str, i: int) -> tuple[str, int]:
-    """'<Name' 다음부터 태그 끝 '>' 까지 — 중괄호·따옴표 안의 '>' 는 건너뛴다."""
-    depth, q, j, n = 0, "", i, min(len(text), i + 4000)
-    while j < n:
-        c = text[j]
-        if q:
-            if c == "\\":
-                j += 2
+REGEX_BEFORE = set("(,=:[!&|?{};+-*%<>~^")
+REGEX_WORDS = ("return", "typeof", "case", "in", "of", "void", "delete", "throw", "yield", "await")
+
+
+def _skip(text: str, j: int) -> int:
+    """text[j] 에서 글(따옴표·템플릿)·주석·정규식 리터럴이 시작하면 그 끝 다음 자리, 아니면 j.
+    손으로 만든 스캐너가 /[&<>"']/g 같은 정규식의 따옴표를 글의 시작으로 읽어 구조를 놓쳤다 — 모든 스캐너가 이것을 거친다."""
+    n = len(text)
+    c = text[j]
+    if c in "\"'`":
+        k = j + 1
+        while k < n:
+            if text[k] == "\\":
+                k += 2
                 continue
-            if c == q:
-                q = ""
-        elif c in "\"'`":
-            q = c
-        elif c == "{":
+            if text[k] == c:
+                return k + 1
+            if c != "`" and text[k] == "\n":  # 닫히지 않은 글 — 줄 끝에서 멈춘다 (한 줄 망가짐이 파일 전체로 번지지 않게)
+                return k
+            k += 1
+        return n
+    if c == "/" and j + 1 < n:
+        if text[j + 1] == "/":
+            k = text.find("\n", j)
+            return n if k < 0 else k
+        if text[j + 1] == "*":
+            k = text.find("*/", j + 2)
+            return n if k < 0 else k + 2
+        p = j - 1
+        while p >= 0 and text[p] in " \t\r\n":
+            p -= 1
+        word = re.search(r"([A-Za-z_$][\w$]*)$", text[max(0, p - 10):p + 1]) if p >= 0 else None
+        if p < 0 or text[p] in REGEX_BEFORE or (word and word.group(1) in REGEX_WORDS):
+            k, cls = j + 1, False
+            while k < n and text[k] != "\n":
+                ch = text[k]
+                if ch == "\\":
+                    k += 2
+                    continue
+                if ch == "[":
+                    cls = True
+                elif ch == "]":
+                    cls = False
+                elif ch == "/" and not cls:
+                    k += 1
+                    while k < n and text[k].isalpha():
+                        k += 1
+                    return k
+                k += 1
+            return j  # 줄 안에서 닫히지 않음 — 나눗셈으로 본다
+    return j
+
+
+def _tag_body(text: str, i: int) -> tuple[str, int]:
+    """'<Name' 다음부터 태그 끝 '>' 까지 — 중괄호·글 안의 '>' 는 건너뛴다."""
+    depth, j, n = 0, i, min(len(text), i + 4000)
+    while j < n:
+        k = _skip(text, j) if (depth or text[j] in "\"'`") else j
+        if k != j:
+            j = k
+            continue
+        c = text[j]
+        if c == "{":
             depth += 1
         elif c == "}":
             depth = max(0, depth - 1)
@@ -107,27 +156,24 @@ def _tag_body(text: str, i: int) -> tuple[str, int]:
 
 
 def _flat(body: str) -> str:
-    """속성 이름만 남게 — 중괄호 안·따옴표 안을 지운다 (값은 _literal 이 따로 읽는다)."""
-    out, depth, q, j = [], 0, "", 0
+    """속성 이름만 남게 — 중괄호 안·글 안을 지운다 (값은 _attrs 가 따로 읽는다)."""
+    out, depth, j = [], 0, 0
     while j < len(body):
         c = body[j]
-        if q:
-            if c == "\\":
-                j += 2
+        if c in "\"'`" or (depth and c == "/"):
+            k = _skip(body, j)
+            if k != j:
+                if not depth and c in "\"'`":
+                    out.append(c + c)
+                j = k
                 continue
-            if c == q:
-                q = ""
-                out.append(c)
-        elif depth:
+        if depth:
             if c == "{":
                 depth += 1
             elif c == "}":
                 depth -= 1
                 if not depth:
                     out.append("}")
-        elif c in "\"'`":
-            q = c
-            out.append(c)
         elif c == "{":
             depth = 1
             out.append("{")
@@ -155,22 +201,37 @@ def _attrs(body: str) -> dict[str, str | None]:
     return out
 
 
+def _match_close(text: str, open_i: int, limit: int) -> int:
+    """text[open_i] 의 괄호({[( 짝이 닫히는 자리 (못 찾으면 limit 안의 끝)."""
+    depth, j, n = 0, open_i, min(len(text), open_i + limit)
+    while j < n:
+        k = _skip(text, j)
+        if k != j:
+            j = k
+            continue
+        c = text[j]
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return n
+
+
 def _object_keys(text: str, i: int) -> dict[str, str | None]:
     """text[i] 가 '{' 일 때 맨 위 단계의 키 {키: 정해진 값 | None} — 옵션 객체 (그리드 설정 등)."""
-    depth, q, j, n, start = 0, "", i, min(len(text), i + 20000), i
+    depth, j, n = 0, i, min(len(text), i + 20000)
     keys: dict[str, str | None] = {}
     seg_start = i + 1
     while j < n:
+        k = _skip(text, j)
+        if k != j:
+            j = k
+            continue
         c = text[j]
-        if q:
-            if c == "\\":
-                j += 2
-                continue
-            if c == q:
-                q = ""
-        elif c in "\"'`":
-            q = c
-        elif c in "{[(":
+        if c in "{[(":
             depth += 1
         elif c in "}])":
             depth -= 1
@@ -181,8 +242,86 @@ def _object_keys(text: str, i: int) -> dict[str, str | None]:
             _key(text[seg_start:j], keys)
             seg_start = j + 1
         j += 1
-    del start
     return keys
+
+
+def _arg_object(text: str, open_paren: int) -> int:
+    """text[open_paren] 가 '(' 인 호출에서 맨 위 단계 인자 중 첫 객체 리터럴 '{' 의 자리 (없으면 -1).
+    첫 인자에 괄호가 있어도 된다 — createGrid(document.getElementById('grid'), { … }) 의 옵션을 정규식으로 찾다가 놓쳤다."""
+    depth, j, n = 0, open_paren, min(len(text), open_paren + 4000)
+    arg_start = True
+    while j < n:
+        k = _skip(text, j)
+        if k != j:
+            j = k
+            arg_start = False
+            continue
+        c = text[j]
+        if c in "([{":
+            if c == "{" and depth == 1 and arg_start:
+                return j
+            depth += 1
+            arg_start = depth == 1  # 호출 괄호를 막 열었으면 첫 인자의 시작
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                return -1
+        elif c == "," and depth == 1:
+            arg_start = True
+        elif not c.isspace():
+            arg_start = False
+        j += 1
+    return -1
+
+
+def _popup_calls(text: str) -> list[tuple[int, int, str]]:
+    """팝업을 여는 함수 호출(openPopup({…}), showModal(…), $('#x').dialog({…}), new Modal(…))의 인자 범위 [(시작, 끝, 인자 글)].
+    정의(function openPopup(…))는 뺀다."""
+    out = []
+    for m in re.finditer(r"(?<![\w$])([A-Za-z_$][\w$.]*)\s*\(", text):
+        name = m.group(1)
+        if not POPUP_RX.search(name.split(".")[-1]) or re.search(r"function\s*$", text[max(0, m.start() - 12):m.start()]):
+            continue
+        open_paren = m.end() - 1
+        j = _match_close(text, open_paren, 8000)
+        out.append((open_paren, j, text[open_paren:j]))
+    return out
+
+
+def _blocks(text: str) -> list[tuple[int, int]]:
+    """중괄호 블록 [(열림, 닫힘)] — 글·주석·정규식 안은 건너뛴다."""
+    out, stack, j, n = [], [], 0, len(text)
+    while j < n:
+        k = _skip(text, j)
+        if k != j:
+            j = k
+            continue
+        c = text[j]
+        if c == "{":
+            stack.append(j)
+        elif c == "}" and stack:
+            out.append((stack.pop(), j))
+        j += 1
+    return sorted(out)
+
+
+
+
+
+def _innermost(blocks: list[tuple[int, int]], pos: int) -> tuple[int, int] | None:
+    best = None
+    for a, b in blocks:
+        if a > pos:
+            break
+        if a < pos < b and (best is None or a > best[0]):
+            best = (a, b)
+    return best
+
+
+def _first_arg_name(text: str, open_paren: int) -> str | None:
+    """호출의 첫 인자가 이름 하나면 그 이름 (createGrid(box, …) → box)."""
+    m = re.match(r"\(\s*([A-Za-z_$][\w$]*)\s*[,)]", text[open_paren:open_paren + 120])
+    return m.group(1) if m else None
 
 
 def _key(seg: str, keys: dict) -> None:
@@ -225,8 +364,20 @@ def parse(path: Path, rel: str) -> dict:
     file_popup = bool(POPUP_RX.search(Path(rel).stem)) or bool(POPUP_RX.search(Path(rel).parent.name))
     pranges = _popup_ranges(text)
 
-    def in_popup(pos: int) -> bool:
-        return file_popup or any(a <= pos < b for a, b in pranges)
+    pcalls = _popup_calls(text)
+    blocks = _blocks(text)
+    pblocks = {_innermost(blocks, a) for a, _, _ in pcalls}
+
+    def in_popup(pos: int, open_paren: int = -1) -> bool:
+        """팝업 안 — 팝업 파일, 팝업 컴포넌트 태그 안, 팝업 함수 호출의 인자 안, 또는 첫 인자(그릴 자리)를 팝업에 넘김."""
+        if file_popup or any(a <= pos < b for a, b in pranges) or any(a <= pos < b for a, b, _ in pcalls):
+            return True
+        # 같은 블록(누르면 도는 함수 하나)에서 팝업을 열고 그 안에 그린다 — 그릴 자리가 몇 단계를 거쳐 팝업에 들어가도
+        blk = _innermost(blocks, pos)
+        if blk is not None and blk in pblocks:
+            return True
+        first = _first_arg_name(text, open_paren) if open_paren >= 0 else None
+        return bool(first) and any(re.search(r"(?<![\w$.])" + re.escape(first) + r"(?![\w$])", args) for _, _, args in pcalls)
 
     def ex(pos: int) -> tuple[int, str]:
         ln = _line_of(starts, pos)
@@ -256,14 +407,14 @@ def parse(path: Path, rel: str) -> dict:
             name = m.group(1)
             if kind == "widget" and name in PLUGIN_SKIP:
                 continue
-            brace = text.find("{", m.end() - (1 if kind == "widget" else 0))
-            opts = _object_keys(text, brace) if kind == "widget" or (0 <= brace - m.end() < 120 and "{" in text[m.end():brace + 1]
-                                                                        and ")" not in text[m.end():brace]) else {}
+            paren = text.rfind("(", m.start(), m.end())
+            brace = _arg_object(text, paren) if paren >= 0 else -1
+            opts = _object_keys(text, brace) if brace >= 0 else {}
             events = sorted(k for k in opts if EVENT_NAMES.search(k))
             ln, code = ex(m.start())
             at = {k: ex(text.find(k, brace) if brace >= 0 and text.find(k, brace) >= 0 else m.start())[0] for k in opts}
             u = {"name": name if kind == "constructor" else "$." + name, "kind": kind, "line": ln, "code": code, "at": at,
-                 "events": events, "attrs": {k: v for k, v in opts.items() if k not in events}, "popup": in_popup(m.start())}
+                 "events": events, "attrs": {k: v for k, v in opts.items() if k not in events}, "popup": in_popup(m.start(), paren)}
             uses.append(u)
     defs = {a or b for a, b in DEF_RX.findall(text)}
     # 변수에 담은 부품에 나중에 단 이벤트: const grid = new Grid(…); grid.on('dblclick', …)
@@ -289,7 +440,7 @@ def parse(path: Path, rel: str) -> dict:
             evs[ev] += 1
             ev_ex.setdefault(ev, ex(m.start()))
     calls = Counter(c for c in CALL_RX.findall(text) if c not in JS_WORDS)
-    return {"uses": uses, "defs": defs, "imports": imports, "events": evs, "event_ex": ev_ex, "calls": calls,
+    return {"uses": uses, "defs": defs, "imports": imports, "events": evs, "event_ex": ev_ex, "calls": calls, "in_popup": in_popup,
             "text": text, "lines": lines}
 
 
@@ -319,18 +470,15 @@ def _local_function_uses(parsed: dict[str, dict]) -> None:
                 brace = m.end()
                 while brace < len(p["text"]) and p["text"][brace] in " \t\r\n":
                     brace += 1
-                opts = {}
-                # 첫 인자나 둘째 인자가 객체면 그 키를 옵션으로
-                seg = p["text"][m.end():m.end() + 200]
-                k = re.match(r"\s*(?:[^(){},]{0,80},\s*)?\{", seg)
-                if k:
-                    opts = _object_keys(p["text"], m.end() + k.end() - 1)
+                # 인자 중 객체 리터럴이 있으면 그 키를 옵션으로 (첫 인자가 식이어도)
+                ob = _arg_object(p["text"], m.end() - 1)
+                opts = _object_keys(p["text"], ob) if ob >= 0 else {}
                 events = sorted(x for x in opts if EVENT_NAMES.search(x))
                 ln = _line_of(starts, m.start())
                 p["uses"].append({"name": name + "()", "kind": "function", "line": ln, "source": defined[name],
                                   "code": p["lines"][ln - 1].strip()[:110] if 0 < ln <= len(p["lines"]) else "",
                                   "events": events, "attrs": {x: v for x, v in opts.items() if x not in events},
-                                  "popup": bool(POPUP_RX.search(Path(rel).stem))})
+                                  "popup": p["in_popup"](m.start(), m.end() - 1)})
 
 
 def collect(target: Path, files: list[Path] | None = None) -> tuple[Path, dict[str, dict]]:
@@ -507,13 +655,14 @@ def differences(target: Path, base: dict, min_refs: int = 3) -> list[dict]:
             ref = refs.get(u["name"])
             if not ref:
                 continue
-            same = [r for r in ref["uses"] if r["popup"] == u["popup"]]
-            pool = same if len(same) >= min_refs else ref["uses"]
+            # 같은 자리(화면/팝업 안)끼리만 — 팝업 안 그리드를 화면 그리드와 견주면 '다르다'가 규칙이 아니라 자리 차이다.
+            # 같은 자리의 쓰임이 적으면(규칙이라 할 근거가 모자라면) 견주지 않는다.
+            pool = [r for r in ref["uses"] if r["popup"] == u["popup"]]
             if len(pool) < min_refs or len({r["file"] for r in pool}) < 2:
                 continue
             pr = _profile(pool)
             n = pr["n"]
-            where = "팝업 안 " if u["popup"] and pool is same else ""
+            where = "팝업 안 " if u["popup"] else ""
             here = f"{rel}:{u['line']}"
             for e, c in pr["events"].items():
                 if c / n >= 0.6 and e not in u["events"]:

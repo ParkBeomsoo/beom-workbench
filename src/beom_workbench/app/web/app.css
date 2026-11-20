@@ -887,3 +887,5 @@ kbd { font-family: var(--sans); font-size: 10.5px; font-weight: 500; color: var(
 .follows .fr { font-size: 13px; line-height: 1.45; }
 .follows .fe { display: flex; flex-wrap: wrap; gap: 4px; }
 .follows .fe code { font-size: 11px; color: var(--muted); background: var(--sunk); border-radius: 4px; padding: 1px 6px; }
+.looks .basis { color: var(--muted); font-size: 12px; }
+.looks .basis b { font-weight: 600; }
