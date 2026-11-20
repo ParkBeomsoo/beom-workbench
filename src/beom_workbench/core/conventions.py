@@ -20,11 +20,11 @@ from pathlib import Path
 from beom_workbench.core import layout
 
 UI_EXTS = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".html", ".htm", ".jsp", ".ejs", ".hbs",
-           ".njk", ".twig", ".erb", ".cshtml", ".razor", ".php", ".ftl", ".vm")
+           ".njk", ".twig", ".erb", ".cshtml", ".razor", ".php", ".ftl", ".vm", ".j2", ".jinja", ".jinja2", ".mustache", ".liquid")
 # 화면 파일 — 이것이 있어야 화면이 있는 프로젝트·작업이다. .js/.ts 는 서버·CLI 에도 있어서 화면 판단에 쓰지 않는다
 # (화면 코드 분석에는 UI_EXTS 전체를 읽는다).
 SCREEN_EXTS = (".jsx", ".tsx", ".vue", ".svelte", ".html", ".htm", ".jsp", ".ejs", ".hbs", ".njk", ".twig", ".erb", ".cshtml",
-               ".razor", ".ftl", ".vm")
+               ".razor", ".ftl", ".vm", ".j2", ".jinja", ".jinja2", ".mustache", ".liquid")
 FILE_MAX, COUNT_MAX = 400_000, 3000
 POPUP_RX = re.compile(r"popup|modal|dialog|layer|drawer|bottomsheet|팝업", re.I)
 # 팝업을 '여는' 호출 — 이름에 팝업 낱말이 있고 닫기·숨기기·더하기가 아닌 것 (closePopup·hideModal·map.addLayer·player 는 아니다)
@@ -32,8 +32,40 @@ POPUP_CALL_RX = re.compile(r"(?i:popup|modal|dialog|drawer|bottomsheet|팝업)|(
 POPUP_CALL_SKIP = re.compile(r"^(?i:close|hide|dismiss|remove|destroy|add|is|has|get)(?![a-z])")  # 뒤 글자는 대소문자 구분 (closePopup 의 P)
 
 # 컴포넌트 태그: <DataGrid …>, <data-grid …>, <v-data-table …> — 앞이 글자·점·괄호면 타입 인자(Array<Foo>)라 뺀다
-TAG_RX = re.compile(r"(?<![\w.$\])])<([A-Z][\w.]*|[a-z][\w]*(?:-[\w]+)+)(?=[\s/>])")
-CLOSE_RX = re.compile(r"</([A-Z][\w.]*|[a-z][\w]*(?:-[\w]+)+)\s*>")
+TAG_RX = re.compile(r"(?<![\w.$\])])<([A-Z][\w.]*|[a-z][\w]*(?:-[\w]+)+|[a-z]\w*:[A-Za-z][\w.\-]*)(?=[\s/>])")
+CLOSE_RX = re.compile(r"</([A-Z][\w.]*|[a-z][\w]*(?:-[\w]+)+|[a-z]\w*:[A-Za-z][\w.\-]*)\s*>")
+TAG_PREFIX_SKIP = {"c", "fn", "fmt", "sql", "x", "jsp", "th", "svelte", "xsl", "xlink", "xml", "v", "o", "w", "spring"}
+# 공통 조각을 끼워 넣는 꼴 — 화면들이 같은 조각(검색 영역·그리드·페이지 이동)을 쓰는 것도 규칙이다
+INCLUDE_RXS = [
+    re.compile(r"<%@\s*include\s+file\s*=\s*[\"']([^\"']+)"),                                   # JSP 정적 include
+    re.compile(r"<jsp:include\s+page\s*=\s*[\"']([^\"'?]+)"),                                    # JSP 동적 include
+    re.compile(r"\{%-?\s*(?:include|extends|embed)\s+[\"']([^\"']+)[\"']"),                       # Jinja·Django·Twig·Nunjucks
+    re.compile(r"\{\{>\s*([\w./-]+)"),                                                         # Handlebars·Mustache 조각
+    re.compile(r"th:(?:replace|insert|include)\s*=\s*[\"']~?\{?\s*([\w./-]+(?:\s*::\s*[\w-]+)?)"),  # Thymeleaf
+    re.compile(r"<%[-=]?\s*include\(?\s*[\"']([^\"']+)"),                                      # EJS
+    re.compile(r"Html\.(?:Render)?Partial(?:Async)?\(\s*\"([^\"]+)\"|<partial\s+name\s*=\s*\"([^\"]+)\""),  # Razor
+    re.compile(r"\b(?:include|require)(?:_once)?\s*\(?\s*[\"']([^\"']+\.php)"),                   # PHP
+    re.compile(r"<#include\s+[\"']([^\"']+)|#parse\s*\(\s*[\"']([^\"']+)"),                      # FreeMarker·Velocity
+]
+# 템플릿 매크로 정의 (Jinja·Twig·Nunjucks) — 공통 함수처럼 여러 화면이 부른다
+MACRO_RX = re.compile(r"\{%-?\s*macro\s+(\w+)\s*\(")
+MACRO_ALIAS_RX = re.compile(r"\{%-?\s*import\s+[\"'][^\"']+[\"']\s+as\s+(\w+)")
+TEMPLATE_EXTS = (".html", ".htm", ".j2", ".jinja", ".jinja2", ".njk", ".twig", ".jsp", ".ftl", ".vm", ".hbs", ".mustache",
+                 ".liquid", ".ejs", ".erb", ".cshtml", ".razor", ".php")
+
+
+def _include_name(path: str) -> str:
+    """끼워 넣은 조각 이름 — 경로 꼴이 화면마다 달라도(../partials/x.html, /WEB-INF/views/partials/x.jsp) 같은 조각은 같게:
+    마지막 두 마디, 확장자와 Razor·Rails 의 앞 밑줄은 뺀다."""
+    p = path.strip().replace("\\", "/")
+    frag = ""
+    if "::" in p:
+        p, frag = (x.strip() for x in p.split("::", 1))
+    parts = [x for x in p.split("/") if x and x not in (".", "..")]
+    parts = parts[-2:] if len(parts) >= 2 else parts
+    if parts:
+        parts[-1] = re.sub(r"\.[A-Za-z0-9]+$", "", parts[-1]).lstrip("_")
+    return "include:" + "/".join(parts) + (f" :: {frag}" if frag else "")
 NEW_RX = re.compile(r"\bnew\s+([A-Z][\w.]*)\s*\(")
 # 플러그인 위젯: $('#grid').grid({ … }) — 옵션 객체를 받는 것만 (css·attr 같은 기본 메서드 빼고)
 PLUGIN_RX = re.compile(r"\$\(\s*[^()]{1,80}\)\s*\.\s*([A-Za-z]\w*)\s*\(\s*\{")
@@ -41,10 +73,21 @@ PLUGIN_SKIP = {"css", "attr", "prop", "animate", "data", "ajax", "extend", "each
 ASSIGN_RX = re.compile(r"(?:\b(?:const|let|var)\s+|\bthis\.|\b)([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?(?:new\s+([A-Z][\w.]*)\s*\(|"
                        r"\$\(\s*[^()]{1,80}\)\s*\.\s*([A-Za-z]\w*)\s*\(\s*\{|([A-Za-z_$][\w$.]*)\s*\()")
 SUBSCRIBE_RX = re.compile(r"\b([A-Za-z_$][\w$]*)\s*\.\s*(?:on|bind|addEventListener|subscribe|attachEvent)\s*\(\s*['\"]([\w:.\-]+)['\"]")
-DEF_RX = re.compile(r"(?:\bfunction\s+([A-Za-z_$][\w$]*)\s*\(|\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?"
-                    r"(?:function\b|\([^()]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>))")
+DEF_RX = re.compile(r"(?:\bfunction\s+([A-Za-z_$][\w$]*)\s*\(|\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;\n]{1,80})?=\s*(?:async\s*)?"
+                    r"(?:function\b|(?:<[^<>()=;]{1,60}>\s*)?\([^()]*\)\s*(?::\s*[^=;{}()]{1,80}?)?\s*=>|[A-Za-z_$][\w$]*\s*=>))")
 CALL_RX = re.compile(r"(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(")
-IMPORT_RX = re.compile(r"import\s+(?:(\w+)\s*,?\s*)?(?:\{([^}]*)\})?\s*from\s*['\"]([^'\"]+)['\"]")
+IMPORT_RX = re.compile(r"import\s+(?:type\s+)?(?:(\w+)\s*,?\s*)?(?:\{([^}]*)\})?\s*from\s*['\"]([^'\"]+)['\"]")
+# 언어·런타임이 주는 생성자 — 프로젝트의 규칙(공통 부품)이 아니다
+BUILTIN_CTORS = {"Date", "Map", "Set", "WeakMap", "WeakSet", "Error", "TypeError", "RangeError", "SyntaxError", "Promise", "URL",
+                 "URLSearchParams", "RegExp", "Blob", "File", "FileReader", "FormData", "Headers", "Request", "Response", "Image",
+                 "Audio", "Array", "Object", "Function", "Proxy", "Intl.NumberFormat", "Intl.DateTimeFormat", "Intl.Collator",
+                 "XMLHttpRequest", "Worker", "WebSocket", "EventSource", "AbortController", "MutationObserver", "ResizeObserver",
+                 "IntersectionObserver", "Event", "CustomEvent", "TextEncoder", "TextDecoder", "Uint8Array", "ArrayBuffer",
+                 "DataView", "Notification", "BroadcastChannel", "DOMParser", "Option", "Symbol", "BigInt", "Number", "String",
+                 "Boolean", "Buffer"}
+# 프레임워크 기본 함수를 내주는 곳 — 이것을 부르는 건 프로젝트의 공통 함수가 아니다
+FRAMEWORK_SOURCES = re.compile(r"^(?:vue|react|react-dom(?:/client)?|preact(?:/hooks)?|svelte(?:/\w+)?|solid-js|@angular/core|vitest|jest|"
+                               r"@jest/globals|node:.*|fs|path|os|util|assert|events|url|crypto|child_process)$")
 DOM_EVENTS = {"click", "dblclick", "contextmenu", "change", "input", "submit", "reset", "keydown", "keyup", "keypress", "focus",
               "blur", "mouseover", "mouseout", "mouseenter", "mouseleave", "mousedown", "mouseup", "scroll", "load", "select",
               "drag", "drop", "dragstart", "dragend", "touchstart", "touchend", "wheel", "paste", "copy", "cut"}
@@ -413,7 +456,25 @@ def _popup_ranges(text: str) -> list[tuple[int, int]]:
             c = re.search(r"</" + re.escape(m.group(1)) + r"\s*>", text[m.end():])
             if c:
                 out.append((m.end(), m.end() + c.start()))
+    # 마크업으로 만든 팝업 — <div class="modal">, <div id="layerPopup">, <dialog> (부트스트랩·jQuery·서버 템플릿 화면)
+    for m in HTML_POPUP_RX.finditer(text):
+        tag = (m.group(1) or m.group(2)).lower()
+        depth, j = 1, m.end()
+        for t in re.finditer(r"<(/?)" + tag + r"\b[^>]*?(/?)>", text[m.end():], re.I):
+            if t.group(2):
+                continue
+            depth += -1 if t.group(1) else 1
+            if depth == 0:
+                j = m.end() + t.start()
+                break
+        else:
+            j = len(text)
+        out.append((m.end(), j))
     return out
+
+
+HTML_POPUP_RX = re.compile(r"<(div|section|aside|form)\b(?=[^>]*\b(?:class|id)\s*=\s*[\"'][^\"']*"
+                           r"(?:modal|popup|pop-|layer|dialog|팝업))[^>]*>|<(dialog)\b[^>]*>", re.I)
 
 
 def parse(path: Path, rel: str) -> dict:
@@ -449,6 +510,17 @@ def parse(path: Path, rel: str) -> dict:
         ln = _line_of(starts, pos)
         return ln, (lines[ln - 1].strip()[:110] if 0 < ln <= len(lines) else "")
 
+    if rel.lower().endswith(TEMPLATE_EXTS) or "{%" in text:
+        # 템플릿 매크로 별칭 호출 — {% import "macros/ui.html" as ui %} … {{ ui.data_table(…) }} 을 data_table( 로 센다
+        aliases = set(MACRO_ALIAS_RX.findall(text))
+        if aliases:
+            text_calls = [(m.start(2), m.group(2)) for m in re.finditer(r"(?<![\w$.])(" + "|".join(map(re.escape, aliases))
+                                                                        + r")\.(\w+)\s*\(", text)]
+        else:
+            text_calls = []
+    else:
+        text_calls = []
+
     imports: dict[str, str] = {}
     for m in IMPORT_RX.finditer(text):
         if m.group(1):
@@ -460,6 +532,8 @@ def parse(path: Path, rel: str) -> dict:
     uses = []
     for m in TAG_RX.finditer(text):
         name = m.group(1)
+        if ":" in name and name.split(":")[0] in TAG_PREFIX_SKIP:
+            continue
         body, _ = _tag_body(text, m.end())
         attrs = _attrs(body)
         at = {_event_name(a): ex(m.end() + max(0, body.find(a)))[0] for a in attrs}
@@ -468,11 +542,21 @@ def parse(path: Path, rel: str) -> dict:
         uses.append({"name": name, "kind": "component", "line": ln, "code": code, "events": events, "at": at,
                      "attrs": {k: v for k, v in attrs.items() if not _is_event(k)},
                      "popup": in_popup(m.start()) and not POPUP_RX.search(name)})
+    for rx in INCLUDE_RXS:
+        for m in rx.finditer(text):
+            target = next((g for g in m.groups() if g), "")
+            if not target or "${" in target or "{{" in target:
+                continue  # 이름을 식으로 만든 조각은 무엇인지 모른다
+            ln, code = ex(m.start())
+            uses.append({"name": _include_name(target), "kind": "include", "line": ln, "code": code, "events": [], "at": {},
+                         "attrs": {}, "popup": in_popup(m.start())})
     var_of: dict[str, dict] = {}
     for rx, kind in ((NEW_RX, "constructor"), (PLUGIN_RX, "widget")):
         for m in rx.finditer(text):
             name = m.group(1)
             if kind == "widget" and name in PLUGIN_SKIP:
+                continue
+            if kind == "constructor" and name in BUILTIN_CTORS and name not in imports:
                 continue
             paren = text.rfind("(", m.start(), m.end())
             brace = _arg_object(text, paren) if paren >= 0 else -1
@@ -483,7 +567,7 @@ def parse(path: Path, rel: str) -> dict:
             u = {"name": name if kind == "constructor" else "$." + name, "kind": kind, "line": ln, "code": code, "at": at,
                  "events": events, "attrs": {k: v for k, v in opts.items() if k not in events}, "popup": in_popup(m.start(), paren)}
             uses.append(u)
-    defs = {a or b for a, b in DEF_RX.findall(text)}
+    defs = {a or b for a, b in DEF_RX.findall(text)} | set(MACRO_RX.findall(text))
     # 변수에 담은 부품에 나중에 단 이벤트: const grid = new Grid(…); grid.on('dblclick', …)
     for m in ASSIGN_RX.finditer(text):
         var, ctor, plugin, call = m.groups()
@@ -501,7 +585,18 @@ def parse(path: Path, rel: str) -> dict:
             u.setdefault("at", {})[ev] = _line_of(starts, m.start())
         evs[ev] += 1
         ev_ex.setdefault(ev, ex(m.start()))
-    for m in re.finditer(r"\b(?:on|v-on:|@|on:)([a-z]+)\s*=|\bon([A-Z]\w+)\s*=", text):
+    for m in re.finditer(r"\)\s*\.\s*(?:on|one|bind|delegate|live)\s*\(\s*['\"]([\w:.\- ]+)['\"]", text):
+        for ev in m.group(1).split():
+            ev = ev.split(".")[0]
+            if ev:
+                evs[ev] += 1
+                ev_ex.setdefault(ev, ex(m.start()))
+    for m in re.finditer(r"\)\s*\.\s*(click|dblclick|change|submit|keydown|keyup|keypress|focus|blur|mouseenter|mouseleave|"
+                         r"contextmenu)\s*\(\s*(?=function\b|\(|[A-Za-z_$])", text):
+        evs[m.group(1)] += 1
+        ev_ex.setdefault(m.group(1), ex(m.start()))
+    # onclick= · onClick= · @click= · @row-dblclick.stop= · v-on:keyup.enter= · on:click= (@ 앞은 낱말 경계가 아니다)
+    for m in re.finditer(r"(?:\b(?:on|v-on:|on:)|(?<![\w@])@)([a-z][\w-]*)(?:\.[\w.]+)?\s*=(?!=)|\bon([A-Z]\w+)\s*=(?!=)", text):
         ev = (m.group(1) or m.group(2) or "").lower()
         if ev:
             evs[ev] += 1
@@ -512,45 +607,128 @@ def parse(path: Path, rel: str) -> dict:
         if c in JS_WORDS or re.search(r"\bfunction\s+$", text[max(0, m.start() - 12):m.start()]):
             continue
         call_at.setdefault(c, []).append(m.start())
+    for pos, c in text_calls:
+        call_at.setdefault(c, []).append(pos)
+    for c in set(MACRO_RX.findall(text)):  # {% macro data_table( %} 는 정의지 부름이 아니다
+        call_at[c] = [p for p in call_at.get(c, []) if not re.search(r"macro\s+$", text[max(0, p - 12):p])]
+        if not call_at[c]:
+            del call_at[c]
     calls = Counter({c: len(v) for c, v in call_at.items()})
+    import_spans = [(m.start(), m.end()) for m in re.finditer(r"\b(?:import|export)\s*(?:type\s+)?\{[^}]*\}[^;\n]*|"
+                                                                 r"\bimport\s+\w+[^;\n]*from[^;\n]*", text)]
     return {"uses": uses, "defs": defs, "imports": imports, "events": evs, "event_ex": ev_ex, "calls": calls, "call_at": call_at,
-            "in_popup": in_popup, "starts": starts, "text": text, "lines": lines}
+            "in_popup": in_popup, "starts": starts, "text": text, "lines": lines, "import_spans": import_spans}
 
 
 # ---------------------------------------------------------------- 모으기
 
 
-def _local_function_uses(parsed: dict[str, dict]) -> None:
-    """프로젝트가 직접 만든 함수 중 여러 화면이 부르는 것 (openPopup·createGrid 같은 공통 함수) — 부른 곳을 쓰임으로 더한다."""
+def _kwargs(text: str, open_paren: int) -> dict[str, str | None]:
+    """이름 붙인 인자 — f(a, height=280, dblclick='open') → {height: '280', dblclick: 'open'} (식이면 값은 None)."""
+    close = _match_close(text, open_paren, 2000)
+    inner = text[open_paren + 1:close]
+    out: dict[str, str | None] = {}
+    depth, j, start, pieces = 0, 0, 0, []
+    while j < len(inner):
+        k = _skip(inner, j)
+        if k != j:
+            j = k
+            continue
+        c = inner[j]
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif c == "," and depth == 0:
+            pieces.append(inner[start:j])
+            start = j + 1
+        j += 1
+    pieces.append(inner[start:])
+    for piece in pieces:
+        m = re.match(r"\s*([A-Za-z_]\w*)\s*=(?!=)\s*(.+?)\s*$", piece, re.S)
+        if m:
+            v = m.group(2)
+            lit = re.fullmatch(r"\"([^\"]*)\"|'([^']*)'|(-?\d+(?:\.\d+)?|true|false|True|False|none|None|null)", v)
+            out[m.group(1)] = next((g for g in lit.groups() if g is not None), None) if lit else None
+    return out
+
+
+def _value_refs(p: dict, name: str) -> list[int]:
+    """함수를 부르지 않고 값으로 넘긴 곳 — fmt: gfnDate · format: won · .map(won) · onClick={save} (import 줄은 빼고)."""
+    out = []
+    for m in re.finditer(r"(?:[:,(=\[{]|\breturn)\s*(?<![\w$.])" + re.escape(name) + r"(?![\w$])(?!\s*[(=:])", p["text"]):
+        pos = m.end() - len(name)
+        if not any(a <= pos < b for a, b in p.get("import_spans") or []):
+            out.append(pos)
+    return out
+
+
+def _local_function_uses(parsed: dict[str, dict]) -> dict[str, str]:
+    """여러 화면이 쓰는 함수 (openPopup·createGrid·formatWon 같은 공통 함수) — 쓴 곳을 쓰임으로 더한다.
+    프로젝트가 한 곳에서 정의한 함수(부른 곳과 값으로 넘긴 곳), 그리고 외부 라이브러리에서 불러와 여러 파일이 부르는 함수.
+    돌려주는 값: 공통 함수 이름 → 정의한 파일."""
     defined: dict[str, str] = {}
     def_count: Counter = Counter()
     for rel, p in parsed.items():
         for d in p["defs"]:
             defined.setdefault(d, rel)
             def_count[d] += 1
-    callers = Counter()
+
+    def imported_here(p: dict, name: str) -> bool:
+        """이 파일이 그 이름을 정의한 파일에서 불러왔나 (경로 끝 이름이 정의한 파일 이름 · index · 패키지 경로)."""
+        src = p["imports"].get(name)
+        if not src or def_count[name] != 1:
+            return False
+        last = src.rstrip("/").split("/")[-1].split(".")[0]
+        return last == Path(defined[name]).stem or last == "index" or not src.startswith(".")
+
+    users: dict[str, set] = {}
     for rel, p in parsed.items():
-        for name in p["calls"]:
-            if name in defined and defined[name] != rel:
-                callers[name] += 1
-    # 공통 함수: 한 곳에서 정의하고 여러 화면이 부르는 것. 화면마다 같은 이름으로 따로 정의한 함수(fn_search)는 공통이 아니다.
-    shared = {name for name, n in callers.items() if n >= 2 and len(name) >= 4 and def_count[name] == 1}
+        for name in set(p["calls"]) | set(p["imports"]) | {d for d in defined if d.startswith(("gfn", "cfn", "fn_"))}:
+            if name not in defined or defined[name] == rel or def_count[name] != 1:
+                continue
+            if name in p["calls"] or ((imported_here(p, name) or name.startswith(("gfn", "cfn", "fn_"))) and _value_refs(p, name)):
+                users.setdefault(name, set()).add(rel)
+    # 공통 함수: 한 곳에서 정의하고 여러 파일이 쓰는 것. 화면마다 같은 이름으로 따로 정의한 함수(fn_search)는 공통이 아니다.
+    # 짧은 이름(ok·won)은 그 파일에서 불러온(import) 곳이 있을 때만 — 우연히 같은 이름인 지역 함수와 섞지 않는다.
+    shared = {name for name, us in users.items()
+              if len(us) >= 2 and (len(name) >= 4 or any(imported_here(parsed[r], name) for r in us)) and not name.startswith("_")}
+    # 외부 라이브러리(dayjs·axios·useQuery …)에서 불러와 여러 파일이 부르는 함수 — 프레임워크 기본(react·vue …)은 빼고
+    lib_users: dict[str, set] = {}
+    for rel, p in parsed.items():
+        for name, src in p["imports"].items():
+            if name in defined or name in JS_WORDS or src.startswith((".", "/", "@/", "~/")) or FRAMEWORK_SOURCES.match(src):
+                continue
+            if name in p["calls"]:
+                lib_users.setdefault(name, set()).add(rel)
+    libs = {name for name, us in lib_users.items() if len(us) >= 2}
     for rel, p in parsed.items():
         text, starts = p["text"], p["starts"]
-        for name in shared & set(p["call_at"]):
-            if defined[name] == rel:
-                continue
+        for name in libs & set(p["call_at"]):
             for pos in p["call_at"][name]:
                 open_paren = text.find("(", pos)
-                # 인자 중 객체 리터럴이 있으면 그 키를 옵션으로 (첫 인자가 식이어도)
+                ln = _line_of(starts, pos)
+                p["uses"].append({"name": name + "()", "kind": "function", "line": ln, "source": p["imports"][name],
+                                  "code": p["lines"][ln - 1].strip()[:110] if 0 < ln <= len(p["lines"]) else "",
+                                  "events": [], "attrs": {}, "popup": p["in_popup"](pos, open_paren)})
+        for name in shared:
+            if defined[name] == rel or rel not in users[name]:
+                continue
+            calls_at = p["call_at"].get(name, [])
+            for pos in calls_at + ([] if calls_at else _value_refs(p, name)):
+                open_paren = text.find("(", pos) if calls_at else -1  # 값으로 넘긴 곳에는 이 함수의 인자가 없다
+                # 인자 중 객체 리터럴이 있으면 그 키를 옵션으로 (첫 인자가 식이어도), 없으면 이름 붙인 인자(height=280)를
                 ob = _arg_object(text, open_paren) if open_paren >= 0 else -1
-                opts = _object_keys(text, ob) if ob >= 0 else {}
+                opts = _object_keys(text, ob) if ob >= 0 else (_kwargs(text, open_paren) if open_paren >= 0 else {})
                 events = sorted(x for x in opts if _is_event(x))
                 ln = _line_of(starts, pos)
                 p["uses"].append({"name": name + "()", "kind": "function", "line": ln, "source": defined[name],
                                   "code": p["lines"][ln - 1].strip()[:110] if 0 < ln <= len(p["lines"]) else "",
                                   "events": events, "attrs": {x: v for x, v in opts.items() if x not in events},
                                   "popup": p["in_popup"](pos, open_paren)})
+    for name in shared:
+        parsed[defined[name]].setdefault("lib_shared", set()).add(name)
+    return {name: defined[name] for name in shared}
 
 
 def collect(target: Path, files: list[Path] | None = None) -> tuple[Path, dict[str, dict]]:
@@ -625,8 +803,7 @@ def scan(target: Path, near: list[str] | None = None, like: str = "") -> dict:
             ctx[label] = {
                 "uses": pr["n"],
                 "events": [f"{e} {c}/{pr['n']}" for e, c in pr["events"].most_common(8)],
-                "options": [f"{a}{'=' + pr['values'][a].most_common(1)[0][0] if a in pr['values'] and pr['values'][a].most_common(1)[0][1] * 2 > c else ''} {c}/{pr['n']}"
-                            for a, c in pr["attrs"].most_common(12)],
+                "options": [_option(a, c, pr) for a, c in pr["attrs"].most_common(12)],
                 "examples": [_ex(u) for u in sel[:3]],
             }
         items.append({"name": name, "kind": ent["kind"], "files": len(ent["files"]), **({"source": ent["source"]} if ent["source"] else {}),
@@ -642,8 +819,49 @@ def scan(target: Path, near: list[str] | None = None, like: str = "") -> dict:
                 ln, code = p["event_ex"][e]
                 ev_ex[e] = f"{rel}:{ln} {code}"
     events = [{"event": e, "files": ev_files[e], "example": ev_ex.get(e, "")} for e, _ in ev_files.most_common(15)]
-    return {"root": str(base), "files": len(parsed), "shared": items, "events": events,
+    return {"root": str(base), "files": len(parsed), "shared": items, "events": events, "library": library(parsed),
             "similar": similar(t, parsed, shared, near or [], like)}
+
+
+def _option(a: str, c: int, pr: dict) -> str:
+    """옵션 한 줄 — 'height=280 2/2'. 값이 갈리면 가장 많은 값의 수와 그 밖의 값을 함께 ('width=720 2/3 (그 밖: 640 1)')."""
+    n = pr["n"]
+    vals = pr["values"].get(a)
+    if vals:
+        v, vc = vals.most_common(1)[0]
+        if vc * 2 > c:
+            rest = [f"{x} {k}" for x, k in vals.most_common()[1:3]]
+            return f"{a}={v} {vc}/{n}" + (f" (그 밖: {', '.join(rest)})" if rest else "")
+    return f"{a} {c}/{n}"
+
+
+def library(parsed: dict[str, dict], top_files: int = 6, top_names: int = 40) -> list[dict]:
+    """공통 함수 파일(gfn.js·utils/format.js 처럼 여러 화면이 쓰는 함수를 둔 곳)의 함수 목록 — 지금은 한 화면만 쓰거나
+    아무도 안 쓰는 함수도 이 프로젝트가 이미 가진 공통 기능이다 (엑셀 내려받기·공통코드 콤보·기간 검사 …). 새로 만들기 전에 본다."""
+    out = []
+    for rel, p in sorted(parsed.items(), key=lambda kv: -len(kv[1].get("lib_shared") or ())):
+        shared = p.get("lib_shared")
+        if not shared:
+            continue
+        others = []
+        for d in sorted(x for x in p["defs"] if not x.startswith("_") and x not in shared):
+            users, example = 0, ""
+            for r2, q in parsed.items():
+                if r2 == rel or d not in q["text"]:
+                    continue
+                pos = (q["call_at"].get(d) or _value_refs(q, d) or [None])[0]
+                if pos is None:
+                    continue
+                users += 1
+                if not example:
+                    ln = _line_of(q["starts"], pos)
+                    example = f"{r2}:{ln} {q['lines'][ln - 1].strip()[:100] if 0 < ln <= len(q['lines']) else ''}".rstrip()
+            others.append({"name": d, "files": users, **({"example": example} if example else {})})
+        if others:
+            out.append({"file": rel, "shared": sorted(shared), "others": others[:top_names]})
+        if len(out) >= top_files:
+            break
+    return out
 
 
 def similar(t: Path, parsed: dict[str, dict], shared: dict[str, dict], near: list[str], like: str, top: int = 6) -> list[dict]:
@@ -794,6 +1012,212 @@ def differences(target: Path, base: dict, min_refs: int = 3, since: float | None
             seen.add((f["at"], f["summary"]))
             uniq.append(f)
     return uniq[:30]
+
+
+STYLE_EXTS = (".css", ".scss", ".sass", ".less")
+REF_RX = re.compile(r"""(?:from\s+|import\s*\(?\s*|require\s*\(\s*|src\s*=\s*|href\s*=\s*|@import\s+(?:url\()?|"""
+                    r"""include\s+file\s*=\s*|page\s*=\s*|filename\s*=\s*|\{%-?\s*(?:include|extends|import|from)\s+)["']([^"'?#]+)["']""")
+# 앱 전체에 걸리는 자리 — 여기서 불러오는 스타일·조각은 한 곳에서만 불러도 모든 화면에 적용된다
+ENTRY_RX = re.compile(r"(^|/)(main|index|app|App|_app|_document|layout|_layout|Layout|base|header|default|root|application)\.[A-Za-z]+$")
+
+
+def _resolve_ref(t: Path, user: Path, ref: str, by_tail: dict[str, list[str]]) -> str | None:
+    """불러온 경로 → 대상 폴더 기준 파일 경로 (못 찾으면 None)."""
+    ref = ref.strip()
+    if ref.startswith("."):
+        r = (user.parent / ref).resolve()
+        for cand in (r, *(r.with_name(r.name + e) for e in (".js", ".ts", ".jsx", ".tsx", ".vue", ".svelte", ".mjs")),
+                     *(r / ("index" + e) for e in (".js", ".ts", ".jsx", ".tsx"))):
+            try:
+                if cand.is_file():
+                    return os.path.relpath(cand, t).replace("\\", "/")
+            except (OSError, ValueError):
+                return None
+        return None
+    norm = ref.replace("\\", "/").lstrip("@~/")
+    parts = Path(norm).parts
+    key = "/".join(Path(norm).with_suffix("").parts[-2:]) if len(parts) >= 2 else Path(norm).stem
+    hits = by_tail.get(key) or []
+    return hits[0] if len(hits) == 1 else None
+
+
+DATA_DIRS = re.compile(r"/(?:api|apis|services?|stores?|repositor(?:y|ies)|models?|dao|mocks?|data|queries|graphql|slices|reducers)/", re.I)
+
+
+def shared_parts(target: Path, min_users: int = 2, top: int = 300) -> dict[str, int]:
+    """화면 쪽 공통 부품 {경로: 쓰는 파일 수} — 여러 화면이 불러 쓰는 컴포넌트·템플릿 조각·레이아웃, 화면들이 불러 쓰는 공통 JS
+    (그리고 공통 조각이 불러오는 파일: header.jsp 가 싣는 gfn.js). 스타일은 뺀다 — 새 화면의 클래스를 더하는 것이 그 프로젝트의
+    방식인 경우가 많아 고친 뒤 선택자 단위로 본다(shared_edits). 서버 코드도 뺀다 — 오류 코드·라우트 등록처럼 공통 파일에 더하는 것이
+    정해진 방식인 경우가 많다."""
+    t = Path(target).resolve()
+    _, files = ui_files(t)
+    rels = {os.path.relpath(f, t).replace("\\", "/"): f for f in files if "/.beom/" not in "/" + os.path.relpath(f, t)}
+    by_tail: dict[str, list[str]] = {}
+    for r in rels:
+        p = Path(r)
+        by_tail.setdefault("/".join(p.with_suffix("").parts[-2:]), []).append(r)
+        by_tail.setdefault(p.stem.lstrip("_"), []).append(r)
+        if p.stem.startswith("_"):
+            by_tail.setdefault("/".join([*p.parts[-2:-1], p.stem.lstrip("_")]), []).append(r)
+    users: dict[str, set[str]] = {}
+    for r, f in rels.items():
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in REF_RX.finditer(text):
+            got = _resolve_ref(t, f, m.group(1), by_tail)
+            if got and got != r and got in rels:
+                users.setdefault(got, set()).add(r)
+    screen = lambda r: r.lower().endswith(SCREEN_EXTS)  # noqa: E731
+    out: dict[str, int] = {}
+    for r, us in users.items():
+        # 데이터 쪽 모듈(api·services·store·mock)은 새 화면이 함수를 더하는 것이 보통의 확장 방식이다 — 화면 쪽 공통 부품이 아니다
+        if r.lower().endswith(STYLE_EXTS) or (not screen(r) and DATA_DIRS.search("/" + r)):
+            continue
+        # 화면 파일(컴포넌트·템플릿)이거나, 화면 파일들이 불러 쓰는 JS — 서버 코드끼리만 쓰는 파일은 아니다
+        if len(us) >= min_users and (screen(r) or sum(1 for u in us if screen(u)) >= min_users):
+            out[r] = len(us)
+    for r, us in users.items():  # 공통 조각이 불러오는 것 (header.jsp → gfn.js) — 그 조각을 쓰는 화면 모두가 쓴다
+        if r not in out and not r.lower().endswith(STYLE_EXTS) and not DATA_DIRS.search("/" + r) and any(u in out and screen(u) for u in us):
+            out[r] = max(out[u] for u in us if u in out)
+    return dict(sorted(out.items(), key=lambda kv: -kv[1])[:top])
+
+
+def shared_edits(target: Path, base: dict, min_users: int = 2) -> list[dict]:
+    """원래 있던 공통 부품(여러 파일이 불러 쓰는 컴포넌트·공통 함수 파일·공통 스타일·템플릿 조각)을 이번 작업이 고친 곳.
+    고치면 그것을 쓰는 다른 화면들이 모두 함께 바뀐다 — 요청이 시킨 일이 아니면 사용자가 알아야 한다."""
+    t = Path(target).resolve()
+    if not base:
+        return []
+    edited = []
+    for rel, ent in base.items():
+        if "text" not in ent or "/.beom/" in "/" + rel:
+            continue
+        p = t / rel
+        try:
+            now = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue  # 지운 파일은 다른 검사가 본다
+        if now.replace("\r\n", "\n") != str(ent["text"]).replace("\r\n", "\n"):
+            edited.append(rel)
+    if not edited:
+        return []
+    _, files = ui_files(t)
+    others = [f for f in files] + [f for f in _style_files(t)]
+    out = []
+    for rel in edited:
+        target_abs = (t / rel).resolve()
+        stem = target_abs.with_suffix("")
+        tail = "/".join(Path(rel).parts[-2:])
+        users = []
+        for f in others:
+            if f.resolve() == target_abs:
+                continue
+            try:
+                text = f.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if target_abs.name.split(".")[0] not in text:
+                continue
+            for m in REF_RX.finditer(text):
+                ref = m.group(1).strip()
+                if ref.startswith("."):
+                    r = (f.parent / ref).resolve()
+                    hit = r == target_abs or r == stem or r / "index" == stem
+                else:  # /resources/js/common/gfn.js · @/components/BaseGrid.vue · partials/_search.html
+                    norm = ref.replace("\\", "/").lstrip("@~/")
+                    hit = norm.endswith(tail) or (len(Path(rel).parts) == 1 and norm.endswith(rel))
+                    hit = hit or "/".join(Path(norm).with_suffix("").parts[-2:]) == "/".join(Path(rel).with_suffix("").parts[-2:])
+                    hit = hit or ("/" not in norm and norm == Path(rel).name)  # url_for('static', filename='admin.css')
+                if hit:
+                    users.append(os.path.relpath(f, t).replace("\\", "/"))
+                    break
+        entry = [u for u in users if ENTRY_RX.search(u)]
+        if rel.lower().endswith(STYLE_EXTS):
+            if not entry and len(users) < min_users:
+                continue
+            # 새 화면에만 걸리는 새 클래스를 더한 것은 그 프로젝트의 방식이다 — 기존 규칙을 바꾸거나 기존 선택자에 걸리는 규칙을 더한 것만
+            hits = _css_global_edits(str(base[rel]["text"]), (t / rel).read_text(encoding="utf-8", errors="replace"))
+            if hits:
+                where = f"{', '.join(entry[:2])} 가 불러와 모든 화면에 적용된다" if entry else f"이것을 쓰는 다른 파일 {len(users)}곳에 걸린다"
+                out.append({"at": rel, "summary": f"원래 있던 공통 스타일 {rel} 의 기존 규칙을 바꾸거나 기존 선택자에 규칙을 더함 "
+                                                  f"({', '.join(hits[:4])}{' …' if len(hits) > 4 else ''}) — {where}. 요청이 시킨 변경이 아니면 "
+                                                  "되돌리고 새 화면에만 걸리는 새 클래스로 해결한다",
+                            "evidence": (entry or sorted(users))[:3]})
+        elif len(users) >= min_users:
+            out.append({"at": rel, "summary": f"원래 있던 공통 부품 {rel} 을 고침 — 이것을 쓰는 다른 파일 {len(users)}곳도 함께 바뀐다 "
+                                              f"({', '.join(sorted(users)[:4])}{' …' if len(users) > 4 else ''}). 요청이 시킨 변경이 "
+                                              "아니면 되돌리고 새 화면 쪽에서 해결한다",
+                        "evidence": sorted(users)[:3]})
+    return out
+
+
+def _css_rules(text: str) -> list[tuple[str, str]]:
+    """CSS 규칙 [(선택자, 내용)] — @media 안의 규칙도 (선택자 앞에 그 @media 를 붙여). 주석은 뺀다."""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    out, media = [], []
+    for m in re.finditer(r"([^{}]*)\{|\}", text):
+        if m.group(0) == "}":
+            if media:
+                media.pop()
+            continue
+        head = " ".join(m.group(1).split())
+        if head.startswith("@"):
+            media.append(head)
+            continue
+        end = text.find("}", m.end())
+        body = " ".join(text[m.end():end].split()) if end >= 0 else ""
+        out.append((" ".join([*media, head]).strip(), body))
+        media.append("")  # 이 규칙의 닫는 } 짝
+    return out
+
+
+def _css_global_edits(old: str, new: str) -> list[str]:
+    """기존 규칙을 바꾸거나 지운 선택자, 기존 선택자(또는 전체에 걸리는 선택자)에 더한 규칙 — 다른 화면에도 걸리는 변경."""
+    old_rules, new_rules = _css_rules(old), _css_rules(new)
+    old_set, new_set = set(old_rules), set(new_rules)
+    old_sels = [sel for sel, _ in old_rules]
+    old_names = {n for x in old_sels for n in _sel_names(x)}
+    out = [sel for sel, body in old_rules if (sel, body) not in new_set]
+    for sel, body in new_rules:
+        if (sel, body) in old_set:
+            continue
+        parts = _sel_parts(re.sub(r"^@\S+[^{]*?\)\s*", "", sel))
+        # 새 것(새 클래스·id, 또는 전에 스타일하지 않던 요소)이 들어간 선택자는 그 새 것에만 걸린다 — .member-page .btn·.span-2·
+        # .field textarea(전에 textarea 스타일 없음) 는 새 것, .btn:hover·:focus-visible·body·.field input 은 다른 화면에도 걸린다
+        if not parts or not all(any(n not in old_names for n in _sel_names(x)) for x in parts):
+            out.append(sel)
+    return list(dict.fromkeys(out))
+
+
+def _sel_parts(sel: str) -> list[str]:
+    """맨 바깥 쉼표로만 나눈다 — :is(a, b) 안의 쉼표는 그대로."""
+    parts, depth, cur = [], 0, ""
+    for c in sel:
+        depth += (c == "(") - (c == ")")
+        if c == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += c
+    return [x.strip() for x in parts + [cur] if x.strip()]
+
+
+def _sel_names(sel: str) -> set[str]:
+    """선택자의 클래스·id·요소 이름 — 가상 클래스(:hover)·속성 값은 빼고."""
+    bare = re.sub(r"\[[^\]]*\]|::?[\w-]+", " ", re.sub(r":(?:is|where|not|has)\(", " ", sel))
+    return set(re.findall(r"[.#][\w-]+", bare)) | {m for m in re.findall(r"(?:^|[\s>+~(])([a-z][a-z0-9-]*)", bare)}
+
+
+def _style_files(t: Path, limit: int = 500) -> list[Path]:
+    out = []
+    for d, dirs, names in os.walk(t):
+        dirs[:] = [x for x in dirs if x not in layout.SKIP_DIRS and not x.startswith(".")]
+        out += [Path(d, n) for n in names if n.lower().endswith(STYLE_EXTS)]
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _finding(here: str, u: dict, summary: str, refs: list[dict], key: str | None = None) -> dict:

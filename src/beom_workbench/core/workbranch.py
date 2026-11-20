@@ -384,7 +384,8 @@ def commit_round(wb: dict, message: str, extra: list[str] | None = None) -> list
             except (OSError, ValueError):
                 continue
             # 없는 경로를 git add 에 넘기면 add 전체가 실패한다 — 있는 파일이거나(새로 만든 것 포함) 추적 중인 파일(지운 것)만
-            if rel and not rel.startswith(".git/") and                     ((top / rel).exists() or _git(top, "ls-files", "--error-unmatch", "--", rel).returncode == 0):
+            # 무시하는 파일(.gitignore)을 넘겨도 add 전체가 실패한다 — 프로젝트가 담지 않기로 한 파일은 담지 않는다
+            if rel and not rel.startswith(".git/") and                     ((top / rel).exists() or _git(top, "ls-files", "--error-unmatch", "--", rel).returncode == 0) and                     _git(top, "check-ignore", "-q", "--", rel).returncode != 0:
                 paths.append(rel)
         sha = _commit(top, message, list(dict.fromkeys(paths)))
         if sha:

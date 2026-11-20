@@ -1239,6 +1239,15 @@ function lookList(plan) {  // 디자인 컨셉 — 한두 줄 (예전 계획은 
   if (plan.design_basis) items.push(h("li", { class: "basis" }, h("b", { text: "시안 없이 정한 근거 " }), h("span", { text: plan.design_basis })));
   return items.length ? h("ul", { class: "looks" }, ...items) : null;
 }
+function sharedList(plan) {  // 다른 화면들이 쓰는 기존 공통 부품을 고치는 신고 — 승인하면 그 파일을 고칠 수 있다
+  const items = (plan.shared_changes || []).map((c) => h("li", { class: "basis" },
+    h("b", { text: c.file + " " }), h("span", { text: `(다른 화면 ${c.users}곳도 바뀜)` }), h("span", { text: " " + (c.why || "") })));
+  return items.length ? h("ul", { class: "looks" }, ...items) : null;
+}
+function layoutList(plan) {  // 새 프로젝트를 정석과 다른 폴더 구조로 만드는 근거 (사용자가 정한 구조 등)
+  if (!plan.layout_basis) return null;
+  return h("ul", { class: "looks" }, h("li", { class: "basis" }, h("b", { text: "폴더 구조를 정한 근거 " }), h("span", { text: plan.layout_basis })));
+}
 function followList(plan) {  // 읽은 규칙 문서와 다른 화면에서 확인한 규칙 — 규칙마다 근거(파일:줄)
   const docs = plan.rules_checked || [], rules = plan.follows || [];
   if (!docs.length && !rules.length) return null;
@@ -1270,6 +1279,8 @@ function startCard(R, plan, asking) {
     (plan.decisions || []).length ? sec("정할 것", "추천이 골라져 있습니다 — 바꾸려면 누르세요", decisionTable(plan, true)) : null,
     lookList(plan) ? sec("디자인 컨셉", "", lookList(plan)) : null,
     followList(plan) ? sec("기존 규칙 따름", "규칙 문서와 다른 화면들에서 확인한 방식 그대로 만듭니다", followList(plan)) : null,
+    layoutList(plan) ? sec("폴더 구조", "", layoutList(plan)) : null,
+    sharedList(plan) ? sec("공통 부품 변경", "다른 화면들이 함께 쓰는 부품을 고칩니다 — 승인하면 고칩니다", sharedList(plan)) : null,
     sec("진행 순서", `${plan.steps.length}단계`, h("ol", { class: "sorder" }, ...plan.steps.map((s) => h("li", { text: s.title })))),
     h("div", { class: "cf" }, h("span", { class: "hint", text: "고칠 점은 입력창으로 보내면 반영해 다시 보여 줍니다" }),
       h("button", { class: "btn quiet", onclick: () => startEdit("spec") }, "기준 고치기"),
@@ -1284,6 +1295,8 @@ function planCard(plan, asking) {
     decisionTable(plan),
     lookList(plan) ? h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: "디자인 컨셉" })), lookList(plan)) : null,
     followList(plan) ? h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: "기존 규칙 따름" })), followList(plan)) : null,
+    layoutList(plan) ? h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: "폴더 구조" })), layoutList(plan)) : null,
+    sharedList(plan) ? h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: "공통 부품 변경" })), sharedList(plan)) : null,
     h("div", { class: "sub", text: `진행 순서 · ${plan.steps.length}단계` }),
     h("div", { class: "steps-list" }, ...plan.steps.map((s) => h("div", { class: "s" }, h("span", { text: s.title })))),
     h("div", { class: "cf" }, h("span", { class: "hint", text: "직접 고치거나, 바꿀 점을 입력창으로 보내세요" }),

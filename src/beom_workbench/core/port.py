@@ -2873,7 +2873,7 @@ def _screen_rules(conn, settings, proj: dict, port_id: str, root: Path, fp: str)
     since = None
     if rec.get("sources_file") and (folder / rec["sources_file"]).is_file():
         since = (folder / rec["sources_file"]).stat().st_mtime  # 원래 소스를 기록한 시각 — 기록 밖이어도 그 전부터 있던 파일은 새 것이 아니다
-    found = conventions.differences(root, base, since=since)
+    found = conventions.differences(root, base, since=since) + conventions.shared_edits(root, base)
     cid = "chk_" + uuid.uuid4().hex[:12]
     with ledger.tx(conn):
         conn.execute("INSERT INTO port_check (id, port_id, kind, cases, passed, failed, detail, evidence_id, created_at) "
@@ -2884,7 +2884,8 @@ def _screen_rules(conn, settings, proj: dict, port_id: str, root: Path, fp: str)
         return None
     return {"check_id": cid, "findings": found,
             "note": "새 화면이 같은 부품을 다른 화면들과 다르게 쓴다 (근거는 다른 화면들의 실제 코드) — 같은 방식으로 고치거나, 일부러 "
-                    "다르게 했으면 이유를 보고에 쓴다. 툴킷이 사용자 확인 카드로 올렸다"}
+                    "다르게 했으면 이유를 보고에 쓴다. 원래 있던 공통 부품을 고친 곳은 다른 화면도 함께 바뀐다 — 요청이 시킨 일이 아니면 "
+                    "되돌리고 새 화면 쪽에서 해결한다. 툴킷이 사용자 확인 카드로 올렸다"}
 
 
 def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None, browser: set | None = None,

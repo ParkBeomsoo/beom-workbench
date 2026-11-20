@@ -131,6 +131,13 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
      계획(wb_plan_set)의 follows 에 따를 규칙과 근거(파일:줄)를 남긴다 — 툴킷이 근거를 확인하고 사용자가 계획 카드에서 본다.
      합격 케이스·화면 케이스도 그 방식으로 확인한다 (행 더블클릭으로 상세가 열리는 곳이면 actions 에 {"dblclick": "선택자"}).
      다 만든 뒤 툴킷이 새 화면을 다른 화면들의 실제 쓰임과 비교해 다른 곳을 알린다 — 고치거나, 일부러 다르게 했으면 보고에 이유를 쓴다.
+     공통 부품(여러 화면이 쓰는 컴포넌트·공통 함수·공통 스타일·템플릿 조각)은 요청이 시키지 않으면 고치지 않는다 — 고치면 그것을 쓰는
+     다른 화면이 모두 바뀐다. 새 화면에 필요한 것이 없으면 새 화면 쪽에서 더하고, 꼭 바꿔야 하면 decisions 로 '현행 → 변경 · 영향 받는
+     화면'을 내서 사용자가 정한다. 디자인 점검이 원래 있던 공통 부품의 문제(작은 버튼·모바일 넘침 등)를 알리면 고치지 말고 인수인계
+     follow_ups 에 남긴다. 꼭 바꿔야 하면(예: 메뉴가 공통 레이아웃에 있다) 계획(wb_plan_set)의 shared_changes 에
+     [{file, why}] 로 신고한다 — 사용자가 계획 카드에서 보고 승인해야 고칠 수 있다. 툴킷은 승인 전에는 그 파일의 편집을 막는다
+     (Claude: 편집마다 사용자에게 묻는다 / Codex: 파일을 읽기 전용으로 잠가 둔다 — 잠금을 풀려고 하지 않는다).
+     [고치지 않을 공통 부품] 줄에 그 목록이 있다. 툴킷이 원래 있던 공통 부품(스타일 포함)을 고친 곳을 찾아 사용자 확인 카드에도 올린다.
   '기존 것을 따름'은 계획의 follows(근거 파일:줄)·rules_checked 와 디자인이면 design_basis 에 남긴다. 기존과 다르게 할 때만 이유와 함께 decision 으로.
 - 형태는 요청에 적힌 말을 따른다. 웹 기술·웹 형태를 적었으면(웹·웹 페이지·브라우저·HTML·Vite·React·Next 같은 웹 프레임워크·URL 로 연다)
   '앱'이라는 말이 있어도 웹 앱이다 — 데스크톱 껍데기를 씌우지 않는다 (예: 'Vite + React 로 카운터 앱' → 브라우저에서 여는 웹 앱).
@@ -146,6 +153,12 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
   대안 1~2개, 고른 이유 한 줄을 계획의 decisions 로 낸다 — wb_plan_set(decisions=[{"topic": "데이터 저장",
   "choice": "SQLite 파일", "options": ["JSON 파일", "브라우저 저장소"], "why": "…"}]). 사용자는 기준·계획과 함께 이것을
   처음에 한 번 확인한다(1차 확인). 그래서 추천을 낼 수 있는 결정은 따로 묻지 않는다.
+- 새 프로젝트 폴더 구조 — 빈 폴더에서 새로 만들면, 사용자가 구조·파일 이름을 정해 주지 않은 한 그 언어·프레임워크의 정석 구조로
+  만든다 (이미 있는 프로젝트에 더할 때는 그 프로젝트의 구조를 따른다). 프레임워크에 공식 틀(npm create vite·cargo new·
+  dotnet new·django-admin startproject 등)이 있으면 그 틀과 같은 모양으로. 계획의 steps.files 에 설정·테스트 파일까지 적는다 —
+  툴킷이 이 표와 견주어 분명히 벗어난 곳(설정 파일 없음·테스트가 코드 사이에·맨 위에 흩어진 모듈)을 알린다. 사용자가 정한 구조라
+  다르게 하면 wb_plan_set 의 layout_basis 에 그 근거(요청의 어느 말)를 적는다.
+{SCAFFOLD}
 - 요청이 정하지 않은 입력·경계(음수·0·빈 값·아주 큰 값·잘못된 형식·중복 등)가 결과를 바꾸면, 넘기지 말고 동작을 정해 요구사항과
   합격 케이스에 넣는다 — 업계 관행으로 정할 수 있으면 정하고 가정으로 남기며, 사용자 사정에 달린 것만 decisions 로 추천과 함께 낸다.
   '요청에 없어 다루지 않음'·인수인계의 위험 사항으로 미루지 않는다.
@@ -292,6 +305,14 @@ RULES = """너는 beom-workbench 툴킷의 자동 실행 단계에서 일하는 
 - 이번 라운드에서 할 수 있는 만큼 진행하고, 마지막에 한두 문장으로 한 일과 남은 일을 말한다."""
 
 
+def _with_scaffold(text: str) -> str:
+    from beom_workbench.core import scaffold
+    return text.replace("{SCAFFOLD}", scaffold.rules_text())
+
+
+RULES = _with_scaffold(RULES)
+
+
 # 편집 자동 허용은 에이전트의 편집 도구로 고친 파일만 묻지 않는다 — 셸로 파일을 쓰면(Set-Content·here-string·echo >)
 # '그 밖의 명령'이라 매번 묻는다. 사용자를 쓸데없이 부르지 않게 편집 도구를 쓰라고 알려 준다.
 EDIT_TOOLS_RULE = """[파일 쓰기]
@@ -334,6 +355,7 @@ _SECTIONS = {
     "ui": ("- 화면이 있는 작업(웹·앱 화면)은 화면 케이스도 둔다", "- 작업은 대상 폴더 안에서만 한다"),
     "form": ("- 형태는 요청에 적힌 말을 따른다", "- 사전 설계"),
     "assets": ("- 기존 자산 맞추기", "- 형태는 요청에 적힌 말을 따른다"),
+    "scaffold": ("- 새 프로젝트 폴더 구조", "- 요청이 정하지 않은 입력"),
 }
 
 
@@ -385,6 +407,8 @@ def fit_rules(run: dict) -> str:
             rules = rules.replace(old, new)
     if not has_assets(run):  # 먼저 — 이 절의 끝 표시('형태' 절 머리)를 아래에서 지우기 전에
         rules = _drop(rules, "assets")
+    if not new_project(run):  # 기존 코드가 있으면 그 구조를 따른다 — 정석 구조 표는 싣지 않는다
+        rules = _drop(rules, "scaffold")
     if not ui_task(run):
         rules = _drop(_drop(rules, "ui"), "form")
     return rules
@@ -469,7 +493,8 @@ def existing_assets(target_root: str | Path, limit: int = 4000) -> dict | None:
     root = Path(target_root)
     if not root.is_dir():
         return None
-    files, stack, docs, screens = 0, set(), [], []
+    from beom_workbench.core import scaffold
+    files, stack, docs, screens, code = 0, set(), [], [], 0
     for d, dirs, names in os.walk(root):
         dirs[:] = [x for x in dirs if x not in SKIP_DIRS and not x.startswith(".")]
         for n in names:
@@ -478,6 +503,7 @@ def existing_assets(target_root: str | Path, limit: int = 4000) -> dict | None:
                 break
             rel = Path(d, n).relative_to(root).as_posix()
             ext = Path(n).suffix.lower()
+            code += ext in scaffold.CODE_EXTS
             for marker, name in STACK_MARKERS.items():
                 if (n == marker or (marker.startswith("*") and n.endswith(marker[1:]))) and rel.count("/") <= 1:
                     stack.add(name)
@@ -489,7 +515,80 @@ def existing_assets(target_root: str | Path, limit: int = 4000) -> dict | None:
             break
     if not files:
         return None
-    return {"files": files, "stack": sorted(stack), "docs": docs, "screens": screens}
+    return {"files": files, "stack": sorted(stack), "docs": docs, "screens": screens, "code": code}
+
+
+def _shared_parts(target_root, existing: dict | None) -> dict:
+    """기존 화면 쪽 공통 부품 — 고치기 전에 기록해 둔다 (사용자 승인 없이 고치지 못하게 막는 기준)."""
+    if not existing or not existing.get("screens"):
+        return {}
+    try:
+        from beom_workbench.core import conventions
+        return conventions.shared_parts(Path(target_root))
+    except Exception:  # noqa: BLE001 — 분석이 실패해도 실행은 만든다
+        return {}
+
+
+def shared_locked(run: dict) -> dict:
+    """지금 고치면 안 되는 공통 부품 {경로: 쓰는 파일 수} — 계획의 shared_changes 로 신고했고 사용자가 승인했으면(승인을 기다리지
+    않는 실행이면 신고만으로) 풀린다."""
+    parts = run.get("shared_parts") or {}
+    if not parts:
+        return {}
+    plan = run.get("plan") or {}
+    waits = run.get("plan_approval", True) and run.get("confirm_at", "start") != "end"
+    ok = {c["file"] for c in plan.get("shared_changes") or []} if (plan.get("approved") or not waits) else set()
+    return {k: v for k, v in parts.items() if k not in ok}
+
+
+def lock_shared(settings: Settings, run: dict) -> list[str]:
+    """승인 안 된 기존 공통 부품을 읽기 전용으로 — 잠근 것을 실행 기록에 남긴다 (비정상 종료 뒤에도 풀 수 있게)."""
+    import stat
+    root = Path(run["target_root"])
+    done = []
+    for rel in shared_locked(inbox.load_run(settings, run["id"])):
+        f = root / rel
+        try:
+            if f.is_file() and os.access(f, os.W_OK):
+                os.chmod(f, stat.S_IMODE(f.stat().st_mode) & ~(stat.S_IWRITE | stat.S_IWGRP | stat.S_IWOTH))
+                done.append(rel)
+        except OSError:
+            continue
+    if done:
+        inbox.update_run(settings, run["id"], lambda r: r.update(shared_lock=done))
+    return done
+
+
+def unlock_shared(settings: Settings, run: dict) -> None:
+    """잠근 공통 부품을 다시 쓸 수 있게."""
+    import stat
+    try:
+        cur = inbox.load_run(settings, run["id"])
+    except ToolError:
+        return
+    locked = cur.get("shared_lock") or []
+    if not locked:
+        return
+    root = Path(cur["target_root"])
+    for rel in locked:
+        f = root / rel
+        try:
+            if f.is_file():
+                os.chmod(f, stat.S_IMODE(f.stat().st_mode) | stat.S_IWRITE)
+        except OSError:
+            pass
+    inbox.update_run(settings, run["id"], lambda r: r.update(shared_lock=[]))
+
+
+def new_project(run: dict) -> bool:
+    """빈 폴더(또는 기획서·첨부만 있는 폴더)에서 코드를 새로 만드는 작업 — 작업을 만들 때 대상 폴더에 코드가 없었다.
+    기존 코드가 있으면 그 구조를 따르고, 없으면 언어별 정석 구조로 만든다."""
+    ex = run.get("existing")
+    if not ex:
+        return True
+    if "code" not in ex:  # 예전 기록 — 스택 표시나 화면 파일이 있었으면 기존 프로젝트로 본다
+        return not ex.get("stack") and not ex.get("screens")
+    return not ex["code"] and not ex.get("stack")
 
 
 AGENT_FILES = ("AGENTS.md", "CLAUDE.md", "GEMINI.md", ".cursorrules", "CONVENTIONS.md", ".windsurfrules", "copilot-instructions.md")
@@ -574,7 +673,14 @@ def guides(target_root: str | Path) -> dict | None:
             st = sorted({name for marker, name in STACK_MARKERS.items()
                          if (r / marker).is_file() or (marker.startswith("*") and any(r.glob(marker)))})
             repos.append({"name": rel(r), "stack": st})
-    out = {"hubs": hubs[:6], "agents": agents[:10], "docs": docs[:15], "repos": repos}
+    # 에이전트 지시는 그 폴더 안을 고칠 때 적용된다 — 대상 폴더와 그 위·아래의 것과, 옆 폴더(모노레포의 다른 앱)의 것을 가른다.
+    # 옆 앱의 지시('목업 서버는 res.json 으로 바로')를 이번 대상에 따르면 대상의 규칙과 부딪친다.
+    def on_line(a: str) -> bool:
+        d = (root / a).resolve().parent
+        return d == root or root.is_relative_to(d) or d.is_relative_to(root)
+    near = [a for a in agents if on_line(a)]
+    other = [a for a in agents if not on_line(a)]
+    out = {"hubs": hubs[:6], "agents": near[:10], "agents_other": other[:10], "docs": docs[:15], "repos": repos}
     return out if any(out.values()) else None
 
 
@@ -587,10 +693,13 @@ def _guides_lines(g: dict | None) -> list[str]:
         parts.append("규칙 허브: " + ", ".join(g["hubs"]) + " (작업 유형별 읽기 순서가 있으면 그대로 따른다)")
     if g.get("agents"):
         parts.append("에이전트 지시: " + ", ".join(g["agents"]) + " (대상 폴더와 그 위의 것은 이번 작업에 적용 — 하위 폴더 것은 그 폴더를 고칠 때)")
+    if g.get("agents_other"):
+        parts.append("다른 폴더의 에이전트 지시: " + ", ".join(g["agents_other"])
+                     + " (그 폴더 안을 고칠 때만 따른다 — 대상 폴더의 코드에는 적용하지 않는다. 대상 폴더의 지시와 다르면 대상 폴더 것을 따른다)")
     if g.get("docs"):
         parts.append("정책·가이드·화면 설계 문서: " + ", ".join(g["docs"]))
     if parts:
-        lines.append("[작업 규칙·정책 — 대화창에 붙이지 않았어도 대상 폴더 안에 있으니 시작 전에 직접 읽고 따른다] " + " · ".join(parts))
+        lines.append("[작업 규칙·정책 — 대화창에 붙이지 않았어도 이 저장소에 있으니 시작 전에 직접 읽고 따른다] " + " · ".join(parts))
     if g.get("repos"):
         lines.append("[작업 공간의 저장소] " + ", ".join(f"{r['name']}({'/'.join(r['stack']) or '?'})" for r in g["repos"])
                      + " — 요청에 맞는 저장소를 여기서 찾아 그 안에서 작업한다 (요청이 가리키는 저장소가 분명하지 않으면 묻는다)")
@@ -697,6 +806,10 @@ def _brief(run: dict, st: dict | None) -> str:
         lines.append(f"[넣을 저장소 분석] project_id={run['context_project']} — 기존 구조·패턴을 먼저 보고 맞춘다")
     if run.get("existing"):
         lines.append(_existing_line(run["existing"]))
+    locked = shared_locked(run)
+    if locked:
+        lines.append("[고치지 않을 공통 부품 — 다른 화면들이 쓴다. 꼭 바꿔야 하면 계획의 shared_changes 로 신고하고 승인을 받는다] "
+                     + ", ".join(f"{k}({v}곳)" for k, v in list(locked.items())[:25]) + (" …" if len(locked) > 25 else ""))
     lines += _guides_lines(run.get("guides"))
     from beom_workbench.core import prereqs
     pre = prereqs.brief_line(prereqs.needs(run["target_root"]))
@@ -802,7 +915,8 @@ def create(settings: Settings, *, mode: str, target_root: str, request: str = ""
             "model": model, "auth": auth, "project_id": None, "port_id": None, "session_id": None, "policy": policy or {},
             "agent": agent, "plan_approval": plan_approval, "messages": [], "effort": effort or None,
             # start: 처음에 기준과 계획을 한 번에 확인하고 끝까지 / end: 멈추지 않고 만든 뒤 마지막에 한 번 확인
-            "confirm_at": confirm_at if confirm_at in ("start", "end") else "start", "sandbox": bool(sandbox)}
+            "confirm_at": confirm_at if confirm_at in ("start", "end") else "start", "sandbox": bool(sandbox),
+            "shared_parts": _shared_parts(target_root, existing)}
     agents_mod.get(agent)  # 모르는 에이전트면 여기서 거절
     if mode in ("plan", "free"):
         if not request.strip():
@@ -1266,6 +1380,17 @@ class Runner:
             self._commit_round(run)
 
     def _turn_agent(self, run: dict, prompt: str) -> dict:
+        """에이전트 한 라운드. Codex 는 편집을 자기 격리 안에서 바로 하고 툴킷에 묻지 않는다 — 승인 안 된 기존 공통 부품은 라운드 동안
+        읽기 전용으로 잠가 고치지 못하게 하고, 라운드가 끝나면 (멈추거나 실패해도) 푼다. Claude 는 권한 처리기가 묻는다."""
+        unlock_shared(self.settings, run)  # 지난번에 비정상 종료돼 남은 잠금
+        if self.agent.id == "codex":
+            lock_shared(self.settings, run)
+        try:
+            return self._turn_agent_inner(run, prompt)
+        finally:
+            unlock_shared(self.settings, run)
+
+    def _turn_agent_inner(self, run: dict, prompt: str) -> dict:
         from beom_workbench.core import deps
         self._junk_before = deps.junk(Path(run["target_root"]))  # 라운드가 끝나면 이번에 생긴 테스트 찌꺼기만 치운다
         rules = self._rules(run)

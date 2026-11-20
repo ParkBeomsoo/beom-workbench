@@ -22,7 +22,8 @@ SOURCE_FILE_MAX, SOURCE_TOTAL_MAX, SOURCE_COUNT_MAX = 300_000, 5_000_000, 3000
 CODE_EXTS = tuple(sorted({e for k, exts in layout.LANG_EXT.items() for e in exts}))
 # 원래 소스 기록에는 화면 틀(HTML·JSP·템플릿)도 — 만든 뒤 새 화면을 다른 화면들의 쓰임과 비교할 때 (conventions.differences)
 SNAP_EXTS = tuple(sorted(set(CODE_EXTS) | {".html", ".htm", ".jsp", ".ejs", ".hbs", ".njk", ".twig", ".erb", ".cshtml", ".razor",
-                                            ".php", ".ftl", ".vm"}))
+                                            ".php", ".ftl", ".vm", ".j2", ".jinja", ".jinja2", ".mustache", ".liquid",
+                                            ".css", ".scss", ".sass", ".less"}))  # 공통 스타일을 고쳤는지도 본다
 
 
 def scan_roots(target: Path) -> list[Path]:

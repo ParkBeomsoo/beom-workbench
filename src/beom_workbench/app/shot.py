@@ -308,8 +308,18 @@ def main() -> int:
         return b; };
       const out = { contrast: [], small_text: [], tiny_targets: [], small_targets: [], clipped: [], overlap: [], broken_wrap: [], overflow: null };
       const fonts = new Set(), sizes = new Set(), colors = new Set(), hits = [];
+      // 팝업이 열려 있으면 그 뒤(어둡게 가린 배경)는 지금 누를 수도 읽을 수도 없다 — 재지 않는다 (겹침·작은 버튼으로 잘못 알렸다)
+      const layers = [...(document.body ? document.body.querySelectorAll("*") : [])].filter((e) => {
+        if (!vis(e)) return false;
+        const st = getComputedStyle(e); if (st.position !== "fixed") return false;
+        const r = e.getBoundingClientRect(); return r.width >= vw * 0.9 && r.height >= innerHeight * 0.9; });
+      const zOf = (e) => parseInt(getComputedStyle(e).zIndex) || 0;
+      const POP = "[role=dialog],[role=alertdialog],[aria-modal=true],dialog,[class*=modal],[class*=popup],[class*=dialog]";
+      const pops = layers.filter((e) => e.matches(POP) || e.querySelector(POP) || /modal|popup|dim|overlay|backdrop|dialog/i.test(e.className || ""));
+      const layer = pops.length ? pops.reduce((a, b) => (zOf(b) >= zOf(a) ? b : a)) : null;
+      const behind = (el) => layer && !layer.contains(el) && !el.contains(layer);
       for (const el of (document.body ? document.body.querySelectorAll("*") : [])) {
-        if (!vis(el) || ["SCRIPT", "STYLE", "SVG", "PATH"].includes(el.tagName.toUpperCase())) continue;
+        if (!vis(el) || ["SCRIPT", "STYLE", "SVG", "PATH"].includes(el.tagName.toUpperCase()) || behind(el)) continue;
         const s = getComputedStyle(el);
         const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
         const off = el.disabled || el.closest("[disabled],[aria-disabled='true']");

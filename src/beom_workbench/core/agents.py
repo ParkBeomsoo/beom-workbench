@@ -416,9 +416,16 @@ class ClaudeCode(Agent):
             argv += ["--effort", run["effort"]]
         if run.get("session_id"):
             argv += ["--resume", run["session_id"]]
-        if sys.platform != "win32" and sandbox.active(run):  # macOS·Linux: Claude Code 자체 샌드박스
+        cfg = sandbox.claude_settings(run) if sys.platform != "win32" and sandbox.active(run) else {}  # macOS·Linux: 자체 샌드박스
+        from beom_workbench.core import runner as runner_core
+        locked = [r for r in runner_core.shared_locked(run) if not re.search(r"[\[\]*?!{}]", r)]
+        if locked:
+            # 다른 화면들이 쓰는 기존 공통 부품 — 편집 자동 허용(acceptEdits)에서도 이 파일들의 편집은 권한 처리기로 와서 사용자에게 묻는다
+            ask = cfg.setdefault("permissions", {}).setdefault("ask", [])
+            ask += [f"Edit(./{r})" for r in locked]  # Edit 규칙이 모든 편집 도구(Write·MultiEdit 포함)를 덮는다
+        if cfg:
             sfile = d / "claude-settings.json"
-            sfile.write_text(json.dumps(sandbox.claude_settings(run), ensure_ascii=False), encoding="utf-8")
+            sfile.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
             argv += ["--settings", str(sfile)]
         env = self.env(run)
         if sandboxed:

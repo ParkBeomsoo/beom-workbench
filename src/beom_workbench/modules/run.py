@@ -48,6 +48,9 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
         return json.dumps({"behavior": "deny", "message": inbox.SERVER_HINT}, ensure_ascii=False)
     # 작업 폴더가 저장소의 하위 폴더면 그 저장소 안의 다른 폴더는 읽기만 묻지 않는다 (고치기는 묻는다)
     kind = inbox.classify(tool_name, input or {}, root, [settings.home], read_roots=inbox.read_roots(run, settings))
+    users = inbox.shared_target(run, tool_name, input or {}) if kind == "edit" else 0
+    if users:
+        kind = "shared"  # 다른 화면들이 쓰는 기존 공통 부품 — 계획에서 승인하지 않았으면 편집 모드에서도 사용자에게 묻는다
     decision = inbox.decide(run, kind)
     native = inbox.native_permissions(run)
     mode = inbox.mode_of(run.get("policy") or {})
@@ -72,7 +75,8 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
     # Node 도구는 Windows 격리 안에서 돌지 않는다 — 격리 없이 돌릴지는 별도 종류(unsandboxed)의 규칙으로 정한다
     node = wrap and inbox.needs_unsandboxed(str((input or {}).get("command")))
     # 기록에 남는 글은 비밀을 가린다 (카드에는 사람이 판단할 수 있게 원래 입력을 그대로 보여 준다)
-    summary = mask_command(f"{inbox.action_label(kind, tool_name, input or {}, root, inbox.read_roots(run, settings))}: "
+    summary = mask_command(f"{inbox.action_label(kind, tool_name, input or {}, root, inbox.read_roots(run, settings))}"
+                           f"{f' — 이 파일을 쓰는 다른 화면 {users}곳도 함께 바뀝니다' if users else ''}: "
                            f"{tool_name} {_readable(input, root)[:300]}")
     what = mask_command(str((input or {}).get("command") or (input or {}).get("file_path") or (input or {}).get("url") or "")[:160])
     inbox.log(settings, run["id"], "permission", tool=tool_name, permission_kind=kind, decision=decision, what=what)
@@ -100,6 +104,10 @@ def wb_action_approve(tool_name: str, input: dict, tool_use_id: str | None = Non
         elif wrap:
             inbox.log(settings, run["id"], "permission", tool=tool_name, permission_kind="unsandboxed", decision="allow", what=what)
         return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
+    if kind == "shared":
+        return json.dumps({"behavior": "deny", "message": "사용자가 이 공통 부품의 수정을 허락하지 않았다 — 다른 화면들이 쓰는 부품이다. "
+                                                          "고치지 말고 새 화면 쪽에서 해결한다. 꼭 고쳐야 하면 계획(wb_plan_set)의 "
+                                                          "shared_changes 로 이유와 함께 신고해 승인을 받는다."}, ensure_ascii=False)
     return json.dumps({"behavior": "deny", "message": f"규칙상 허용되지 않음 ({inbox.KINDS.get(kind, kind)}). 다른 방법을 찾거나 "
                                                       "wb_person_ask 로 사용자에게 이유와 함께 물어본다."}, ensure_ascii=False)
 
@@ -394,6 +402,46 @@ def _design_pick(picks: list[dict]) -> dict | None:
             or next((d for d in picks if DESIGN_TOPIC.search(d["topic"]) and not DESIGN_NOT.search(d["topic"])), None))
 
 
+def _shared_gate(run: dict, steps: list[dict], changes: list[dict] | None, prev: dict) -> tuple[list[dict], str | None]:
+    """기존 화면 쪽 공통 부품을 고치는 계획 — 신고(shared_changes: 파일·이유)가 있어야 한다. 사용자가 계획 카드에서 보고 승인한다."""
+    parts = run.get("shared_parts") or {}
+    if not parts:
+        return [], None
+    norm = lambda f: _path_part(f).replace("\\", "/").lstrip("./")  # noqa: E731
+    if changes is None:
+        changes = prev.get("shared_changes") or []  # 다시 낸 계획 — 앞의 신고를 이어 받는다
+    out, bad = [], []
+    for c in changes or []:
+        if not isinstance(c, dict) or not str(c.get("file", "")).strip():
+            continue
+        f, why = norm(c["file"]), str(c.get("why", "")).strip()
+        if f not in parts:
+            bad.append(f"{f} — 공통 부품 목록에 없음 (그냥 고치면 된다)")
+        elif not why:
+            bad.append(f"{f} — why(왜 꼭 고쳐야 하는지, 다른 화면에 무엇이 달라지는지)가 비어 있음")
+        else:
+            out.append({"file": f, "why": why[:300], "users": parts[f]})
+    if bad:
+        return [], "shared_changes 를 고친다: " + "; ".join(bad)
+    declared = {c["file"] for c in out}
+    touch = sorted({norm(f) for s in steps for f in s["files"]} & set(parts) - declared)
+    if touch:
+        return [], ("계획이 다른 화면들이 쓰는 기존 공통 부품을 고친다: " + ", ".join(f"{f}({parts[f]}곳)" for f in touch[:6])
+                    + " — 공통 부품은 고치지 않고 새 화면 쪽에서 해결하도록 steps 를 바꾼다. 꼭 고쳐야 하면 shared_changes=[{file, why}] 로 "
+                      "신고한다 (사용자가 계획 카드에서 보고 승인해야 고칠 수 있다)")
+    return out, None
+
+
+def _layout_gate(run: dict, steps: list[dict], basis: str) -> list[str]:
+    """새 프로젝트의 폴더 구조 — 계획한 파일과 지금 만든 파일을 언어별 정석 구조와 견준다. 기존 코드가 있던 폴더는 그 구조를 따르므로
+    보지 않는다. 사용자가 구조를 정해 주었으면(layout_basis) 보지 않는다. 기획 모드는 코드를 만들지 않으니 보지 않는다."""
+    from beom_workbench.core import runner as runner_core, scaffold
+    if basis.strip() or run.get("mode") not in ("request", "reference") or not runner_core.new_project(run):
+        return []
+    planned = [f for s in steps for f in s["files"]]
+    return scaffold.check(planned, scaffold.files_now(Path(run["target_root"])))
+
+
 def _design_gate(run: dict, steps: list[dict], picks: list[dict], look: list[str], basis: str) -> str | None:
     """새로 만드는 화면의 디자인 방향 — 참고 화면을 찍어 보고(조사), 방향이 다른 시안을 그림으로 보여 사용자가 고르게 한다.
     규칙에 '반드시'라고 적어도 같은 에이전트가 어떤 때는 하고 어떤 때는 건너뛰었다 — 계획을 받을 때 확인한다.
@@ -478,7 +526,8 @@ def _shoot_looks(run: dict, picks: list[dict]) -> list[str]:
 @mcp.tool()
 def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decisions: list[dict] | None = None,
                  look: list[str] | None = None, previews: list[str] | None = None, follows: list[dict] | None = None,
-                 design_basis: str = "", rules_checked: list[str] | None = None) -> dict:
+                 design_basis: str = "", rules_checked: list[str] | None = None, layout_basis: str = "",
+                 shared_changes: list[dict] | None = None) -> dict:
     """구현 계획을 낸다 — 사용자가 앱에서 승인한 뒤 구현한다. steps: [{title, files?: [...], commands?: [...], requirements?: ["R1"]}].
     decisions: 사전 설계 결정 [{topic: "데이터 저장", choice: "SQLite 파일", options: ["JSON 파일"], why: "한 줄"}] — 형태(웹·앱·API)·
     데이터 저장·스택·실행 방법·디자인 방향처럼 결과를 크게 가르는 것. 사용자가 승인하며 대안으로 바꿀 수 있다.
@@ -493,6 +542,10 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
     허브는 모두, 정책·가이드 문서는 이번 작업에 닿는 것을 (툴킷이 확인한다). 그 문서에서 따를 조항은 follows 의 근거(문서:줄)로.
     새로 만드는 화면이면 '디자인 방향' 결정에 시안(looks)을 선택지 2개 이상 붙여야 하고, 그 전에 참고 화면(wb_design_refs)을
     찍어 봐야 한다 — 툴킷이 확인한다. 사용자가 브랜드·디자인을 정해 주었으면 design_basis 에 그 근거(요청·첨부의 어디)를 적는다.
+    shared_changes: 다른 화면들이 쓰는 기존 공통 부품([고치지 않을 공통 부품] 줄)을 꼭 고쳐야 할 때만 [{file: "src/components/BaseGrid.vue",
+    why: "목록에 체크칸 이름을 붙이려고 — 다른 화면 7곳도 함께 바뀜"}]. 사용자가 계획 카드에서 보고 승인해야 그 파일을 고칠 수 있다.
+    새 프로젝트(빈 폴더)면 steps.files 에 설정·테스트 파일까지 적는다 — 툴킷이 언어별 정석 구조와 견주어 분명히 벗어난 곳을 알린다.
+    사용자가 구조·파일 이름을 정해 주어 다르게 하면 layout_basis 에 그 근거(요청의 어느 말)를 적는다 (계획 카드에 보인다).
     계획을 다시 내면 이전 승인은 풀린다."""
     clean = [{"title": str(s.get("title", "")).strip()[:200], "files": [str(f) for f in s.get("files") or []][:20],
               "commands": [str(c) for c in s.get("commands") or []][:10], "requirements": s.get("requirements") or [],
@@ -541,6 +594,17 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
     gate = _design_gate(run, clean, picks, lines, design_basis) if run is not None else None
     if gate:
         return {"ok": False, "error": gate, **({"look_errors": look_errors} if look_errors else {})}
+    if layout_basis.strip() == "" and prev.get("layout_basis") and run is not None:
+        layout_basis = prev["layout_basis"]  # 다시 낸 계획 — 앞에서 남긴 구조 근거를 이어 받는다
+    shared, shared_error = _shared_gate(run, clean, shared_changes, prev) if run is not None else ([], None)
+    if shared_error:
+        return {"ok": False, "error": shared_error}
+    layout = _layout_gate(run, clean, layout_basis) if run is not None else []
+    if layout:
+        return {"ok": False, "error": "새 프로젝트인데 정석 폴더 구조와 다른 곳이 있음: " + layout[0],
+                "problems": layout[1:],
+                "recovery": "그 언어의 정석 구조로 steps.files 를 고친다 (설정·테스트 파일까지). 사용자가 구조를 정해 주어 다르게 하면 "
+                            "layout_basis 에 근거(요청의 어느 말)를 적는다"}
     for d in picks:  # 깨진 시안 표시는 확인용 — 계획에는 남기지 않는다
         d.pop("sian_broken", None)
 
@@ -552,6 +616,8 @@ def wb_plan_set(steps: list[dict], summary: str = "", design: str = "", decision
                      **({"decisions": picks[:10]} if picks else {}), **({"look": lines} if lines else {}),
                      **({"previews": shots} if shots else {}), **({"follows": rules} if rules else {}),
                      **({"design_basis": design_basis.strip()[:300]} if design_basis.strip() else {}),
+                     **({"layout_basis": layout_basis.strip()[:300]} if layout_basis.strip() else {}),
+                     **({"shared_changes": shared} if shared else {}),
                      **({"rules_checked": read} if read else {})}
     out = _update(put)
     if out["ok"]:
@@ -803,7 +869,9 @@ def wb_ui_conventions(near: list[str] | None = None, like: str = "") -> dict:
     """기존 화면의 규칙 — 이 프로젝트의 다른 화면들이 실제로 어떻게 만들어졌는지 코드에서 뽑는다 (규칙은 툴킷이 정하지 않는다).
     shared: 여러 화면이 함께 쓰는 부품(공통 컴포넌트·공통 함수·그리드 같은 위젯)과 쓰는 방식 — 화면/팝업 안을 나눠 이벤트(예:
     onRowDoubleClick 4/4 → 목록에서 상세는 행 더블클릭)와 옵션(예: 팝업 안 그리드 height=320 3/3)이 몇 곳에서 쓰였는지, 근거(파일:줄).
-    events: 프로젝트 전체의 이벤트 이름. similar: 지금 만들·고칠 화면과 비슷한 기존 화면 — near=[만들·고칠 파일], like="목록 상세" 처럼.
+    events: 프로젝트 전체의 이벤트 이름. library: 공통 함수 파일의 다른 함수들 — 지금 한 화면만 쓰거나 아무도 안 쓰는 것도
+    이미 있는 공통 기능이다 (엑셀·공통코드·기간 검사 …). 새로 만들기 전에 여기서 찾는다.
+    similar: 지금 만들·고칠 화면과 비슷한 기존 화면 — near=[만들·고칠 파일], like="목록 상세" 처럼.
     비슷한 화면을 열어 읽고, 같은 부품을 같은 방식으로 쓴다. 계획(wb_plan_set)의 follows 에 따를 규칙과 근거를 남긴다."""
     from beom_workbench.core import conventions
 

@@ -253,10 +253,51 @@ def run_task(settings, run: dict, task: str, *, path: str = "", paths: list[str]
                          lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [f"task:{task}"]))))
         run = inbox.load_run(settings, run["id"])
     before = deps.junk(base)
+    files_before = _tracked_files(base) if task == "test" else None
     results = _execute(settings, run, root, plan, timeout)
     cleaned = deps.clean_junk(base, before)
+    left = _drop_test_leftovers(base, files_before) if files_before is not None else []
+    if left and run is not None:
+        inbox.log(settings, run["id"], "note", tone="warn", text="테스트가 대상 폴더에 남긴 파일을 지웠습니다: " + ", ".join(left[:5]))
     return {"ok": all(r["ok"] for r in results), "task": task, "results": results,
-            **({"cleaned": cleaned} if cleaned else {})}
+            **({"cleaned": cleaned} if cleaned else {}),
+            **({"test_leftovers": left, "note": "테스트가 대상 폴더에 파일을 남겨 지웠다 (" + ", ".join(left[:5]) + ") — 테스트는 임시 폴더"
+                "(pytest 의 tmp_path·os.tmpdir() 등)를 써야 한다. 앱이 실행 중 만드는 데이터 파일이면 테스트에서 그 경로를 임시 폴더로 "
+                "바꾸고, 사용자에게 넘길 폴더에 시험 데이터가 남지 않게 고친다"} if left else {})}
+
+
+# 테스트가 만들어도 되는 것 — 빌드 결과·캐시·스냅숏·잠금 파일 (지우지 않는다)
+_TEST_OUTPUT = re.compile(r"(^|/)(target|build|dist|bin|obj|out|coverage|htmlcov|\.next|\.nyc_output|__snapshots__|"
+                          r"[^/]+\.egg-info|node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache)(/|$)|"
+                          r"\.(snap|pyc|tsbuildinfo|lcov)$|(^|/)(Cargo\.lock|package-lock\.json|\.coverage[^/]*)$")
+
+
+def _tracked_files(base: Path, limit: int = 20000) -> set[str] | None:
+    out: set[str] = set()
+    for dirpath, dirs, names in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in (".git", ".beom", "node_modules", ".venv", "venv", "target", "__pycache__")]
+        rel = Path(dirpath).relative_to(base).as_posix()
+        out.update((f"{rel}/{n}" if rel != "." else n) for n in names)
+        if len(out) > limit:
+            return None
+    return out
+
+
+def _drop_test_leftovers(base: Path, before: set[str] | None) -> list[str]:
+    """테스트를 돌리는 동안 대상 폴더에 새로 생긴 파일 (빌드 결과·캐시·스냅숏 빼고) — 시험 데이터가 결과물에 섞이지 않게 지운다."""
+    if before is None:
+        return []
+    after = _tracked_files(base) or set()
+    gone = []
+    for rel in sorted(after - before):
+        if _TEST_OUTPUT.search(rel):
+            continue
+        try:
+            (base / rel).unlink()
+            gone.append(rel)
+        except OSError:
+            pass
+    return gone
 
 
 def result_of(kind: str, task: str, cmd: str, code: int, out: str) -> dict:

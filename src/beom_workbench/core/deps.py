@@ -261,6 +261,24 @@ def _permit(settings, run: dict | None, item: dict) -> None:
     inbox.update_run(settings, run["id"], lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [key]))))
 
 
+def _npm_lockfile(at: Path) -> Path:
+    """npm 이 잠금 파일을 쓰는 자리 — 워크스페이스의 한 패키지에서 설치해도 npm 은 워크스페이스 맨 위에 쓴다."""
+    import json as _json
+    from beom_workbench.core import layout
+    top = layout.repo_top(at)
+    for d in [at, *at.parents]:
+        if top and not d.is_relative_to(top):
+            break
+        pj = d / "package.json"
+        if d != at and pj.is_file():
+            try:
+                if _json.loads(pj.read_text(encoding="utf-8")).get("workspaces"):
+                    return d / "package-lock.json"
+            except (OSError, ValueError, AttributeError):
+                pass
+    return at / "package-lock.json"
+
+
 def ensure(settings, run: dict | None, root: Path, timeout: float = 900) -> dict:
     """필요한 설치를 하고 결과를 돌려준다. 설치할 것이 없으면 바로 끝난다. root 는 대상 폴더 — 설치는 각 언어 프로젝트의 자리에서
     (저장소의 하위 폴더가 대상이고 package.json·requirements 가 저장소 쪽에 있으면 거기). 예전에는 대상 폴더만 보아 설치를 건너뛰었다."""
@@ -275,11 +293,19 @@ def ensure(settings, run: dict | None, root: Path, timeout: float = 900) -> dict
             if at.resolve() != root.resolve():
                 item["at"] = str(at)  # 대상 폴더 밖(위 프로젝트)에 설치한다 — 사람이 보고 허락하게 카드에 적는다
             _permit(settings, run, item)
+            lock = _npm_lockfile(at) if item["kind"] == "node" else None
+            lock_before = lock.stat().st_mtime if lock is not None and lock.is_file() else None
             r = _install(item, at, timeout)
             done.append(r)
             if run is not None:
                 from beom_workbench.core import inbox
                 inbox.log(settings, run["id"], "deps", dep=item["kind"], ok=r["ok"], files=item["files"])
+                # 대상 폴더 밖(모노레포 맨 위)에 설치하며 npm 이 만들거나 고친 잠금 파일 — 라운드 커밋은 대상 폴더만 담아서
+                # 끝난 뒤 저장소에 커밋 안 된 package-lock.json 이 남았다. 대상 밖에서 고친 파일처럼 함께 커밋되게 적어 둔다.
+                if (r["ok"] and lock is not None and not lock.resolve().is_relative_to(root.resolve()) and lock.is_file()
+                        and lock.stat().st_mtime != lock_before):
+                    inbox.update_run(settings, run["id"], lambda x: x.update(
+                        outside_edits=list(dict.fromkeys((x.get("outside_edits") or []) + [str(lock)]))[-200:]))
     layout.forget(root)
     return {"installed": done, **status(root)}
 

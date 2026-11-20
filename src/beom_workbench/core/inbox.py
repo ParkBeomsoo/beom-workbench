@@ -40,6 +40,7 @@ KINDS = {
     "system": "시스템·설정 변경 (툴킷 원장·질문함 포함)",
     "other": "그 밖의 도구",
     "unsandboxed": "격리 없이 실행 (Node 빌드 도구는 Windows 격리 안에서 돌지 않음)",
+    "shared": "다른 화면들이 쓰는 기존 공통 부품 수정 (계획에서 승인하지 않음)",
 }
 DEFAULT_POLICY = {"edit": "allow", "build": "allow", "commands": "ask", "web": "ask", "outside": "ask",
                   "publish": "refuse", "branch": "refuse", "delete": "refuse", "system": "refuse", "other": "ask",
@@ -363,11 +364,29 @@ def _inside(path: str | None, root: Path) -> bool:
         return False
 
 
+def shared_target(run: dict, tool: str, tool_input: dict) -> int:
+    """편집 도구가 승인 안 된 기존 공통 부품을 고치려 하면 그 부품을 쓰는 파일 수 (아니면 0)."""
+    if tool not in FILE_TOOLS:
+        return 0
+    path = (tool_input or {}).get("file_path") or (tool_input or {}).get("notebook_path")
+    root = Path(run["target_root"])
+    if not path or not _inside(path, root):
+        return 0
+    from beom_workbench.core import runner
+    try:
+        rel = Path(path).resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return 0
+    return runner.shared_locked(run).get(rel, 0)
+
+
 def decide(run: dict, kind: str) -> str:
     """종류별 규칙으로 허용·물어보기·거절. 'branch' 는 작업 브랜치가 있을 때만 — 새 프로젝트(저장소 아님)나
     사용자가 '새 브랜치에서 작업'을 끈 실행에서는 그 밖의 명령과 같이 본다."""
     if kind == "branch" and not run.get("work_branch"):
         kind = "commands"
+    if kind == "shared":  # 어느 모드에서도 묻는다 — 사용자가 이 실행에서 '항상'으로 허락했을 때만 그대로
+        return "allow" if run["policy"].get("shared") == "allow" else "ask"
     return run["policy"].get(kind, "ask")
 
 
