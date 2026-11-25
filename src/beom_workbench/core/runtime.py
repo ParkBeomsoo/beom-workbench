@@ -250,15 +250,6 @@ def runs(conn) -> dict:
     return {"items": ledger.rows_to_dicts(conn.execute("SELECT * FROM coverage_run ORDER BY created_at DESC").fetchall())}
 
 
-def symbol_runtime(conn, symbol_ids: list[str]) -> dict[str, list[str]]:
-    out: dict[str, list[str]] = defaultdict(list)
-    for r in conn.execute(f"SELECT symbol_id, evidence_id FROM coverage_hit WHERE symbol_id IN ({','.join('?' * len(symbol_ids))})",
-                          symbol_ids).fetchall():
-        if r["evidence_id"]:
-            out[r["symbol_id"]].append(r["evidence_id"])
-    return dict(out)
-
-
 # ---------------------------------------------------------------- 실행기
 
 SECRET_ENV_RE = re.compile(r"(?i)token|secret|passw|key|credential|cookie")

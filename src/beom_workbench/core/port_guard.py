@@ -28,7 +28,9 @@ SKIP_DIRS = {".git", "node_modules", "target", "__pycache__", ".venv", "venv", "
              ".pytest_cache", ".mypy_cache", ".next", ".gradle"}
 MAX_FILES = 20000
 MAX_FILE_BYTES = 4 * 1024 * 1024
-HUMAN_CHANNELS = {"mcp-elicitation", "cli-tty", "desktop-app"}
+# decision-change: 사용자가 계획 카드에서 결정을 바꾼 결과로 고친 기준 — 사용자의 선택이 승인이다 (실행기만 이 채널로 승인한다).
+# 이 이름이 빠져 있어 결정을 바꾼 실행이 자동 승인에서 멈췄다 (실험 128)
+HUMAN_CHANNELS = {"mcp-elicitation", "cli-tty", "desktop-app", "decision-change"}
 
 
 def _now() -> str:
@@ -68,7 +70,8 @@ def _generated(rel: str) -> bool:
 
 
 def _toolkit_path(rel: str) -> bool:
-    return rel.startswith(".beom/") or "/.beom/" in rel
+    # .gitignore 는 프로그램이 아니다 — 툴킷이 인계 때 .beom/ 을 더하면 '검증 뒤 코드가 바뀜'이 되어 다시 검증하느라 한 라운드를 더 썼다 (실험 135)
+    return rel.startswith(".beom/") or "/.beom/" in rel or rel == ".gitignore" or rel.endswith("/.gitignore")
 
 
 def _walk_files(root: Path) -> list[str]:
@@ -76,6 +79,8 @@ def _walk_files(root: Path) -> list[str]:
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and d != ".beom")
         for f in sorted(filenames):
+            if f == ".gitignore":
+                continue
             files.append(Path(dirpath, f).relative_to(root).as_posix())
             if len(files) >= MAX_FILES:
                 return files
@@ -149,9 +154,23 @@ def _fingerprint(root: Path) -> str:
 
 # ---------------------------------------------------------------- 케이스 규칙
 
-def case_rules(cases: list[dict]) -> dict[str, str]:
-    """케이스 이름 → 내용(입력·비교 규칙) 지문. 이름이 같은데 지문이 다르면 케이스가 바뀐 것."""
-    return {c.get("name") or f"#{i}": _sha({k: v for k, v in c.items() if k != "name"}) for i, c in enumerate(cases)}
+RULES_V = 2  # 케이스 지문의 방식 — 2: 선택자·기다리는 시간을 뺀다. 1(표시 없음)로 남은 예전 기록과는 예전 방식으로 견준다
+
+
+def case_rules(cases: list[dict], legacy: bool = False) -> dict[str, str]:
+    """케이스 이름 → 내용(입력·비교 규칙) 지문. 이름이 같은데 지문이 다르면 케이스가 바뀐 것.
+    화면 요소를 찾는 방법(선택자·기다리는 시간)은 무엇을 확인하는지가 아니다 — 그것만 고쳐도 사용자 승인을 다시 기다렸다.
+    legacy: 예전 방식(전부 넣음) — 예전 방식으로 남은 기록과 견줄 때."""
+    pick = (lambda c: c) if legacy else _shown
+    return {c.get("name") or f"#{i}": _sha(pick({k: v for k, v in c.items() if k != "name"})) for i, c in enumerate(cases)}
+
+
+def rules_of(detail: dict, other: dict) -> tuple[dict, dict]:
+    """두 기록(detail·other)의 케이스 지문을 같은 방식으로 — 한쪽이 예전 방식이면 둘 다 예전 방식으로."""
+    if detail.get("rules_v") == other.get("rules_v"):
+        return detail.get("rules") or {}, other.get("rules") or {}
+    old = lambda d: d.get("rules_legacy") if d.get("rules_v") else d.get("rules")  # noqa: E731
+    return old(detail) or {}, old(other) or {}
 
 
 def case_change(baseline: dict[str, str], rules: dict[str, str]) -> dict | None:
@@ -377,6 +396,21 @@ def coverage_gap(conn, port_id: str) -> dict | None:
     return {"files": files, "exts": sorted({PurePosixPath(f).suffix or PurePosixPath(f).name for f in files})}
 
 
+_HOW_KEYS = {"selector", "selectors", "sel", "wait_ms", "wait", "timeout", "timeout_ms"}
+
+
+def _shown(ex: dict) -> dict:
+    """기대값 승인의 지문에 넣을 것 — 사용자가 승인하는 것(무엇을 넣고 무엇이 나와야 하는지). 목록 안 순서와 화면 요소를 찾는 방법
+    (선택자·기다리는 시간)은 뺀다. 실험: 케이스 하나를 끼워 넣거나 선택자만 고쳐도 순서가 밀린 뒤 케이스까지 모두 다시 승인을 기다렸다."""
+    def strip(v):
+        if isinstance(v, dict):
+            return {k: strip(x) for k, x in v.items() if k not in _HOW_KEYS}
+        if isinstance(v, list):
+            return [strip(x) for x in v]
+        return v
+    return strip({k: v for k, v in ex.items() if k != "order"})
+
+
 def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | None) -> list[dict]:
     """사람 확인이 필요한 항목과 승인 여부. 지문은 '지금 보여 줄 내용' 기준 — 내용이 바뀌면 예전 승인은 무효."""
     approved = _approved(_logs(conn, port_id))
@@ -406,10 +440,11 @@ def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | Non
         items.append({"item_id": r["item_id"], "kind": "omitted", "fingerprint": fp,
                       "summary": f"생략: {r['label']} — 사유: {r['note']}", "proposed_by": r["actor"]})
     for name, ex in sorted(((last_capture or {}).get("detail", {}).get("expectations") or {}).items()):
-        fp = _sha({"name": name, **ex})
+        fp = _sha({"name": name, **_shown(ex)})
+        legacy_fp = _sha({"name": name, **ex})  # 예전 방식으로 승인한 것도 그대로 인정한다
         src = ex["source"]
         was = "원본에 없음(새 동작)" if ex["new"] else f"원본 status {src['status']} {src['body']}"
-        items.append({"item_id": f"expect:{name}", "kind": "expectation", "fingerprint": fp,
+        items.append({"item_id": f"expect:{name}", "kind": "expectation", "fingerprint": fp, "legacy_fingerprint": legacy_fp,
                       "summary": f"기대값 '{name}' — {'원본에 없는 새 동작' if ex['new'] else '원본과 다르게'}",
                       "detail": [{"case": name, "diff": f"{was[:200]} → 기대 {json.dumps(ex['expect'], ensure_ascii=False)[:200]}"}]})
     change = (last_capture or {}).get("detail", {}).get("change") if last_capture else None
@@ -440,13 +475,19 @@ def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | Non
     if rules:
         d = json.loads(rules["detail"]) if isinstance(rules["detail"], str) else rules["detail"] or {}
         found = d.get("findings") or []
+        if d.get("held"):  # 자동 실행 — 에이전트가 고치지 않고 두기로 한 곳(까닭과 함께)만. 나머지는 에이전트가 고칠 차례다
+            found = [f for f in found if f.get("kept")]
         if found:
             # 지문은 파일·내용으로만 — 줄 번호를 넣으면 다른 곳을 고쳐 줄이 밀릴 때마다 승인한 카드가 다시 뜬다
-            fp = _sha(sorted({(f["at"].rsplit(":", 1)[0], f["summary"]) for f in found}))
+            # 개수가 든 요약(공백만 바꾼 줄 N곳 등)은 숫자를 빼고 — 개수만 바뀌어도 승인한 카드가 다시 떴다
+            fp = _sha(sorted({(f["at"].rsplit(":", 1)[0], re.sub(r"\d+", "#", f["summary"])) for f in found}))
+            reuse = sum(1 for f in found if f.get("kind") == "reuse")
+            parts = ([f"다른 화면들과 다르게 만든 곳 {len(found) - reuse}개"] if len(found) > reuse else []) +                     ([f"이미 있는 문구·함수·클래스·값 목록을 다시 만든 곳 {reuse}개"] if reuse else [])
             items.append({"item_id": "screen_rules", "kind": "screen_rules", "fingerprint": fp,
-                          "summary": f"다른 화면들과 다르게 만든 곳 {len(found)}개 — 같은 부품을 이 프로젝트의 다른 화면들이 쓰는 방식과 "
-                                     "다르게 썼습니다 (근거는 다른 화면의 코드). 일부러 다르게 한 것이 맞으면 승인하세요",
+                          "summary": " · ".join(parts) + " — 이 프로젝트의 기존 코드(근거)와 견준 결과입니다. 일부러 그렇게 한 것이 "
+                                     "맞으면 승인하세요",
                           "detail": {"files": [f"{f['at']} {f['summary']}" + (f" ← {f['evidence'][0]}" if f.get("evidence") else "")
+                                               + (f" — 그대로 둔 까닭: {f['kept']}" if f.get("kept") else "")
                                                for f in found[:20]]}})
     gap = coverage_gap(conn, port_id)
     if gap:
@@ -455,7 +496,7 @@ def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | Non
                                  "구현 코드를 모두 거쳤는지 확인하지 못했습니다. 합격 케이스·화면 확인·테스트 결과로 충분하면 승인하세요",
                       "detail": {"files": gap["files"]}})
     for it in items:
-        it["approved"] = (it["item_id"], it["fingerprint"]) in approved
+        it["approved"] = (it["item_id"], it["fingerprint"]) in approved or (it["item_id"], it.pop("legacy_fingerprint", None)) in approved
     return items
 
 

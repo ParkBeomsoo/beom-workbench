@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -88,6 +89,10 @@ def _node_stamp(root: Path) -> str:
     except (OSError, ValueError):
         data = {}
     picked = {k: data.get(k) for k in NODE_DEP_KEYS if data.get(k)}
+    from beom_workbench.core import toolchains
+    got = toolchains.choose("node", root)
+    # 실제로 쓰일 Node 의 주 버전 — 바뀌면 다시 설치한다 (네이티브 모듈은 Node 의 ABI 를 탄다: 22 → 24 로 올리면 NODE_MODULE_VERSION 오류)
+    picked["_node"] = toolchains._ver(got[1])[0] if got else None
     return hashlib.sha256(json.dumps(picked, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -198,7 +203,9 @@ def _base_python() -> str:
 def _run(argv: list[str], root: Path, timeout: float) -> tuple[int, str]:
     from beom_workbench.core import port, runtime
     # PYTHONUTF8: pip 가 requirements.txt 를 UTF-8 로 읽게 — Windows 기본(cp949)으로 읽다가 한글 주석 한 줄에 설치가 통째로 깨졌다
-    env = runtime.safe_env({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1"})
+    from beom_workbench.core import execenv, toolchains
+    env = execenv.strip_isolation(runtime.safe_env({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1"}))
+    env.update(toolchains.env_for(root, env))  # 프로젝트가 정한 Node 버전으로 설치 (그 버전에 맞는 네이티브 모듈)
     try:
         cp = port.run_tree(argv, cwd=str(root), timeout=timeout, env=env)
     except subprocess.TimeoutExpired as e:
@@ -209,19 +216,23 @@ def _run(argv: list[str], root: Path, timeout: float) -> tuple[int, str]:
 def _install(item: dict, root: Path, timeout: float) -> dict:
     if item["kind"] == "node":
         pm = node_manager(root)
-        args = {"npm": ["npm", "install", "--no-audit", "--no-fund"], "pnpm": ["pnpm", "install"], "yarn": ["yarn", "install"],
-                "bun": ["bun", "install"]}[pm]
-        if pm != "npm" and not shutil.which(pm):  # 프로젝트가 정한 관리자가 없다 — npm 으로 설치하면 잠금 파일이 둘이 된다
-            return {"kind": "node", "ok": False, "exit_code": 127,
-                    "output_tail": f"이 프로젝트는 {pm} 을(를) 쓰는데 이 PC 에 없음 — corepack enable 또는 {pm} 설치 뒤 다시"}
+        args = pm_command(root) + (["install", "--no-audit", "--no-fund"] if pm == "npm" else ["install"])
         argv = ["cmd", "/d", "/c", *args] if os.name == "nt" else args
         code, out = _run(argv, root, timeout)
     else:
         py = venv_python(root)
         user = user_venv(root)
+        from beom_workbench.core import toolchains
+        spec = (toolchains.required(root).get("python") or {}).get("spec")
+        if py.is_file() and spec and not toolchains.satisfies(toolchains._py_version(str(py)) or "0", spec):
+            # 요구 버전이 바뀌었거나 예전에 맞지 않는 파이썬으로 만든 것 — 툴킷이 만든 .beom/venv 만 다시 만든다
+            shutil.rmtree(venv_dir(root), ignore_errors=True)
+            toolchains._PYV.pop(os.path.normcase(str(py)), None)
         if not py.is_file():
-            # 사용자 가상 환경이 있으면 그 파이썬으로 만든다 — 같은 버전이라야 그 패키지(컴파일된 확장 포함)를 빌려 쓸 수 있다
-            base = str(user / ("Scripts/python.exe" if os.name == "nt" else "bin/python")) if user else _base_python()
+            # 사용자 가상 환경이 있으면 그 파이썬으로 만든다 — 같은 버전이라야 그 패키지(컴파일된 확장 포함)를 빌려 쓸 수 있다.
+            # 없으면 프로젝트가 요구하는 버전의 파이썬으로 (버전 확인과 같은 것을 본다)
+            base = (str(user / ("Scripts/python.exe" if os.name == "nt" else "bin/python")) if user
+                    else toolchains.python_for(root) or _base_python())
             code, out = _run([base, "-m", "venv", str(venv_dir(root))], root, 300)
             if code != 0:
                 return {"kind": "python", "ok": False, "output_tail": out}
@@ -262,8 +273,56 @@ def _permit(settings, run: dict | None, item: dict) -> None:
     if not ans.get("allow"):
         raise ToolError("denied", "사용자가 의존성 설치를 거절함", recovery="의존성 없이 만들거나 wb_person_ask 로 이유와 함께 묻는다")
     if ans.get("always"):
-        inbox.update_run(settings, run["id"], lambda r: r["policy"].__setitem__("unsandboxed", "allow"))
+        inbox.allow_always(settings, run["id"], "unsandboxed")
     inbox.update_run(settings, run["id"], lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [key]))))
+
+
+def pm_command(root: Path) -> list[str]:
+    """프로젝트의 패키지 관리자를 부르는 말 — 깔려 있으면 그대로, 없으면 Node 에 딸린 corepack 으로, 그것도 없으면 npx 로
+    packageManager 에 적힌 버전을 받아서 (npm 으로 대신 설치하면 잠금 파일이 둘이 되고 워크스페이스 문법을 못 읽는다)."""
+    pm = node_manager(root)
+    if pm == "npm":
+        return ["npm"]
+    from beom_workbench.core import toolchains
+    path = toolchains.env_for(root, dict(os.environ)).get("PATH") or os.environ.get("PATH", "")
+    node = shutil.which("node", path=path)
+    here = str(Path(node).parent) if node else ""
+    # 실제로 쓰일 Node(PATH 맨 앞)에 딸린 corepack 으로 — 다른 Node 옆의 corepack·pnpm 은 그 Node 로 돌아서, 프로젝트가 정한
+    # Node 와 어긋났다 (pnpm 이 'current node v24' 로 돎). Node 25+ 에는 corepack 이 없다 — 그때는 그 Node 의 npx 로 정한 버전을
+    if here and shutil.which("corepack", path=here):
+        return ["corepack", pm]
+    ver = _pm_version(root, pm)
+    have = shutil.which(pm, path=path)
+    # 깔린 것이 정한 버전과 주 버전이 같으면 그대로 (내려받지 않는다) — 다르면 정한 버전을 (yarn 1 이 yarn@4 프로젝트를 못 읽었다)
+    if have and (not ver or (_installed_major(have) or -1) == int(re.match(r"\d+", ver).group() if re.match(r"\d+", ver) else -2)):
+        return [pm]
+    return ["npx", "-y", f"{pm}@{ver}" if ver else pm]
+
+
+_PMV: dict[str, int | None] = {}
+
+
+def _installed_major(exe: str) -> int | None:
+    if exe not in _PMV:
+        try:
+            out = subprocess.run(["cmd", "/d", "/c", exe, "--version"] if os.name == "nt" else [exe, "--version"],
+                                 capture_output=True, timeout=30).stdout.decode("utf-8", "replace")
+            m = re.search(r"(\d+)\.\d+", out)
+            _PMV[exe] = int(m.group(1)) if m else None
+        except (OSError, subprocess.SubprocessError):
+            _PMV[exe] = None
+    return _PMV[exe]
+
+
+def _pm_version(root: Path, pm: str) -> str | None:
+    for d in [root, *root.parents][:6]:
+        try:
+            v = json.loads((d / "package.json").read_text(encoding="utf-8-sig")).get("packageManager", "")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if str(v).startswith(pm + "@"):
+            return str(v).split("@", 1)[1].split("+")[0]
+    return None
 
 
 def node_manager(root: Path) -> str:
@@ -289,25 +348,37 @@ def node_manager(root: Path) -> str:
 
 
 def _npm_lockfile(at: Path) -> Path:
-    """npm 이 잠금 파일을 쓰는 자리 — 워크스페이스의 한 패키지에서 설치해도 npm 은 워크스페이스 맨 위에 쓴다."""
+    """패키지 관리자가 잠금 파일을 쓰는 자리 — 워크스페이스의 한 패키지에서 설치해도 맨 위에 쓴다 (npm·yarn·bun 의 workspaces,
+    pnpm 의 pnpm-workspace.yaml). 이름은 패키지 관리자대로 (pnpm-lock.yaml·yarn.lock·bun.lock) — package-lock.json 만 보아
+    pnpm·yarn 프로젝트의 바뀐 잠금 파일을 커밋에 넣지 못했다."""
+    import fnmatch
     import json as _json
     from beom_workbench.core import layout
+    pm = node_manager(at)
+    name = {"pnpm": "pnpm-lock.yaml", "yarn": "yarn.lock", "bun": "bun.lock"}.get(pm, "package-lock.json")
+    if pm == "bun" and not (at / "bun.lock").is_file() and (at / "bun.lockb").is_file():
+        name = "bun.lockb"
     top = layout.repo_top(at)
     for d in [at, *at.parents]:
         if top and not d.is_relative_to(top):
             break
+        if d == at:
+            continue
+        globs: list = []
+        pw = d / "pnpm-workspace.yaml"
+        if pw.is_file():
+            globs = re.findall(r"^\s*-\s*['\"]?([^'\"#\n]+?)['\"]?\s*$", pw.read_text(encoding="utf-8", errors="replace"), re.M)
         pj = d / "package.json"
-        if d != at and pj.is_file():
+        if not globs and pj.is_file():
             try:
                 ws = _json.loads(pj.read_text(encoding="utf-8")).get("workspaces")
             except (OSError, ValueError, AttributeError):
                 ws = None
             globs = ws.get("packages", []) if isinstance(ws, dict) else ws or []
-            import fnmatch
-            rel = at.resolve().relative_to(d.resolve()).as_posix()
-            if any(fnmatch.fnmatch(rel, str(g).rstrip("/")) for g in globs):
-                return d / "package-lock.json"
-    return at / "package-lock.json"
+        rel = at.resolve().relative_to(d.resolve()).as_posix()
+        if any(fnmatch.fnmatch(rel, str(g).strip().rstrip("/")) for g in globs if not str(g).startswith("!")):
+            return d / name
+    return at / name
 
 
 def ensure(settings, run: dict | None, root: Path, timeout: float = 900) -> dict:

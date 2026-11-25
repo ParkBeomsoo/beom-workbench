@@ -96,7 +96,7 @@ class Checkpoints:
         return tuple(out)
 
     def list(self) -> list[dict]:
-        if not (self.shadow / "HEAD").exists():
+        if not (self.shadow / "HEAD").exists() or not Path(self.root).is_dir():  # 작업 폴더를 지웠으면 되돌릴 곳도 없다 (git 이 그 폴더에서 못 돈다)
             return []
         key = str(self.shadow)
         stamp = self._stamp()

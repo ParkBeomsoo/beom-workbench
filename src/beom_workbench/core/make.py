@@ -28,13 +28,16 @@ def _now() -> str:
 
 
 def create(settings: Settings, *, name: str, request: str, target_root: str, context: str | None = None,
-           author: str = "agent") -> dict:
+           author: str = "agent", unique: str = "") -> dict:
     """요청사항 프로젝트(원본 없는 원장)와 그 안의 만들기 원장을 만든다. 같은 이름·대상이면 다시 쓴다.
-    context: 함께 볼 분석 프로젝트 id (넣을 저장소나 참고 저장소를 open·inventory 한 것)."""
+    context: 함께 볼 분석 프로젝트 id (넣을 저장소나 참고 저장소를 open·inventory 한 것).
+    unique: 실행마다 새 원장 — 같은 폴더·같은 이름의 새 실행이 앞 실행의 요구사항·케이스·승인을 이어 받지 않게 (실험 149: 같은 이름의
+    다음 실행이 앞 원장을 그대로 받아, 앞 요구사항을 맡는 단계가 없다는 거절이 되풀이되다 멈췄다)."""
     if not request or not request.strip():
         raise ToolError("invalid_request", "요청사항(request)이 비어 있음")
     root = Path(target_root).resolve()
     key = hashlib.sha256(f"{name}|{root}".encode()).hexdigest()
+    port_key = hashlib.sha256(f"{name}|{root}|{unique}".encode()).hexdigest() if unique else key
     pid = f"req-{project_mod._slug(name)}-{key[:8]}"
     ws = project_mod.workspace(settings, pid)
     if (ws / "ledger.db").exists():
@@ -46,7 +49,7 @@ def create(settings: Settings, *, name: str, request: str, target_root: str, con
                      (pid, f"request:{name}", MODE, str(root), _now()))
         conn.commit()
         project_mod.load(settings, pid)  # 만든 프로젝트를 읽어 확인
-    port_id = "port_" + key[8:20]
+    port_id = "port_" + port_key[8:20]
     with ledger.tx(conn):
         conn.execute("INSERT INTO port (id, name, targets, target_language, target_root, slice, author, created_at, mode, request, context) "
                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET request = excluded.request, "
@@ -57,11 +60,25 @@ def create(settings: Settings, *, name: str, request: str, target_root: str, con
     # 코드를 고치기 전 — 원래 있던 테스트와 소스 (처음 한 번만). 소스는 바꾼 함수를 부르는 기존 코드(연관된 곳)를 찾을 때 쓴다
     guard.record_baseline(conn, port_id, root, store=project_mod.workspace(settings, pid) / "ports" / port_id / "baseline-sources.json")
     return {"project_id": pid, "port_id": port_id, "mode": MODE, "target_root": str(root),
-            "next_step": "make-req 로 요구사항 목록 작성 → 요구사항마다 합격 케이스(expect + req) 작성 → port-capture"}
+            "next_step": "wb_make_requirements 로 요구사항 목록 작성 → 요구사항마다 합격 케이스(expect + req) 작성 → wb_port_capture → wb_plan_set"}
 
 
 def is_request(port: dict) -> bool:
     return port.get("mode") == MODE
+
+
+# 요구사항 문장 끝에 붙인 출처 꼬리표 — '(사용자 승인)'·'[추천]'·'(Q2 답)'. 승인·결정·답은 툴킷이 따로 기록하고, 요구사항의 출처는
+# 출처 칸(from)에 적는다. 괄호로 감싼 꼬리표는 문장의 뜻이 아니라 표시라서, 돌려보내지 않고 툴킷이 떼어 낸다 (실험: 꼬리표 때문에
+# 다시 저장하느라 한 번씩을 더 썼다). 괄호 밖 문장은 건드리지 않는다 — 뜻을 짐작해 지우지 않는다.
+PROVENANCE = re.compile(r"\s*[(\[（［【]\s*(?:사용자\s*)?(?:승인(?:됨|함|받음)?|확정(?:됨)?|추천(?:안|값)?|결정(?:됨)?|합의(?:됨)?|요청(?:됨)?|"
+                        r"선택(?:함|됨)|답변?|사용자\s*(?:답|선택|결정|요청|확인)|Q\s*\d{1,2}(?:\s*답변?)?|결정\s*\d{1,2}|"
+                        r"(?:user|owner)\s*(?:approved|confirmed|chose|decided|request(?:ed)?)|approved|confirmed|recommended|decided)"
+                        r"\s*[)\]）］】]", re.I)
+
+
+def strip_tags(text: str) -> str:
+    """요구사항·케이스 설명에서 괄호 출처 꼬리표를 뗀다."""
+    return re.sub(r"\s{2,}", " ", PROVENANCE.sub("", str(text or ""))).strip()
 
 
 def set_requirements(conn, port_id: str, reqs: list[dict], actor: str = "agent") -> dict:
@@ -86,6 +103,7 @@ def set_requirements(conn, port_id: str, reqs: list[dict], actor: str = "agent")
             text = (r.get("text") or "").strip()
             if not text:
                 raise ToolError("invalid_request", f"요구사항 문장이 비어 있음: {r}")
+            text = strip_tags(text) or text
             rid = r.get("id")
             if not rid:
                 n += 1
@@ -129,7 +147,8 @@ def prepare_cases(cases: list[dict]) -> list[dict]:
             reqs = [reqs]
         if not reqs or not all(REQ_ID.fullmatch(str(r)) for r in reqs):
             raise ToolError("invalid_request", f"케이스 {name}: req 에 확인하는 요구사항 id(R1 …)가 필요함")
-        out.append({**c, "req": list(reqs), "new": True})
+        extra = {"description": strip_tags(c["description"])} if isinstance(c.get("description"), str) else {}
+        out.append({**c, **extra, "req": list(reqs), "new": True})
     return out
 
 

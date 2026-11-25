@@ -225,10 +225,13 @@ def _ignore_tmp(top: Path) -> None:
             return
         f = Path(d) if Path(d).is_absolute() else top / d
         text = f.read_text(encoding="utf-8", errors="replace") if f.is_file() else ""
-        if ".beom/" not in text.splitlines():
+        # 툴킷이 설치하는 의존성 폴더도 — 저장소에 .gitignore 가 없으면 작업 브랜치 커밋에 node_modules(수십 MB)가 들어갈 뻔했다
+        # (이미 추적하는 파일에는 영향이 없다 — 제외 목록은 새 파일에만)
+        want = [x for x in (".beom/", "node_modules/", ".venv/") if x not in text.splitlines()]
+        if want:
             f.parent.mkdir(parents=True, exist_ok=True)
             with f.open("a", encoding="utf-8") as fh:
-                fh.write(("" if not text or text.endswith("\n") else "\n") + "# beom-workbench\n.beom/\n")
+                fh.write(("" if not text or text.endswith("\n") else "\n") + "# beom-workbench\n" + "".join(w + "\n" for w in want))
     except OSError:
         pass
 

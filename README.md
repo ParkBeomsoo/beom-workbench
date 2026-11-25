@@ -66,7 +66,7 @@ folder holding several) and it reads that code, its rules and its look first, an
 
 ## Supported platforms
 
-Windows 10/11 is the primary platform (used daily). macOS and Linux run the same code, and CI checks install, core behaviour and app start on all three;
+Windows 10/11 is the primary platform (used daily). macOS and Linux run the same code, and CI checks install and core behaviour on all three and app start on Windows and macOS;
 native desktop-app screen checks (Qt · WinForms · WPF) are Windows-only, and Claude Code's OS sandbox is available on macOS/Linux only.
 
 ## Key concepts
@@ -172,7 +172,9 @@ beom-workbench                    # open the app
 beom-workbench app --shortcut          # add Start menu (search) + desktop shortcuts; --remove-shortcut removes them
 ```
 
-The first time you open the app it also offers to create the shortcuts. On Linux it writes a `.desktop` entry.
+The first time you open the app it also offers to create the shortcuts. On Linux it writes a `.desktop` entry; on macOS the
+installer creates `~/Applications/beom-workbench.app` (opens from Finder, Launchpad and Spotlight; `BEOM_SHORTCUT=none` skips it).
+Keyboard shortcuts use ⌘ on macOS (⌘N new task, ⌘Enter start or approve) and Ctrl elsewhere.
 
 **Pick a mode on the home screen**
 
@@ -189,15 +191,21 @@ time with a note on how to re-save them (detected by content, not just extension
 them, not just as flat text: the page is converted to Markdown that keeps headings, lists and tables (merged cells included) and
 collapsed sections, and its images and attached files are downloaded next to it (Word, PowerPoint and Excel attachments are also
 converted to text) — a spec page is often half tables and screen mock-ups. For a page behind a login (e.g. Confluence, Jira) the app
-asks you to sign in: it opens its own browser window, you log in there and press **Get this document**. For Confluence it reads the
+asks you to sign in: it opens the browser panel, you log in there and press **Get this document**. For Confluence it reads the
 page through the site's own REST API with that signed-in session, together with its child pages, comments and attachments; for Jira,
 the issue with its description, sub-tasks, linked issues, comments and attachments. Other sites use the main content of the page.
-Sign-ins are kept in a separate app profile (clear them under **Storage → Document sign-ins**). The agent reads attachments first. Files can also be dropped onto the window, and a screenshot can be pasted (Ctrl+V); messages sent to a running or finished task can carry attachments too — e.g. a screenshot of what to fix.
+Sign-ins are kept in a separate app profile (clear them under **Storage → Document sign-ins**).
+
+**Browser panel** — the *Browser* button in the run header opens a browser on the right side of the window; press it again (or ✕) to
+close it. Sign in to an admin or staging site there: *Get this screen* attaches what you see (a screenshot and the page content) to the
+message box, and *Let the agent see this site* lets the agent capture screens of that signed-in site for 12 hours, so mockups and
+checks can follow the real screens. Passwords and cookies are never handed to the agent; the sign-in stays in the toolkit's folder.
+ The agent reads attachments first. Files can also be dropped onto the window, and a screenshot can be pasted (Ctrl+V); messages sent to a running or finished task can carry attachments too — e.g. a screenshot of what to fix.
 
 **Planning package** — planning mode produces the set of documents a product planner hands over, not a single page (in `.beom/brief/`):
 기획서.md (goals and success metrics, users, feature list P0/P1/P2, requirements R1…, out of scope, open questions, release steps),
 정책서.md (decision tables, calculation order with worked numbers incl. edge values, state changes, exceptions and user-facing messages),
-화면설계.md + wireframes/ (screens S1… with numbered callouts and states, grayscale HTML wireframes that the toolkit screenshots) and
+화면설계.md + wireframes/ (screens S1… with numbered callouts and states, the requirements each screen carries, and clickable HTML mockups) and
 테스트시나리오.md (T1… — normal, edge and error scenarios per requirement; they become acceptance cases when you build from the plan).
 Before handoff the toolkit checks that the documents line up (`wb_brief_check`): requirements without scenarios, screens without
 wireframes or missing documents block the handoff. *Build from this plan* attaches the whole package, wireframes included.
@@ -205,7 +213,20 @@ The screen design is a **clickable prototype**: feature tabs on top (the 기능 
 HTML you can click through, and that screen's notes on the right — clicking a button, a tab or a screen chip switches the screen and the notes
 follow. *Export* writes a shareable **single HTML file** (one tab per document, the same prototype inside) or an **A4 PDF** (screens as
 images with notes). Prototype screens run in an isolated frame and cannot reach the app. Planning on top of existing policy documents or an existing product cites those rules, writes only the
-changes as "current → new", and draws screen examples in the existing look.
+changes as "current → new".
+
+*Which look the mockups follow* is decided by facts, in this order: pictures or mockups you attached, or a request for a new look or
+feel, come first; otherwise, when the product's code is available, the toolkit reads its UI component library and theme values (main
+color, font, corner radius) from the source and lays them over its mockup parts, and points the agent at the layout files for menus and
+headers; with neither, a clean neutral look. A business flow written as a ```` ```flow ```` block (`step -> next step : condition`) is
+drawn as a diagram by the toolkit.
+
+*Checks that keep the package honest*: a picture/rule table in the screen design (example values, rule, what should show, what shows) is
+compared with the numbers and button states the toolkit reads from each mockup — a button the rules say must be off but is drawn on is
+refused; a decision marked as yours must quote your own words (request, messages or answers), otherwise it is a recommendation or an
+assumption with an open question; and at handoff the toolkit opens every mockup and refuses layout defects (overflow, clipped text,
+low contrast, tiny click targets). The export uses the full window width with the document tabs fixed on top, shows screens large, and
+adds a **developer handoff checklist** tab — every requirement with its screen, policy and scenarios.
 
 **Building on what exists** — when the target folder already has code or documents (recorded when the run is created), or a repository to
 fit into or port from is attached, the agent first learns and follows its language, structure, business rules (policy docs, validation, copy)
@@ -230,7 +251,7 @@ conflict check. Plan mode writes an "existing policy" comparison table and the b
 | Agent | Notes |
 |---|---|
 | Claude Code | asks per action through the toolkit's permission rules. Models: default · Opus · Sonnet · Haiku (aliases always resolve to the latest), effort low → max |
-| Codex | blocks with its sandbox instead of per-action questions (writes only inside the target folder). Models and effort levels come from the list Codex keeps for your account, so new models appear automatically. Like Claude, a run uses only this toolkit's tools: other MCP servers and plugins in your Codex config (browser, computer use …) are off for the run, and Codex's own web search is off unless web is allowed. Your config file is not changed. Codex's sandbox has the internet off unless web is allowed, so package installs (`npm install`, `pip install`) it needs run outside the sandbox through the toolkit, under the same rules as Claude's *run outside isolation* (asked in allow-edits, allowed in auto). |
+| Codex | works inside its own sandbox (writes only inside the target folder) and runs through its app-server: when it needs more than the sandbox allows (run a command outside it, write another folder, reach the network) it asks, and the toolkit answers under the same rules as Claude's permission prompts — a card when the rule is *ask*. Codex versions without the app-server run with `codex exec`, which cannot ask (blocked commands just fail). Models and effort levels come from the list Codex keeps for your account, so new models appear automatically. Like Claude, a run uses only this toolkit's tools: other MCP servers and plugins in your Codex config (browser, computer use …) are off for the run, and Codex's own web search is off unless web is allowed. Your config file is not changed. Codex's sandbox has the internet off unless web is allowed; package installs and tests go through the toolkit (`wb_deps`, `wb_task`), under the same rules as Claude's *run outside isolation* (asked in allow-edits, allowed in auto). |
 | Gemini (Antigravity CLI `agy`) | experimental. Since June 2026 consumer Gemini CLI has been replaced by Antigravity CLI — `agy` is used when present, otherwise an Enterprise `gemini`. Shell commands that need confirmation are refused headless, so it works through edits and toolkit tools. MCP is attached via the target folder's `.agents/mcp_config.json` |
 
 Any other model name can be typed in. Model and effort can be changed during a run (applied from the next round).
@@ -262,7 +283,10 @@ environment variable, billed per use) — both can do the same things.
   once and the run goes on until every completion condition is met. Per card: *Approve*, *Edit* (change requirements, cases or plan steps yourself, then
   *Save and approve* — recorded in the ledger as written by you and passed on to the agent), or type a correction in the message box
   (the agent revises without approval).
-- The agent's **questions** and **permission requests** (`Y` allow · `N` refuse). *This command, always* remembers the command's start (e.g. `python notes.py …`) so the same form is not asked again in this task — one-line commands only, never inline code (`python -c`) or chained commands. Remembered commands are listed under the task's run options, where you can remove them. *Always for this project* allows the whole kind.
+- The agent's **questions** — each with choices to click (single or multiple), the recommended one marked with its reason, and a box
+  to type your own answer. More than four questions come as cards of four and are confirmed together at the end; up to twelve at a time,
+  the rest after you answer.
+- **Permission requests** (`Y` allow · `N` refuse). *This command, always* remembers the command's start (e.g. `python notes.py …`) so the same form is not asked again in this task — one-line commands only, never inline code (`python -c`) or chained commands. Remembered commands are listed under the task's run options, where you can remove them. *Always for this project* allows the whole kind.
 - The **handoff** at the end: accept, or keep going by sending a message — sending a message to a stopped or finished run continues it.
   A follow-up builds on the agreed criteria (fix, then re-verify the affected cases; criteria change only if the request changes the scope),
   and an accepted run asks to be accepted again once the follow-up is done. To start over from planning or analysis, start a new task.
@@ -443,6 +467,23 @@ beom-workbench port-finish <pid> <port_id>
 - Automatically varied inputs are judged by **no crash and no 5xx** instead of expected values (odd input must be rejected with a 4xx).
 - If you build into an existing repository, `open` and `inventory` it first and pass `--context <its project_id>` so the build follows its structure.
 
+In the app, a request run also does the following on its own:
+
+- **Depth** (the *Depth* button under the input; request, reference and plan runs): *Quick* builds only what was asked, without
+  reference research or design mockups. *Standard* has you pick each decision from options with their pros and cons, and with screens
+  from two mockups. *Deep* first reviews eight areas — features, user flow and accessibility, integrations and APIs, data, performance,
+  cost and maintenance, security and privacy, operations and verification — plus the field's own rules and pitfalls, searching again for
+  each question the first pass raises. The plan card lists what was checked, where, what was decided and what risk is left, with the
+  pages it came from (the toolkit checks those pages were really opened); what could not be found is said as not found, and features the
+  request did not ask for come as proposals you pick.
+- **Checks before handoff**: the project's own lint, format and type checks run on the files the run changed (only when the project has
+  them); a reviewer that never saw the conversation reads the diff with a checklist for the languages it touches; the design check
+  measures accessibility and layout defects and the generated look (eyebrow labels, side stripes on rounded cards, gradient text,
+  emoji icons, nested cards, …) on mockups and finished screens, helped by an external design anti-pattern detector.
+- **What you teach it**: a message you mark *apply to future runs* is followed by later runs on the same folder, and recommendations you
+  overrode are shown to the next plan as your preference. When a conversation grows past 60% of the model's window, the next round
+  starts a fresh one with the toolkit's record of the work.
+
 ## Customizing the original in place
 
 ```bash
@@ -525,8 +566,11 @@ keys and tokens are read from environment variables only and masked in output.
 | `cache/` · `cbm-cache/` | agent status, verification harness, structure-map index | yes — rebuilt |
 | `work/` | temporary copies for verification and coverage, removed after use (leftovers older than 6 hours are swept at start-up) | yes |
 | `bin/` · `engines/` · `node/` | analysis engines installed by `setup` | yes — reinstall with `setup` |
+| `agent-home/` | the agents' config folders for toolkit runs — sign-in shared with yours, your settings, instructions, skills and commands copied in each round, and the toolkit's conversations with the agent | yes — recreated (signs in again from yours) |
+| `lessons/` | what you marked *apply to future runs* in a folder, and recommendations you overrode | yes — the next runs start without them |
+| `tools/` | the external design anti-pattern detector, installed on first design check (pinned version, needs npm) | yes — reinstalled when needed |
 
-The agent's own conversation stays where its CLI keeps it (`~/.claude/projects`, `~/.codex/sessions`) and is resumed by session id.
+Toolkit runs start the agent with its config folder pointed at `agent-home/` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), so their conversations never appear in your own Claude Code or Codex history; they are resumed by session id from there.
 In your target folder the toolkit keeps its work files in `.beom/` (acceptance cases, planning documents, screenshots). They are never committed —
 only the program is — and in a git repository the folder is listed in the repository's local exclude file so `git status` stays clean.
 
@@ -575,6 +619,8 @@ In the app: **Storage** at the bottom of the sidebar, and **Move to trash** in a
 
 - **The analyzed code is never executed.** Language server build scripts and macro expansion are turned off as well. Verification that needs execution
   (coverage, porting originals) runs in a container with the network blocked, or in a temporary copy only for repositories the user says they trust.
+- **Nothing is left running.** Processes an agent started in the target folder during a round and left behind (dev servers, watchers)
+  are stopped when the round ends; terminals and editors you opened there are not touched.
 - **Secret files are not read**, and secrets inside ordinary files (passwords, keys, tokens, URL credentials) are masked as `****` in output.
   Tokens and keys are also stripped from the environment passed to executed commands.
 - Analysis runs only on **a dedicated clone at a pinned commit**. Uncommitted changes in your working folder are not included.
@@ -583,26 +629,25 @@ In the app: **Storage** at the bottom of the sidebar, and **Move to trash** in a
   records directly — no key or signature can stop that on the same account. The app is therefore the only authority: it remembers
   every decision you make in it, compares plan approval, permission rules, acceptance and ledger approvals before and after each
   round, and if something changed that the app did not do, it restores what it can and stops the run until you confirm.
-- **Isolated execution (sandbox).** Commands the agent runs are confined by the operating system to the target folder, the temp
-  folder and the usual tool caches (npm, pip, cargo, Gradle, Maven, Go, NuGet) — writing anywhere else, including the toolkit's
-  records, fails with "access denied". It is part of first-time setup: the agent list shows **Isolated execution · Ready**, or
-  **Set up** when something is missing (also covered by **Install all**).
+- **Isolated execution (sandbox).** Each agent works inside its own sandbox where it has one. When the sandbox blocks something,
+  the agent asks to run it outside, and the permission rules decide — allowed, a card, or refused (*run outside isolation*). The
+  same rule covers commands the toolkit runs for you (tests, verification, installs): a tool that cannot work inside the sandbox,
+  or a command that fails there with "access denied", runs outside once you allow it. It is part of first-time setup: the agent
+  list shows **Isolated execution · Ready**, or **Set up** when something is missing (also covered by **Install all**).
 
   | Platform | Claude Code | Codex | Gemini (agy) |
   |---|---|---|---|
-  | Windows | Claude's own sandbox is off on Windows, so the app has Claude use PowerShell and runs every allowed command in its built-in Windows sandbox — a write-restricted token, no admin rights and nothing to install (works on Windows Home) | own sandbox | `--sandbox` |
-  | macOS | Claude Code's built-in sandbox (Seatbelt), turned on by the app — nothing to install | own sandbox | `--sandbox` |
-  | Linux | Claude Code's sandbox (needs `bubblewrap` and `socat`; setup installs them) | own sandbox | `--sandbox` |
+  | Windows | Claude Code has no sandbox on native Windows, so by default the permission rules and the pre-edit check protect the run. A built-in Windows sandbox (a write-restricted token, no admin rights, nothing to install) can be turned on per run in the run options; with it on, a command it blocks runs outside through `wb_run` after your permission | own sandbox; Codex asks through its app-server | `--sandbox` |
+  | macOS | Claude Code's built-in sandbox (Seatbelt) — a blocked command can be retried without it after the permission prompt | same | `--sandbox` |
+  | Linux | Claude Code's sandbox (needs `bubblewrap` and `socat`; setup installs them) — retries as on macOS | same | `--sandbox` |
 
-  How the Windows sandbox works: commands get a write-restricted copy of your own token (all privileges removed), so a write must also be
-  allowed for a sandbox-only identity; the app grants that identity *modify* on the target folder, the temp folder and the tool caches it
-  uses (the grant stays on those folders and is recorded in `%LOCALAPPDATA%\beom-workbench-sandbox\granted.txt`). Reading is unchanged,
-  so builds and tests work. The network cannot be limited this way on Windows — the *web* permission rule decides. Git Bash cannot start
-  under a restricted token, which is why Claude uses PowerShell there. Checked end to end on Windows: inside writes work, outside writes
-  and writes to `~/.beom-workbench` are denied (also when the path is built at run time so the permission rules cannot see it),
-  `npm install`, `node`, `python`, `pip` and `git` work, and no window appears. On macOS and Linux, retrying outside the sandbox is
-  disabled, network access is limited to package registries (so installs work in the default mode; closed when web is refused) and servers on 127.0.0.1 are allowed for tests and previews. Global installs (`npm -g`, `pip --user`) are
-  refused by design. Turn it off per run in the run options.
+  How the optional Windows sandbox works: commands get a write-restricted copy of your own token (all privileges removed), so a write
+  must also be allowed for a sandbox-only identity; the app grants that identity *modify* on the target folder, the temp folder and the
+  tool caches it uses (the grant stays on those folders and is recorded in `%LOCALAPPDATA%\beom-workbench-sandbox\granted.txt`).
+  Reading is unchanged. The network cannot be limited this way on Windows — the *web* permission rule decides. Git Bash cannot start
+  under a restricted token, which is why Claude uses PowerShell there. On macOS and Linux, network access is limited to package
+  registries (so installs work in the default mode; closed when web is refused) and servers on 127.0.0.1 are allowed for tests and
+  previews. Global installs (`npm -g`, `pip --user`) are refused by design. Turn it on or off per run in the run options.
 - **Permission rules** classify every agent tool call and command: edits inside the target, build/test commands, other commands,
   web, outside the folder, publish (push, package publish, PR creation), delete outside the folder, system changes (registry,
   scheduled tasks, git config, the agent's own `.claude/`/`.git/` settings), and leaving the work branch. Publish, outside deletes,

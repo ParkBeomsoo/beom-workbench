@@ -200,6 +200,14 @@ def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
         if not str(target).startswith(str(root)):
             raise ToolError("checksum_failed", f"압축 안의 경로가 대상 밖을 가리킴: {info.filename}")
     zf.extractall(dest)
+    if os.name != "nt":  # zipfile 은 실행 권한을 버린다 — macOS·Linux 에서 joern·joern-parse 가 '권한 없음'으로 안 돌았다
+        for info in zf.infolist():
+            mode = (info.external_attr >> 16) & 0o777
+            if mode and not info.is_dir():
+                try:
+                    (dest / info.filename).chmod(mode)
+                except OSError:
+                    pass
 
 
 def _safe_extract_tar(archive: Path, dest: Path) -> None:

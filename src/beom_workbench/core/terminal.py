@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import sys
 import threading
-import time
 from typing import Callable
 
 from beom_workbench.common.response import ToolError
@@ -165,9 +164,15 @@ class Attendant:
         for x in (reviews.get("omitted") or [])[:10]:  # 옮기지 않는 것
             w("  " + t("생략") + f": {t(str(x.get('summary') or ''))}")
         if plan:
-            if plan.get("decisions"):
+            todo = [dd for dd in plan.get("decisions") or [] if not dd.get("settled")]
+            done = [dd for dd in plan.get("decisions") or [] if dd.get("settled")]
+            if todo:
                 w(t("정할 것") + " — " + t("추천이 골라져 있습니다 — 바꾸려면 앱에서 누르세요"))
-                for dd in plan["decisions"]:
+                for dd in todo:
+                    w(f"  · {t(str(dd.get('topic')))}: {t(str(dd.get('choice')))}")
+            if done:
+                w(t("앞에서 정한 것") + " — " + t("이미 승인한 결정 — 그대로 따릅니다"))
+                for dd in done:
                     w(f"  · {t(str(dd.get('topic')))}: {t(str(dd.get('choice')))}")
             w(t("진행 순서"))
             for i, s in enumerate(plan.get("steps") or [], 1):
@@ -224,11 +229,3 @@ def interactive() -> bool:
         return False
 
 
-def wait_answered(settings: Settings, run_id: str, rid: str, timeout: float = 5) -> bool:
-    end = time.monotonic() + timeout
-    d = inbox.run_dir(settings, run_id) / "inbox"
-    while time.monotonic() < end:
-        if (d / f"{rid}.answer.json").exists() or not (d / f"{rid}.json").exists():
-            return True
-        time.sleep(0.05)
-    return False

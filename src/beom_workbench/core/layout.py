@@ -119,6 +119,10 @@ def projects(target: Path) -> list[tuple[str, Path]]:
                 out.append((kind, root))
             elif root is None and kind == "python" and (has_lang_files(t, "python") or pytest_files(t)):
                 out.append((kind, t))  # 설정 파일 없는 파이썬 폴더 — pytest·실행은 그 자리에서
+            elif root is None and kind == "node" and node_test_files(t):
+                # package.json 없는 정적 사이트(HTML·JS)의 테스트 — node 내장 테스트(node --test)는 설정 없이 돈다 (실험 125·127·131:
+                # 'wb_task 실행 오류'로 Codex 실행의 단위 테스트가 한 번도 돌지 않았다)
+                out.append((kind, t))
     _CACHE[key] = (time.monotonic(), out)
     return list(out)
 
@@ -347,13 +351,18 @@ def test_files(target: Path) -> set[str]:
 # ---------------------------------------------------------------- 브라우저에서 도는 코드
 
 _SCRIPT_SRC = re.compile(r"<script\b[^>]*?\bsrc\s*=\s*([\"'])(.*?)\1", re.I | re.S)  # src="{{ url_for('static', …) }}" 도
-_IMPORT = re.compile(r"""(?:\bimport\s+(?:[^'";]*?\bfrom\s*)?|\bexport\s+[^'";]*?\bfrom\s*|\bimport\s*\(\s*)["'](\.{1,2}/[^"']+)["']""")
+_IMPORT = re.compile(r"""(?:\bimport\s+(?:[^'";]*?\bfrom\s*)?|\bexport\s+[^'";]*?\bfrom\s*|\bimport\s*\(\s*)["']((?:\.{1,2}|@)/[^"']+)["']""")  # '@/' — Vue·React 프로젝트의 src 별칭
 
 
-def _resolve_js(base: Path, spec: str) -> Path | None:
-    p = (base / spec).resolve()
-    for cand in (p, *(p.with_name(p.name + e) for e in (".js", ".mjs", ".ts", ".jsx", ".tsx")),
-                 *(p / ("index" + e) for e in (".js", ".ts", ".jsx", ".tsx"))):
+def _resolve_js(base: Path, spec: str, top: Path | None = None) -> Path | None:
+    if spec.startswith("@/"):  # 개발 서버 설정의 흔한 별칭 — '@' 는 src 폴더
+        if top is None:
+            return None
+        p = (top / "src" / spec[2:]).resolve()
+    else:
+        p = (base / spec).resolve()
+    for cand in (p, *(p.with_name(p.name + e) for e in (".js", ".mjs", ".ts", ".jsx", ".tsx", ".vue", ".svelte")),
+                 *(p / ("index" + e) for e in (".js", ".ts", ".jsx", ".tsx", ".vue"))):
         if cand.is_file():
             return cand
     return None
@@ -433,7 +442,7 @@ def browser_files(target: Path, limit: int = 3000) -> set[str]:
         except OSError:
             continue
         for spec in _IMPORT.findall(text):
-            c = _resolve_js(f.parent, spec)
+            c = _resolve_js(f.parent, spec, t)
             if c and c not in found and c.is_relative_to(t):
                 found.add(c)
                 todo.append(c)

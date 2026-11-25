@@ -150,4 +150,3 @@ def classify(path: str, is_binary: bool = False, first_line: str = "") -> tuple[
 
 
 ANALYZED_CATEGORIES = {"code", "test", "asset"}
-UNCOVERED_CATEGORIES = {"binary"}  # 분석은 못 하지만 존재는 기록 → 미확인 생성

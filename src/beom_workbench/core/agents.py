@@ -3,9 +3,12 @@
 각 연결부가 하는 일: 설치·로그인 확인, 한 라운드 실행 명령 만들기(이어서 실행 포함), 출력 이벤트를 공통 형식으로 바꾸기.
 공통 이벤트: {"kind": "init"|"text"|"tool"|"result"|"error", ...}
 
-권한 처리 차이:
-- Claude Code: --permission-prompt-tool 로 작업마다 우리 규칙(inbox.py)이 허용·물어보기·거절을 정한다.
-- Codex: 헤드리스 실행에서 작업별 승인 연결이 없어 샌드박스로 막는다 — 대상 폴더 안에서만 쓰기, 웹은 규칙이 허용일 때만.
+권한 처리 — 에이전트 자신의 권한 요청을 툴킷이 받아 한 가지 판단(modules.run.approve_action)으로 답한다. 연결부마다 무엇이
+되는지는 grants() 에 적고 테스트가 실제 명령과 맞춰 본다 (새 에이전트가 조용히 덜 받지 않게):
+- Claude Code: --permission-prompt-tool 로 작업마다. macOS·Linux 는 Claude 자체 샌드박스 안에서 돌고, 막힌 명령은 '격리 없이'
+  다시 요청하면 그 요청도 같은 판단으로 온다.
+- Codex: app-server 로 — Codex 자체 샌드박스 안에서 돌고, 넘어서야 할 때(격리 밖 실행·폴더 쓰기·네트워크) Codex 가 요청한다.
+  app-server 가 없는 옛 Codex 는 exec (묻지 못함 — 막힌 것은 실패).
 - Gemini CLI: 헤드리스에서 물어볼 작업은 거절된다 — 샌드박스 + 허용 목록. (실험적)
 """
 from __future__ import annotations
@@ -208,6 +211,11 @@ def refresh_path(max_age: float = 30) -> None:
         except ImportError:
             return
     else:
+        import threading
+        if max_age > 0 and threading.current_thread() is threading.main_thread():  # max_age=0 은 '지금 바로' (설치 직후 확인)
+            # 로그인 셸을 띄우면 nvm·oh-my-zsh 에서 1~3초 걸린다 — 화면 스레드에서 기다리면 창이 멈췄다. 뒤에서 읽고 다음 찾기부터 쓴다
+            threading.Thread(target=refresh_path, args=(-1,), daemon=True, name="path-refresh").start()
+            return
         shell = os.environ.get("SHELL") or ("/bin/zsh" if sys.platform == "darwin" else "/bin/bash")
         try:
             out = subprocess.run([shell, "-ilc", 'printf "__OSS_PATH__%s" "$PATH"'], capture_output=True, timeout=8,
@@ -341,6 +349,11 @@ class Agent:
     def command(self, settings, run: dict, prompt: str, rules: str) -> tuple[list[str], dict]:
         raise NotImplementedError
 
+    def grants(self) -> dict:
+        """이 연결부가 툴킷에 주는 것 — approvals: 에이전트가 하려는 일을 툴킷의 권한 판단(사람에게 묻기 포함)이 정하는가,
+        escalation: 에이전트 자신의 격리에 막혔을 때 격리 밖 실행을 요청하는 길, how: 어떻게 연결되는가."""
+        return {"approvals": False, "escalation": None, "how": "연결 없음"}
+
     def parse(self, ev: dict) -> list[dict]:
         return []
 
@@ -367,6 +380,10 @@ class ClaudeCode(Agent):
     cost_cumulative = True
     id, name, permission_hook = "claude", "Claude Code", True
     api_key_env = ("ANTHROPIC_API_KEY",)
+
+    def grants(self) -> dict:
+        return {"approvals": True, "how": "--permission-prompt-tool wb_action_approve",
+                "escalation": "dangerouslyDisableSandbox (macOS·Linux 자체 샌드박스) · wb_run (Windows 에서 격리를 켰을 때)"}
     TOOL_PREFIX = f"mcp__{MCP_NAME}__"
 
     def find(self) -> str | None:
@@ -428,12 +445,17 @@ class ClaudeCode(Agent):
             # 다른 화면들이 쓰는 기존 공통 부품 — 편집 자동 허용(acceptEdits)에서도 이 파일들의 편집은 권한 처리기로 와서 사용자에게 묻는다
             ask = cfg.setdefault("permissions", {}).setdefault("ask", [])
             ask += [f"Edit(./{r})" for r in locked]  # Edit 규칙이 모든 편집 도구(Write·MultiEdit 포함)를 덮는다
-        if run.get("mode") == "request":
-            # 순서는 툴킷이 지킨다 — 계획 전(기다리는 실행이면 승인 전)에는 제품 파일 편집을 막는 문지기 (모델이 순서를 건너뛰어도)
+        if run.get("mode") in ("request", "reference", "plan") or run.get("shared_parts"):
+            # 순서는 툴킷이 지킨다 — 계획 전(기다리는 실행이면 승인 전)에는 제품 파일 편집을 막는 문지기 (모델이 순서를 건너뛰어도).
+            # 승인 안 된 공통 부품의 편집은 편집하는 순간의 실행 기록으로 사용자에게 묻게 한다 (모든 모드)
             gate = (f'"{Path(sys.executable).as_posix()}" -X utf8 -m beom_workbench.hookgate "{Path(settings.home).as_posix()}" '
                     f'{run["id"]}')
             cfg.setdefault("hooks", {}).setdefault("PreToolUse", []).append(
                 {"matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{"type": "command", "command": gate, "timeout": 20}]})
+            if run.get("shared_parts"):
+                # 셸 명령 직후 — 승인 안 된 공통 부품이 바뀌었으면 되돌리고 알린다 (셸로 쓴 것은 편집 전 확인을 지나지 않는다)
+                cfg["hooks"].setdefault("PostToolUse", []).append(
+                    {"matcher": "Bash|PowerShell", "hooks": [{"type": "command", "command": gate, "timeout": 30}]})
         if cfg:
             sfile = d / "claude-settings.json"
             sfile.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
@@ -502,6 +524,13 @@ class ClaudeCode(Agent):
         env = quiet_env()
         if run.get("auth") != "api_key":
             env.pop("ANTHROPIC_API_KEY", None)  # 키가 있으면 -p 는 항상 키를 쓴다 — 구독 로그인으로 돌게 뺀다
+        # 툴킷의 대화로 기록되게 — Claude 데스크톱·Claude Code 안에서 앱을 띄우면 그 값(claude-desktop 등)을 물려받아, 툴킷과 에이전트의
+        # 대화가 사용자의 대화 목록에 섞였다. 'sdk-cli' 로 기록된 대화는 목록·--continue 에 나오지 않고 id 로 이어 받기만 된다
+        # (Claude Code 문서). 안에서 띄운 Claude 라는 표시(CLAUDECODE)도 넘기지 않는다.
+        env["CLAUDE_CODE_ENTRYPOINT"] = "sdk-cli"
+        # 파일 되돌리기용 사본(~/.claude/file-history)을 만들지 않는다 — 툴킷이 자기 체크포인트로 되돌린다 (사용자 쪽에 남는 기록을 줄인다)
+        env["CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING"] = "1"
+        env.pop("CLAUDECODE", None)
         env.setdefault("MCP_TIMEOUT", str(MCP_STARTUP_SEC * 1000))
         env.setdefault("MCP_TOOL_TIMEOUT", str(MCP_TOOL_SEC * 1000))
         from beom_workbench.core import sandbox
@@ -517,6 +546,11 @@ class ClaudeCode(Agent):
         if t == "assistant":
             out = []
             sub = bool(ev.get("parent_tool_use_id"))  # 하위 에이전트(Task·Agent)의 글 — 사용자에게 하는 말이 아니다 (영어 보고 등)
+            u = (ev.get("message") or {}).get("usage") or {}
+            if u and not sub:  # 이 호출이 실은 대화 전체의 크기 — 길어지면 다음 라운드를 새 대화로 시작한다 (실행기)
+                n = int(u.get("input_tokens") or 0) + int(u.get("cache_read_input_tokens") or 0) + int(u.get("cache_creation_input_tokens") or 0)
+                if n:
+                    out.append({"kind": "context", "tokens": n})
             for b in (ev.get("message") or {}).get("content") or []:
                 if b.get("type") == "text" and b.get("text", "").strip() and not sub:
                     out.append({"kind": "text", "text": b["text"].strip()[:4000]})
@@ -533,7 +567,7 @@ class ClaudeCode(Agent):
         if t == "result":
             return [{"kind": "result", "ok": not ev.get("is_error"), "subtype": ev.get("subtype"),
                      "session_id": ev.get("session_id"), "cost_usd": ev.get("total_cost_usd"), "turns": ev.get("num_turns"),
-                     "text": (ev.get("result") or "")[:2000]}]
+                     "usage": ev.get("usage"), "text": (ev.get("result") or "")[:2000]}]
         return []
 
 
@@ -543,7 +577,7 @@ class Codex(Agent):
     id, name = "codex", "Codex"
     api_key_env = ("CODEX_API_KEY", "OPENAI_API_KEY")
     stdin_prompt = True
-    note = "작업별 승인 대신 샌드박스로 막습니다 (대상 폴더 안에서만 쓰기, 웹은 규칙이 허용일 때만)."
+    note = "Codex 자체 샌드박스 안에서 돌고, 넘어서야 할 때(격리 밖 실행·폴더 쓰기·인터넷)는 Codex 가 요청하면 권한 규칙대로 허락하거나 묻습니다."
 
     def find(self) -> str | None:
         """네이티브 실행 파일을 먼저 — npm 껍데기는 PATH 의 Node 버전에 따라 깨진다 (nvm use 등)."""
@@ -591,7 +625,34 @@ class Codex(Agent):
         if sys.platform == "win32":
             # Windows 는 샌드박스 방식을 정하지 않으면 쓰기가 모두 막힌다 — 관리자 설치가 필요 없는 방식
             cfg.append('windows.sandbox="unelevated"')
+        # 빌드 도구의 캐시(~/.m2·~/.gradle·npm …)도 쓸 수 있게 — macOS·Linux 만. Windows 의 비관리자 격리는 폴더의 권한 구성에 따라
+        # 추가 쓰기 폴더를 받지 못하면 ('cannot enforce split writable root sets') 셸 명령을 모두 거부한다 — pip 캐시 하나로도 그랬고
+        # 어느 폴더가 그런지 미리 알 수 없어, 실험에서 Codex 가 읽기까지 전부 wb_run 으로 돌렸다. Windows 에서는 빌드·설치를
+        # 툴킷(wb_task·wb_deps)이 격리 밖에서 맡는다 (규칙 CODEX_WIN_RULE)
+        if sys.platform != "win32":
+            from beom_workbench.core import sandbox as _sandbox
+            caches = []
+            for c in _sandbox.cache_roots():
+                try:
+                    Path(c).mkdir(parents=True, exist_ok=True)
+                    caches.append(Path(c).as_posix())
+                except OSError:
+                    continue
+            if caches:
+                cfg.append(f"sandbox_workspace_write.writable_roots={json.dumps(caches)}")
         cfg += codex_isolation(pol)
+        if self.app_server():
+            # app-server 로 — Codex 가 격리를 넘어야 할 때(격리 밖 실행·폴더 쓰기·네트워크) 승인을 요청하고, 툴킷이 그 요청을 같은
+            # 권한 판단(사람에게 묻는 카드 포함)으로 답한다. exec 는 묻지 못해 막힌 것은 그냥 실패했고, 툴킷이 미리 맞혀야 했다
+            cfg = [c if c != 'approval_policy="never"' else 'approval_policy="on-request"' for c in cfg]
+            spec = {"codex": self.base(), "config": cfg, "cwd": str(Path(run["target_root"]).resolve()), "home": str(settings.home),
+                    "run_id": run["id"], "model": run.get("model") or None, "effort": run.get("effort") or None,
+                    "session_id": run.get("session_id") or None, "title": f"beom-workbench · {run.get('name') or run['id']}"}
+            from beom_workbench.core import inbox as _inbox
+            sfile = _inbox.run_dir(settings, run["id"]) / "codex-bridge.json"
+            sfile.parent.mkdir(parents=True, exist_ok=True)
+            sfile.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+            return [sys.executable, "-X", "utf8", "-m", "beom_workbench.codexbridge", str(sfile)], self.env(run)
         # exec resume 는 -s·-C 를 받지 않는다 (codex 0.167) — 샌드박스는 설정 값으로, 작업 폴더는 프로세스 cwd 로
         flags = ["--json", "--skip-git-repo-check"]
         for c in cfg:
@@ -606,6 +667,25 @@ class Codex(Agent):
 
     def stdin_text(self, run: dict, prompt: str, rules: str) -> str:
         return prompt if run.get("session_id") else f"{rules}\n\n{prompt}"
+
+    def grants(self) -> dict:
+        if self.app_server():
+            return {"approvals": True, "how": "app-server 승인 요청 (beom_workbench.codexbridge)",
+                    "escalation": "Codex 의 권한 상승 요청 (escalated permissions) · 폴더·네트워크 권한 요청"}
+        return {"approvals": False, "how": "codex exec — 헤드리스라 묻지 못한다 (막힌 것은 실패)", "escalation": "wb_run"}
+
+    _APP: dict = {}
+
+    def app_server(self) -> bool:
+        """이 Codex 가 app-server(승인 요청을 앱이 받는 공식 통로)를 갖고 있나 — 없으면 예전처럼 exec (묻지 못함).
+        BEOM_WORKBENCH_CODEX_EXEC=1 이면 exec 로 (비교·문제 확인용)."""
+        if os.environ.get("BEOM_WORKBENCH_CODEX_EXEC") == "1" or not self.exe:
+            return False
+        key = str(self.exe)
+        if key not in self._APP:
+            p = _run_quiet([*self.base(), "app-server", "--help"])
+            self._APP[key] = bool(p is not None and p.returncode == 0 and b"app server" in (p.stdout + p.stderr).lower())
+        return self._APP[key]
 
     def models(self) -> list[dict]:
         """Codex 가 로그인 계정 기준으로 받아 둔 모델 목록(~/.codex/models_cache.json) — 없으면 기본값만."""
@@ -681,6 +761,8 @@ class Codex(Agent):
                 if item.get("status") == "failed" and err:
                     out.append({"kind": "text", "text": f"[도구 실패] {name}: {err.get('message') if isinstance(err, dict) else err}"[:2000]})
                 return out
+        if t == "context.updated":
+            return [{"kind": "context", "tokens": ev.get("tokens"), "window": ev.get("window")}]
         if t == "turn.completed":
             return [{"kind": "result", "ok": True, "usage": ev.get("usage")}]
         if t in ("turn.failed", "error"):
@@ -744,6 +826,9 @@ class GeminiCLI(Agent):
     api_key_env = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
     note = ("Antigravity CLI(agy)로 연결합니다. 헤드리스 실행에서는 확인이 필요한 셸 명령이 거절돼 대상 폴더 안 편집과 "
             "툴킷 도구(검증 등)로 진행합니다. MCP 는 대상 폴더의 .agents/mcp_config.json 으로 붙입니다. (실험적)")
+
+    def grants(self) -> dict:
+        return {"approvals": False, "how": "헤드리스 — 편집 자동 허용(accept-edits), 물어볼 작업은 거절된다", "escalation": None}
 
     def find(self) -> str | None:
         found = _which("agy") or next((str(p) for p in _agy_paths() if p.is_file()), None)

@@ -117,7 +117,6 @@ def _check_one(files: set[str], hard_only: bool) -> list[str]:
     names = {f.split("/")[-1] for f in files}
     top = {f for f in files if "/" not in f}
     ext = lambda e: [f for f in files if f.lower().endswith(e)]  # noqa: E731
-    code = [f for f in files if f.lower().endswith(CODE_EXTS)]
     hard: list[str] = []
     soft: list[str] = []
 

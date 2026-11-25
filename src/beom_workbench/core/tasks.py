@@ -20,7 +20,10 @@ from pathlib import Path
 
 from beom_workbench.common.response import ToolError
 
-TASKS = ("test", "typecheck", "build", "lint")
+TASKS = ("test", "typecheck", "build", "lint", "format")
+# 프로젝트가 정해 둔 포매터 설정 — 있을 때만 형식 검사를 돌린다 (설정 없는 프로젝트에 툴킷이 형식을 강요하지 않는다)
+_PRETTIER = (".prettierrc", ".prettierrc.json", ".prettierrc.js", ".prettierrc.cjs", ".prettierrc.mjs", ".prettierrc.yaml", ".prettierrc.yml",
+             ".prettierrc.toml", "prettier.config.js", "prettier.config.cjs", "prettier.config.mjs")
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SAFE_PATH = re.compile(r"^(?!.*\.\.)(?![\\/])(?![A-Za-z]:)[\w.\-/\\]+$")
 _SAFE_NAME = re.compile(r"^[\w .:\-\[\]]{1,120}$")
@@ -62,6 +65,12 @@ def command(root: Path, kind: str, task: str, paths: list[str], name: str) -> st
     코드 5)으로 실패해, 테스트를 요청받지 않은 프로젝트도 에이전트가 테스트를 만들어야 통과했다."""
     from beom_workbench.core import layout
     root = Path(root)
+    if task in ("lint", "format") and paths:  # 그 도구가 읽는 파일만 (ruff 에 .js 를, eslint 에 .md 를 주면 오류가 난다)
+        keep = {("python", "lint"): (".py",), ("python", "format"): (".py",),
+                ("node", "lint"): (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte")}.get((kind, task))
+        paths = [x for x in paths if not keep or x.lower().endswith(keep)]
+        if not paths:
+            return None
     p = " ".join(f'"{x}"' for x in paths)
     if kind == "node":
         sc = _scripts(root)
@@ -80,7 +89,7 @@ def command(root: Path, kind: str, task: str, paths: list[str], name: str) -> st
                     extra.append({"vitest": f'-t "{name}"', "jest": f'-t "{name}"', "mocha": f'--grep "{name}"',
                                   "node": f'--test-name-pattern="{name}"'}.get(runner or "", ""))
                 extra = [x for x in extra if x]
-                return "npm test" + (" -- " + " ".join(extra) if extra else "")
+                return _pm_run(root, "test", extra)
             if _bin(root, "vitest"):
                 return "vitest run" + (f" {p}" if p else "") + (f' -t "{name}"' if name else "")
             if _bin(root, "jest"):
@@ -90,14 +99,26 @@ def command(root: Path, kind: str, task: str, paths: list[str], name: str) -> st
             return None
         if task == "typecheck":
             if sc.get("typecheck"):
-                return "npm run typecheck"
+                return _pm_run(root, "typecheck", [])
             if (root / "tsconfig.json").is_file() and _bin(root, "tsc"):
                 return "tsc --noEmit"
             return None
+        if task == "lint" and paths and _bin(root, "eslint"):
+            return "eslint " + p  # 바뀐 파일만 — 스크립트는 파일을 받는지 알 수 없다
         if task in ("build", "lint") and sc.get(task):
-            return f"npm run {task}"
+            return _pm_run(root, task, [])
         if task == "lint" and _bin(root, "eslint"):
             return "eslint ."
+        if task == "format":
+            if sc.get("format:check"):
+                return _pm_run(root, "format:check", [])
+            pj = {}
+            try:
+                pj = json.loads((root / "package.json").read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                pass
+            if _bin(root, "prettier") and (any((root / f).is_file() for f in _PRETTIER) or "prettier" in pj):
+                return "prettier --check " + (p or ".")
         return None
     if kind == "python":
         py = _python(root)
@@ -110,11 +131,21 @@ def command(root: Path, kind: str, task: str, paths: list[str], name: str) -> st
         if task == "typecheck" and (bin_dir / ("mypy.exe" if os.name == "nt" else "mypy")).is_file():
             return f"{py} -m mypy ."
         if task == "lint" and (bin_dir / ("ruff.exe" if os.name == "nt" else "ruff")).is_file():
-            return f"{py} -m ruff check ."
+            return f"{py} -m ruff check " + (p or ".")
+        if task == "format":
+            try:
+                cfg = (root / "pyproject.toml").read_text(encoding="utf-8")
+            except OSError:
+                cfg = ""
+            has = lambda tool: (bin_dir / (tool + (".exe" if os.name == "nt" else ""))).is_file()  # noqa: E731
+            if has("ruff") and ("[tool.ruff.format]" in cfg or (root / "ruff.toml").is_file() or (root / ".ruff.toml").is_file()):
+                return f"{py} -m ruff format --check " + (p or ".")
+            if has("black") and "[tool.black]" in cfg:
+                return f"{py} -m black --check " + (p or ".")
         return None
     if kind == "rust":
         return {"test": "cargo test" + (f" {name}" if name else ""), "typecheck": "cargo check", "build": "cargo build",
-                "lint": "cargo clippy"}.get(task)
+                "lint": "cargo clippy", "format": "cargo fmt --check"}.get(task)
     if kind == "go":
         return {"test": "go test ./..." + (f' -run "{name}"' if name else ""), "typecheck": "go vet ./...",
                 "build": "go build ./...", "lint": "go vet ./..."}.get(task)
@@ -129,9 +160,41 @@ def command(root: Path, kind: str, task: str, paths: list[str], name: str) -> st
         return {"test": f"{g} test" + (f' --tests "{name}"' if name else ""), "build": f"{g} build -x test",
                 "typecheck": f"{g} compileJava"}.get(task)
     if kind == "dotnet":
-        return {"test": "dotnet test" + (f' --filter "{name}"' if name else ""), "build": "dotnet build",
-                "typecheck": "dotnet build"}.get(task)
+        return _dotnet(root, task, name)
     return None
+
+
+def _dotnet(root: Path, task: str, name: str) -> str | None:
+    """dotnet test·build 를 어디에 — 맨 위에 .sln·.csproj 가 있으면 거기서, 없으면(하위 폴더에만 프로젝트) 테스트 프로젝트를 골라서.
+    맨 위에서 그냥 'dotnet test' 를 돌리면 '프로젝트 파일이 없다'(MSB1003)로 끝났다."""
+    root = Path(root)
+    f = f' --filter "{name}"' if name else ""
+    if any(root.glob("*.sln")) or any(root.glob("*.slnx")) or any(root.glob("*.csproj")) or any(root.glob("*.fsproj")):
+        return {"test": f"dotnet test{f}", "build": "dotnet build", "typecheck": "dotnet build"}.get(task)
+    projs = sorted(p for d in ("*", "*/*", "*/*/*") for p in root.glob(d + ".csproj") if "bin" not in p.parts and "obj" not in p.parts)
+    tests = [p for p in projs if re.search(r"Microsoft\.NET\.Test\.Sdk|xunit|nunit|MSTest", _read_text(p), re.I)]
+    rel = lambda p: p.relative_to(root).as_posix()  # noqa: E731
+    if task == "test":
+        return " && ".join(f'dotnet test "{rel(p)}"{f}' for p in tests) or None
+    return " && ".join(f'dotnet build "{rel(p)}"' for p in (tests or projs)) or None
+
+
+def _read_text(p: Path) -> str:
+    try:
+        return p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _pm_run(root: Path, script: str, extra: list[str]) -> str:
+    """프로젝트의 패키지 관리자로 스크립트 — npm test -- a · pnpm test a · yarn test a · bun run test a."""
+    from beom_workbench.core import deps
+    pm = deps.node_manager(Path(root))
+    head = " ".join(deps.pm_command(Path(root)))
+    if pm == "npm":
+        return (f"{head} test" if script == "test" else f"{head} run {script}") + (" -- " + " ".join(extra) if extra else "")
+    run = "run " if pm == "bun" or script not in ("test",) else ""
+    return f"{head} {run}{script}" + (" " + " ".join(extra) if extra else "")
 
 
 def available(root: Path, task: str) -> bool:
@@ -172,28 +235,38 @@ def _summary(kind: str, text: str) -> str | None:
     return " / ".join(dict.fromkeys(hits[-4:])) or None
 
 
-def needs_outside(cmd: str) -> bool:
-    from beom_workbench.core import inbox
-    return inbox.needs_unsandboxed(cmd) or bool(re.match(r"\s*(?:\./)?(?:mvnw?|gradlew?)(?:\.cmd|\.bat)?\b", cmd or "", re.I))
+def needs_outside(cmd: str, env: dict | None = None) -> bool:
+    """Windows 격리 안에서 돌지 않는 명령인가 — 판단은 execenv.outside_reason 하나 (툴킷의 모든 실행 자리가 같은 기준)."""
+    from beom_workbench.core import execenv
+    return execenv.outside_reason(cmd, env) is not None
 
 
-def permit_outside(settings, run: dict, what: str, key: str = "outside:node") -> bool:
-    """Node 도구를 격리 밖에서 돌려도 되나 — '빌드'·'격리 없이 실행' 규칙대로. 묻는 경우엔 프로젝트에서 한 번 (테스트·타입 검사·
-    빌드·툴킷의 커버리지 측정이 같은 승인을 쓴다 — 모두 프로젝트의 Node 도구를 그 폴더에서 돌리는 일이다)."""
+OUTSIDE_WHY = {"node": "Node 도구는 자식 프로세스를 띄우지 못함", "jvm": "Maven·Gradle 은 사용자 폴더의 캐시·내려받기가 필요함",
+               "dotnet": ".NET 은 사용자 폴더의 SDK 상태·NuGet 이 필요함", "go": "Go 는 사용자 폴더의 모듈 캐시가 필요함",
+               "cargo": "Rust 는 rustup·Cargo 의 사용자 폴더가 필요함",
+               "python": "Python 3.12.4 이상은 임시 폴더를 소유자 전용으로 만들어 격리 안에서 쓰지 못함",
+               "denied": "격리 안에서 '접근 거부'로 실패함",
+               "escalation": "에이전트의 격리 안에서 막혀 격리 밖 실행을 요청함"}
+
+
+def permit_outside(settings, run: dict, what: str, key: str = "outside", why: str | None = None) -> bool:
+    """프로젝트 명령을 격리 밖에서 돌려도 되나 — '빌드'·'격리 없이 실행' 규칙대로. 묻는 경우엔 프로젝트에서 한 번 (테스트·타입 검사·
+    빌드·검증 케이스·커버리지 측정이 같은 승인을 쓴다 — 모두 프로젝트의 도구를 그 폴더에서 돌리는 일이다)."""
     from beom_workbench.core import inbox
     kd, ku = inbox.decide(run, "build"), inbox.decide(run, "unsandboxed")
     if "refuse" in (kd, ku):
         return False
-    if kd == "allow" and ku == "allow" or key in (run.get("approved_cmds") or []):
+    approved = run.get("approved_cmds") or []
+    if kd == "allow" and ku == "allow" or key in approved or "outside" in approved or "outside:node" in approved:
         return True
+    reason = OUTSIDE_WHY.get(why or "", "Windows 격리 안에서 돌지 않음")
     ans = inbox.ask(settings, run["id"], "permission", {
-        "summary": f"툴킷이 프로젝트의 Node 도구를 격리 밖에서 돌립니다 (Node 빌드 도구는 Windows 격리 안에서 돌지 않음 — 이 프로젝트에서 "
-                   f"한 번만 묻습니다): {what}",
+        "summary": f"툴킷이 프로젝트 명령을 격리 밖에서 돌립니다 ({reason} — 이 프로젝트에서 한 번만 묻습니다): {what}",
         "tool": "mcp:wb_task", "input": {"command": what}, "permission_kind": "unsandboxed"})
     if not ans.get("allow"):
         return False
     if ans.get("always"):
-        inbox.update_run(settings, run["id"], lambda r: r["policy"].__setitem__("unsandboxed", "allow"))
+        inbox.allow_always(settings, run["id"], "unsandboxed")
     inbox.update_run(settings, run["id"], lambda r: r.update(approved_cmds=list(dict.fromkeys((r.get("approved_cmds") or []) + [key]))))
     return True
 
@@ -233,17 +306,27 @@ def run_task(settings, run: dict, task: str, *, path: str = "", paths: list[str]
     if bad or (name and not _SAFE_NAME.match(name)):
         raise ToolError("invalid_request", "paths 는 대상 폴더 안의 상대 경로, name 은 글자·숫자·공백·._-:[] 만",
                         recovery="거르지 않고 전체를 돌리거나 이름을 간단히")
+    if task in ("lint", "format") and not paths and run:
+        paths = changed_code(settings, run, root)  # 이번 실행에서 바꾼 파일만 — 원래 있던 문제로 막히지 않게
+        if paths and not _plan(root, task, paths, name) and available(root, task):
+            # 바꾼 파일 중 그 도구가 읽는 파일이 없다 — 검사할 것이 없으니 통과로 남긴다
+            from beom_workbench.core import inbox
+            inbox.log(settings, run["id"], "task", task=task, project="", command="", exit_code=0, outside=False)
+            return {"ok": True, "results": [], "note": f"이번에 바꾼 파일 중 '{task}' 도구가 읽는 파일이 없어 돌리지 않음"}
     found = kinds(root)
     if not _plan(root, task, paths, name):
         why = (f"이 폴더의 프로젝트({', '.join(found)})에 '{task}' 작업이 없음" if found else "프로젝트 파일(package.json·pyproject.toml·"
                "Cargo.toml 등)을 찾지 못함")
         hint = {"test": "테스트 파일을 만들거나 package.json 에 test 스크립트를 적는다",
                 "typecheck": "TypeScript 면 tsconfig.json 과 typescript 의존성, 또는 package.json 에 typecheck 스크립트",
-                "build": "package.json 에 build 스크립트를 적는다", "lint": "package.json 에 lint 스크립트를 적는다"}[task]
+                "build": "package.json 에 build 스크립트를 적는다", "lint": "package.json 에 lint 스크립트를 적는다",
+                "format": "프로젝트에 포매터 설정(prettier·ruff format·black·rustfmt)이 없음 — 설정이 없으면 형식 검사는 하지 않는다"}[task]
         raise ToolError("not_found", why, recovery=hint)
     if inbox.decide(run, "build") == "refuse":
         raise ToolError("denied", "규칙상 빌드·테스트 실행이 허용되지 않음", recovery="사용자에게 권한 설정을 바꿔 달라고 한다")
-    deps.ensure(settings, run, base)  # 의존성 먼저 — 바뀐 것이 없으면 바로 지나간다
+    # 언어 도구(프로젝트가 정한 버전)를 먼저 — 의존성을 그 버전으로 설치해야 한다 (Node 24 로 깐 뒤 Node 20 을 받으면 어긋난다)
+    ensure_tools(settings, run, [(k, task, command(base, k, task, [], "") or "", base) for k in kinds(base) if k in TOOL_OF])
+    deps.ensure(settings, run, base)  # 그다음 의존성 — 바뀐 것이 없으면 바로 지나간다
     # 명령은 준비가 끝난 뒤에 고른다 (방금 만든 .beom/venv 의 파이썬·node_modules/.bin 의 도구를 쓰게)
     plan = _plan(root, task, paths, name)
     if inbox.decide(run, "build") == "ask" and f"task:{task}" not in (run.get("approved_cmds") or []):
@@ -325,7 +408,7 @@ def _git_ignored(base: Path, rel: str) -> bool:
         return False
 
 
-TOOL_OF = {"node": "node", "rust": "cargo", "go": "go", "maven": "java", "gradle": "java", "dotnet": "dotnet"}
+TOOL_OF = {"node": "node", "rust": "cargo", "go": "go", "maven": "java", "gradle": "java", "dotnet": "dotnet", "python": "python"}
 INSTALL_NOW = "툴킷이 지금 설치 (권장)"
 INSTALLED = "직접 설치했습니다 — 계속"
 DECLINED = "설치하지 않음 — 빌드 없이 마무리 (완료로 보지 않음)"
@@ -343,39 +426,79 @@ def ensure_tools(settings, run: dict | None, plan: list[tuple]) -> tuple[list[tu
         k, cmd = item[0], str(item[2])
         if k.startswith("_cmd_"):  # 검증 명령의 첫 낱말로 정한 도구
             return {k[5:]}
-        if k == "maven":
-            return {"java"} if cmd.lstrip().startswith(("mvnw", "./mvnw")) else {"java", "mvn"}
+        if k == "maven":  # mvnw · ./mvnw · .\mvnw.cmd
+            return {"java"} if re.search(r"(?:^|[\s\\/])mvnw(?:\.cmd)?\b", cmd) else {"java", "mvn"}
         if k == "gradle":
             return {"java"} if "gradlew" in cmd else {"java", "gradle"}
         if k == "rust" and sys.platform == "win32":
             return {"cargo", "msvc"}  # Windows 의 Rust 는 MSVC 링커(link.exe)가 있어야 링크한다
         return {TOOL_OF[k]} if k in TOOL_OF else set()
+    from beom_workbench.core import toolchains
     need = {t for item in plan for t in tools_of(item)}
     if not need:
         return plan, []
     refresh_path()
-    missing = {t for t in need if not prereqs._has(t)}
+    roots = {str(item[3]) for item in plan if len(item) > 3} or {str(Path(run["target_root"]) if run else ".")}
+
+    def ready(tool: str) -> bool:
+        """Java·Node·Go·.NET·Python 은 프로젝트가 정한 버전까지 (pom.xml 의 release·.nvmrc·go.mod·global.json …)."""
+        if tool in toolchains.FETCH or tool == "python":
+            return all(toolchains.ok(tool, Path(r)) for r in roots)
+        return prereqs._has(tool)
+
+    def spec_of(tool: str) -> tuple[str | None, str | None]:
+        for r in roots:
+            req = toolchains.required(Path(r)).get(tool)
+            if req:
+                return req["spec"], req["why"]
+        return None, None
+    missing = {t for t in need if not ready(t)}
+
+    def other_version(tool: str) -> str | None:
+        """프로젝트가 정한 것과 다른 버전이라도 이 PC 에 있으면 그 버전 — 설치를 거절해도 그것으로 돌린다 (빌드를 아예 건너뛰지 않게)."""
+        if tool == "python":
+            return toolchains._py_version(toolchains._user_python())
+        return toolchains.installed(tool) if tool in toolchains.FETCH else None
     for tool in sorted(missing):
         if run is None or tool in (inbox.load_run(settings, run["id"]).get("tools_declined") or []):
+            if other_version(tool):
+                missing.discard(tool)  # 이미 거절했다 — 있는 버전으로 (경고는 처음 거절할 때 남겼다)
             continue
-        name, why = prereqs.TOOLS[tool][0], prereqs.TOOLS[tool][1]
-        how = prereqs.install_command(tool) or "직접 설치"
+        spec, where = spec_of(tool)
+        name = toolchains.NAMES.get(tool) or prereqs.TOOLS[tool][0]
+        why = prereqs.TOOLS[tool][1] if tool in prereqs.TOOLS else ""
+        have = toolchains.installed(tool) if tool in toolchains.FETCH or tool == "python" else None
+        if spec:  # 프로젝트가 정한 버전 — 'Java 21 이 필요 (pom.xml) · 이 PC 는 17'
+            name, why = f"{name} {spec}", f"{where} 에 적힌 버전" + (f" · 이 PC 는 {have}" if have else "")
+        if tool in toolchains.FETCH:
+            how = toolchains.describe(tool, spec or "lts")
+        elif tool == "python":
+            how = "python.org 에서 그 버전을 설치하거나 py 런처로 고른다 (툴킷이 파이썬 자체는 받지 않음)"
+        else:
+            how = prereqs.install_command(tool) or "직접 설치"
         lead = ""
         for _ in range(3):  # 설치가 안 됐으면 두 번 더 묻고, 그래도 없으면 설치하지 않은 것으로 본다
             ans = inbox.ask(settings, run["id"], "question", {
-                "question": f"{lead}이 프로젝트를 빌드·테스트하려면 {name} 이(가) 필요한데 이 PC 에 없습니다 ({why}). "
+                "apply": {"kind": "tool_choice", "tool": tool, "spec": spec},
+                "question": f"{lead}이 프로젝트를 빌드·테스트하려면 {name} 이(가) 필요한데 이 PC 에 맞는 것이 없습니다 ({why}). "
                             f"툴킷이 설치할까요? 방법: {how}" + (" — 패키지 약관에 동의하고 설치하며, 관리자 확인 창이 뜰 수 있습니다"
-                                                            if sys.platform == "win32" and tool not in prereqs.MANAGED else ""),
-                "choices": [INSTALL_NOW, INSTALLED, DECLINED]})
+                                                            if sys.platform == "win32" and tool in ("cargo", "msvc", "openssl") else ""),
+                "choices": ([INSTALL_NOW] if tool != "python" else []) + [INSTALLED, DECLINED]})
             choice = ans.get("choice") or ""
             if choice == INSTALL_NOW:
                 inbox.log(settings, run["id"], "note", tone="", text=f"{name} 을(를) 설치하는 중입니다 — {how}")
-                res = prereqs.install(tool)
+                if tool in toolchains.FETCH:
+                    res = toolchains.fetch(tool, spec or "lts")
+                else:
+                    jdk = next((toolchains.choose("java", Path(r)) for r in roots), None) if tool == "gradle" else None
+                    res = prereqs.install(tool, version=spec if tool in prereqs.MANAGED else None,
+                                          java=toolchains._ver(jdk[1])[0] if jdk else None)
                 inbox.log(settings, run["id"], "deps", dep=tool, ok=res["ok"], files=[], error=res.get("error"))
             elif choice != INSTALLED:
                 break
             refresh_path(max_age=0)
-            if prereqs._has(tool):
+            toolchains.forget()
+            if ready(tool):
                 missing.discard(tool)
                 inbox.log(settings, run["id"], "note", tone="", text=f"{name} 설치를 확인했습니다 — 이어서 빌드·테스트합니다")
                 break
@@ -385,15 +508,33 @@ def ensure_tools(settings, run: dict | None, plan: list[tuple]) -> tuple[list[tu
         if tool in missing:
             inbox.update_run(settings, run["id"], lambda r, t=tool: r.update(
                 tools_declined=list(dict.fromkeys((r.get("tools_declined") or []) + [t]))))
-            inbox.log(settings, run["id"], "note", tone="warn", text=f"{name} 없이 진행합니다 — 빌드·테스트는 인수인계에 남은 확인으로 적습니다")
+            alt = other_version(tool)
+            if alt:
+                missing.discard(tool)
+                inbox.log(settings, run["id"], "note", tone="warn",
+                          text=f"{name} 대신 이 PC 의 {alt} 로 빌드·테스트합니다 — 결과가 다를 수 있어 인수인계에 적습니다")
+            else:
+                inbox.log(settings, run["id"], "note", tone="warn", text=f"{name} 없이 진행합니다 — 빌드·테스트는 인수인계에 남은 확인으로 적습니다")
     keep = [p for p in plan if not (tools_of(p) & missing)]
     skipped = []
     for p in plan:
         lack = sorted(tools_of(p) & missing)
         if lack:
+            label = toolchains.NAMES.get(lack[0]) or (prereqs.TOOLS[lack[0]][0] if lack[0] in prereqs.TOOLS else lack[0])
+            spec, _ = spec_of(lack[0])
             skipped.append({"kind": p[0], "task": p[1], "command": p[2], "ok": False, "skipped": True, "missing_tool": lack[0],
-                            "error": f"{prereqs.TOOLS[lack[0]][0]} 이(가) 이 PC 에 없어 돌리지 않음"})
+                            "error": f"{label}{' ' + spec if spec else ''} 이(가) 이 PC 에 없어 돌리지 않음"})
     return keep, skipped
+
+
+def prepare_tools(settings, run: dict) -> None:
+    """라운드를 시작하기 전에 — 이 프로젝트를 빌드·테스트할 도구(프로젝트가 정한 버전)가 없으면 지금 묻고 받는다. 라운드 중간에
+    받으면 이미 떠 있는 에이전트의 셸은 PATH 가 그대로라 그 라운드 내내 옛 버전(또는 없음)으로 돌았다."""
+    from beom_workbench.core import layout
+    root = Path(run["target_root"])
+    plan = [(k, "test", command(Path(at), k, "test", [], "") or "", Path(at)) for k, at in layout.projects(root) if k in TOOL_OF]
+    if plan:
+        ensure_tools(settings, run, plan)
 
 
 CMD_TOOL = {"go": "go", "cargo": "cargo", "mvn": "mvn", "gradle": "gradle", "dotnet": "dotnet", "node": "node", "npm": "node",
@@ -428,36 +569,49 @@ def result_of(kind: str, task: str, cmd: str, code: int, out: str) -> dict:
             "output_tail": "\n".join(lines[-60:])[-5000:]}
 
 
-def _execute(settings, run: dict | None, root: Path, plan: list[tuple], timeout: int = 600) -> list[dict]:
+def _execute(settings, run: dict | None, root: Path, plan: list[tuple], timeout: int = 600, regression: bool = False) -> list[dict]:
     """(종류, 작업, 명령[, 자리]) 를 차례로 — 자동 실행 중이면 격리 규칙대로 (Node 도구는 승인받아 격리 밖), 아니면 그냥."""
     from beom_workbench.core import inbox, port, sandbox
     results = []
     for item in plan:
         kind, task, cmd = item[:3]
         cwd = Path(item[3]) if len(item) > 3 else Path(root)
-        env = port._Side("target", cwd, port._harness_dir(settings)).env()
+        from beom_workbench.core import execenv
+        env = execenv.command_env(cwd)
         boxed = run is not None and sandbox.wraps_powershell(run)
         outside = False
-        if boxed and needs_outside(cmd):
-            outside = permit_outside(settings, run, cmd)
+        why = execenv.outside_reason(cmd, env) if boxed else None
+        if why:
+            outside = permit_outside(settings, run, cmd, why=why)
             run = inbox.load_run(settings, run["id"])
             if not outside:
                 results.append({"kind": kind, "task": task, "command": cmd, "ok": False, "skipped": True,
-                                "error": "격리 밖 실행이 허용되지 않아 돌리지 않음 (Node 도구는 격리 안에서 돌지 않는다)"})
+                                "error": f"격리 밖 실행이 허용되지 않아 돌리지 않음 ({OUTSIDE_WHY[why]})"})
                 continue
-        if boxed and not outside:
-            argv, shell = sandbox.wrap_argv(["cmd", "/d", "/c", cmd], run), False
-        else:
-            argv, shell = cmd, True  # 문자열 그대로 (목록으로 넘기면 따옴표가 \" 로 바뀌어 cmd 가 경로를 잘못 읽는다)
         t = max(10, min(int(timeout or 600), 1800))
-        try:
-            cp = port.run_tree(argv, shell=shell, cwd=str(cwd), timeout=t, env=env)
-            code, out = cp.returncode, (cp.stdout + cp.stderr).decode("utf-8", "replace")
-        except subprocess.TimeoutExpired as e:
-            code, out = 124, ((e.output or b"") + (e.stderr or b"")).decode("utf-8", "replace") + f"\n({t}초 안에 끝나지 않아 멈춤)"
+
+        def go(out_of_box: bool) -> tuple[int, str]:
+            if boxed and not out_of_box:  # 격리 안 — node --test 를 한 프로세스로 (그 node 가 받는 옵션만)
+                argv, shell, e = sandbox.wrap_argv(["cmd", "/d", "/c", cmd], run, cwd), False, sandbox.node_test_env(dict(env))
+            else:  # 문자열 그대로 (목록으로 넘기면 따옴표가 \" 로 바뀌어 cmd 가 경로를 잘못 읽는다)
+                argv, shell, e = cmd, True, env
+            try:
+                cp = port.run_tree(argv, shell=shell, cwd=str(cwd), timeout=t, env=e)
+                return cp.returncode, (cp.stdout + cp.stderr).decode("utf-8", "replace")
+            except subprocess.TimeoutExpired as ex:
+                return 124, ((ex.output or b"") + (ex.stderr or b"")).decode("utf-8", "replace") + f"\n({t}초 안에 끝나지 않아 멈춤)"
+        code, out = go(outside)
+        if boxed and not outside and execenv.denied(code, out) and permit_outside(settings, run, cmd, why="denied"):
+            # 격리 때문에 실패한 것 — 같은 허락으로 격리 밖에서 한 번 더 (도구마다 막히는 자리를 다 알 수 없다)
+            inbox.log(settings, run["id"], "note", tone="", text=f"격리 안에서 '접근 거부'로 실패해 격리 밖에서 다시 돌립니다: {cmd[:120]}")
+            outside = True
+            code, out = go(True)
         results.append(result_of(kind, task, cmd, code, out))
         if run is not None:
-            inbox.log(settings, run["id"], "task", task=task, project=kind, command=cmd, exit_code=code, outside=outside)
+            inbox.log(settings, run["id"], "task", task=task, project=kind, command=cmd, exit_code=code, outside=outside,
+                      # 검사 도구의 끝 출력 — 실패가 이번에 바꾼 파일에서 났는지 인계 때 가른다
+                      **({"tail": results[-1]["output_tail"][-3000:]} if task in ("lint", "format", "typecheck") else {}),
+                      **({"regression": True} if regression else {}))  # 회귀 확인(원래 테스트 전체)은 인계의 '테스트 통과' 판정에 넣지 않는다
     return results
 
 
@@ -465,11 +619,13 @@ def _test_kind(path: str) -> str | None:
     return "python" if path.endswith(".py") else "node" if re.search(r"\.[cm]?[jt]sx?$", path) else None
 
 
-def project_checks(settings, run: dict | None, root: Path, done: dict | None = None, tests_only: set | None = None) -> list[dict]:
+def project_checks(settings, run: dict | None, root: Path, done: dict | None = None, tests_only: set | None = None,
+                   regression: bool = False) -> list[dict]:
     """검증 때 툴킷이 함께 돌리는 프로젝트 테스트·타입 검사 — 에이전트가 따로 돌리지 않아도 완료 판정에 들어간다.
     done: 이미 돈 테스트 결과. tests_only: 돌릴 테스트 파일(절대 경로) — 이번 작업에서 새로 만든 테스트만. 원래 있던 테스트는 예전
     동작을 기대해서 바뀐 기능의 기준이 되지 못한다 (바뀐 기능은 합격 케이스로, 영향이 닿는 곳은 연관된 곳 분석으로 확인).
-    None 이면 프로젝트의 테스트 전체. 규칙상 빌드가 '묻기'면 한 번 묻는다."""
+    None 이면 프로젝트의 테스트 전체. 규칙상 빌드가 '묻기'면 한 번 묻는다.
+    regression: 회귀 확인 — 프로젝트 테스트 전체만 (타입 검사 없이). 결과에 regression=True 를 단다."""
     from beom_workbench.core import inbox, layout
     root = Path(root)
     done = done or {}
@@ -485,7 +641,7 @@ def project_checks(settings, run: dict | None, root: Path, done: dict | None = N
                           if Path(f).resolve().is_relative_to(r) and _test_kind(f) == k)
             if mine and (c := command(r, k, "test", mine, "")):
                 plan.append((k, "test", c, r))
-        if k in ("node", "python") and (c := command(r, k, "typecheck", [], "")):
+        if not regression and k in ("node", "python") and (c := command(r, k, "typecheck", [], "")):
             plan.append((k, "typecheck", c, r))  # 다른 언어는 테스트가 컴파일까지 한다
     results = list(done.values())
     if not plan:
@@ -500,9 +656,11 @@ def project_checks(settings, run: dict | None, root: Path, done: dict | None = N
             return results + [{"kind": k, "task": t, "command": c, "ok": False, "skipped": True, "error": why} for k, t, c, _ in plan]
         run = inbox.load_run(settings, run["id"])
     plan, missing = ensure_tools(settings, run, plan)
-    out = _execute(settings, run, root, plan)
+    out = _execute(settings, run, root, plan, regression=regression)
     for item, res in zip(plan, out):
         _scope_to_target(res, Path(item[3]), root)
+        if regression:
+            res["regression"] = True
     return results + missing + out
 
 
@@ -526,6 +684,33 @@ def _scope_to_target(res: dict, proot: Path, target: Path) -> None:
 # ---------------------------------------------------------------- 파일 지우기
 
 _TOOLKIT_SCRATCH = (".beom/tmp/", ".beom/helpers/")
+
+
+LINTABLE = (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte", ".css", ".scss", ".html", ".json", ".md")
+
+
+def changed_code(settings, run: dict, root: Path) -> list[str]:
+    """이번 실행에서 바꾼(지우지 않은) 검사할 파일 — root 기준 상대 경로. 모르면 []."""
+    from beom_workbench.core import inbox
+    from beom_workbench.core.checkpoints import Checkpoints
+    base = _start_checkpoint(settings, run)
+    if not base:
+        return []
+    try:
+        files = Checkpoints(inbox.run_dir(settings, run["id"]), run["target_root"]).changes(base).get("files") or []
+    except Exception:  # noqa: BLE001
+        return []
+    top = Path(run["target_root"]).resolve()
+    out = []
+    for f in files:
+        full = (top / f["path"]).resolve()
+        if f.get("status") == "D" or not full.is_file() or not f["path"].lower().endswith(LINTABLE) or f["path"].startswith(".beom/"):
+            continue
+        try:
+            out.append(full.relative_to(Path(root).resolve()).as_posix())
+        except ValueError:
+            continue
+    return out[:200]
 
 
 def _start_checkpoint(settings, run: dict) -> str | None:
@@ -552,6 +737,21 @@ def _snapshot_skips(rel: str) -> bool:
     from beom_workbench.core import checkpoints
     parts = rel.split("/")
     return any(p + "/" in checkpoints.EXCLUDE for p in parts[:-1]) or any(rel + "/" == e for e in checkpoints.EXCLUDE)
+
+
+def _born_after_start(p: Path, run: dict) -> bool:
+    """체크포인트에 담지 않는 폴더(dist·build·node_modules …)는 실행 전부터 있었는지 체크포인트로 알 수 없다 — 만들어진 시각으로 본다.
+    (실험: 이번 빌드가 만든 dist 를 지우려 하자 '실행 전부터 있던 파일' 카드가 두 번 떴다.) 만든 시각을 주지 않는 시스템이면 모른다."""
+    from datetime import datetime
+    try:
+        start = datetime.fromisoformat(run["created_at"]).timestamp()
+        st = p.stat()
+    except (KeyError, ValueError, TypeError, OSError):
+        return False
+    born = getattr(st, "st_birthtime", None)
+    if born is None and sys.platform == "win32":
+        born = st.st_ctime  # Windows 의 st_ctime 은 만든 시각
+    return born is not None and born > start + 1  # 기록이 초 단위로 잘린다
 
 
 def remove(settings, run: dict, paths: list[str]) -> dict:
@@ -591,7 +791,7 @@ def remove(settings, run: dict, paths: list[str]) -> dict:
             if rel in runner_core.shared_locked(run):
                 refused.append(f"{rel} (다른 화면들이 쓰는 기존 공통 부품 — 계획의 shared_changes 로 신고·승인 뒤에)")
                 continue
-        if existed is False and not _snapshot_skips(rel):
+        if existed is False and (not _snapshot_skips(rel) or _born_after_start(p, run)):
             own.append((rel, p))
         else:
             theirs.append((rel, p))

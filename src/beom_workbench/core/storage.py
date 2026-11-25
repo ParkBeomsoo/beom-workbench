@@ -55,12 +55,6 @@ def cache_dir(settings: Settings) -> Path:
     return d
 
 
-def work_dir(settings: Settings) -> Path:
-    d = settings.home / "work"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
 def trash_dir(settings: Settings) -> Path:
     d = settings.home / "trash"
     d.mkdir(parents=True, exist_ok=True)

@@ -168,14 +168,6 @@ def macro_invocation_values(sources: dict[str, list[str]], macro: str) -> list[d
     return out
 
 
-def enclosing_macro(lines: list[str], line: int) -> str | None:
-    for ln in range(line, 0, -1):
-        m = MACRO_DEF_RE.search(lines[ln - 1])
-        if m:
-            return m.group(1)
-    return None
-
-
 def compose(tables: list[Table]) -> list[tuple[Entry, str, list[str]]]:
     """표 → (항목, 전체 경로, 가정) 목록. sub 로 연결된 트리를 루트부터 펼친다."""
     by_owner = {t.owner: t for t in tables}

@@ -70,7 +70,27 @@ def snapshot(target: Path) -> dict:
 
 def changed_ranges(target: Path, base: dict) -> dict[str, list[tuple[int, int]]]:
     """원래 있던 소스 중 바뀐 파일 → 지금 파일에서 바뀐 줄 범위 [(시작, 끝)] (1부터). 지운 파일은 빼고 (부르는 쪽이 깨지면 케이스가 잡는다)."""
-    out: dict[str, list[tuple[int, int]]] = {}
+    return {rel: d[0] for rel, d in _diff(target, base).items()}
+
+
+def _unpaired(old: list[str], new_l: list[str], j1: int, j2: int) -> set[int]:
+    """A replaced block — old lines gave way to new lines. Each old line is paired, in order, with the new line most like it (the
+    line it became); the new lines left over were added there. One edited line followed by a new function is one replaced block
+    to a diff (no unchanged line between) — without pairing, the new function counted as an existing one."""
+    left, pos, paired = len(old), j1, set()
+    for o in old:
+        left -= 1
+        last = j2 - left  # 뒤에 남은 옛 줄마다 새 줄 하나씩은 남겨 둔다
+        if pos >= last:
+            break
+        best = max(range(pos, last), key=lambda j: (difflib.SequenceMatcher(None, o, new_l[j]).ratio(), -j))
+        paired.add(best)
+        pos = best + 1
+    return {j + 1 for j in range(j1, j2) if j not in paired}
+
+
+def _diff(target: Path, base: dict) -> dict[str, tuple[list[tuple[int, int]], set[int] | None]]:
+    out: dict[str, tuple[list[tuple[int, int]], set[int] | None]] = {}
     for rel, ent in base.items():
         p = Path(target) / rel
         try:
@@ -81,16 +101,21 @@ def changed_ranges(target: Path, base: dict) -> dict[str, list[tuple[int, int]]]
             continue
         new_l = now.decode("utf-8", "replace").splitlines()
         if "text" not in ent:
-            out[rel] = [(1, max(1, len(new_l)))]
+            out[rel] = ([(1, max(1, len(new_l)))], None)
             continue
-        ranges = []
-        sm = difflib.SequenceMatcher(None, ent["text"].splitlines(), new_l, autojunk=False)
-        for tag, _i1, _i2, j1, j2 in sm.get_opcodes():
+        ranges, added = [], set()
+        old_l = ent["text"].splitlines()
+        sm = difflib.SequenceMatcher(None, old_l, new_l, autojunk=False)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
             if tag == "equal":
                 continue
             ranges.append((j1 + 1, max(j1 + 1, j2)))  # 지운 줄은 그 자리(다음 줄)를 바뀐 것으로
+            if tag == "insert":
+                added.update(range(j1 + 1, j2 + 1))
+            elif tag == "replace":
+                added.update(_unpaired(old_l[i1:i2], new_l, j1, j2))
         if ranges:
-            out[rel] = ranges
+            out[rel] = (ranges, added)
     return out
 
 
@@ -200,7 +225,9 @@ def analyze(settings, port_id: str, target: Path, base: dict, measured) -> dict 
     if not base:
         return None
     target = Path(target).resolve()
-    ranges = changed_ranges(target, base)
+    diff = _diff(target, base)
+    ranges = {rel: d[0] for rel, d in diff.items()}
+    added = {rel: d[1] for rel, d in diff.items() if d[1] is not None}
     if not ranges:
         return {"changed": [], "callers": []}
     roots = scan_roots(target)
@@ -238,4 +265,13 @@ def analyze(settings, port_id: str, target: Path, base: dict, measured) -> dict 
     rows.sort(key=lambda r: r["target"])
     return {"engine": engine,
             "changed": sorted({f"{os.path.relpath(s['abs'], target).replace(chr(92), '/')}:{s['start_line']} {s['name']}" for s in changed}),
+            # 바꾼 함수의 범위 — 인계 때 요구사항(매핑)에 연결되지 않은 '기존' 함수 변경을 가린다. existed: 그 함수의 선언 줄이 새로 끼워
+            # 넣은 줄이 아니다 (그대로이거나, 원래 있던 줄을 고쳐 쓴 자리). 이름으로 가리면 새 함수 이름이 원래 파일의 주석·호출에 있을 때
+            # 기존 함수가 됐고, '시작 전 줄이 함수 안에 남았나'로 가리면 새 함수의 몸통이 옛 몸통과 같은 줄일 때 diff 가 그 줄을 짝지어
+            # 기존 함수가 됐다 (실험 143: 기존 mock.js 에 더한 쿠폰 경로를 '바꾼 기존 함수'로 막았다). 애매하면 기존 쪽 — 밝히라고 할 뿐이다
+            "changed_spans": sorted(({"at": f"{(rel := os.path.relpath(s['abs'], target).replace(chr(92), '/'))}:{s['start_line']}",
+                                      "end": (end := int(s.get("end_line") or s["start_line"])), "name": s["name"],
+                                      "existed": (int(s["start_line"]) not in added[rel]) if rel in added else None}
+                                     for s in changed),
+                                    key=lambda x: x["at"]),
             "callers": rows}

@@ -595,7 +595,7 @@ GATE_HUMAN = "사람 확인 항목 모두 승인됨 (차이 허용·생략·케�
 GATE_INTEGRITY = "기록 무결 (툴킷 밖에서 원장·골든을 고치지 않음)"
 GATE_LICENSE = "라이선스 확인 필요 없음"
 GATE_REQ_CASES = "요구사항마다 합격 케이스가 있음 (expect + req)"
-GATE_PROJECT = "새로 만든 테스트·타입 검사 통과 (툴킷이 검증 때 함께 돌림)"
+GATE_PROJECT = "새로 만든 테스트·원래 있던 테스트·타입 검사 통과 (툴킷이 검증 때 함께 돌림)"
 
 
 def _diff_state(last: dict | None, capture: dict | None, fp_now: str) -> dict:
@@ -608,8 +608,7 @@ def _diff_state(last: dict | None, capture: dict | None, fp_now: str) -> dict:
     if capture:
         if last["_rowid"] < capture["_rowid"]:
             return {"ok": False, "why": "마지막 capture 뒤에 검증하지 않음"}
-        rules = d.get("rules") or {}
-        base = capture["detail"].get("rules") or {}
+        rules, base = guard.rules_of(d, capture["detail"])
         missing = sorted(n for n in base if rules.get(n) != base[n])
         if missing:
             return {"ok": False, "why": f"capture 케이스 {len(missing)}개를 빼거나 바꿔서 검증함", "cases": missing[:10]}
@@ -623,15 +622,53 @@ def _diff_state(last: dict | None, capture: dict | None, fp_now: str) -> dict:
 _PROJECT_WHY: dict[int, str] = {}
 
 
+def _regression(settings, root: Path) -> list[dict]:
+    """원래 있던 테스트까지 프로젝트 테스트 전체를 돌린다. 실패하면 — 작업 전부터 실패하던 것인지 툴킷은 알 수 없어 사용자에게 한 번
+    묻는다 (같은 실패면 다시 묻지 않는다). '원래 실패'로 답한 실패는 완료를 막지 않고 알리기만 한다."""
+    run = _auto_run()
+    res = tasks_mod().project_checks(settings, run, root, regression=True)
+    for r in res:
+        if r.get("ok") or r.get("skipped"):
+            continue
+        sig = hashlib.sha1(f"{r.get('command')}|{r.get('summary')}".encode()).hexdigest()[:16]
+        r["regression_sig"] = sig
+        if run is None:
+            continue
+        from beom_workbench.core import inbox
+        cur = inbox.load_run(settings, run["id"])
+        if sig in (cur.get("regression_known") or []):
+            r["preexisting"] = True
+            continue
+        if sig in (cur.get("regression_asked") or []):
+            continue
+        ans = inbox.ask(settings, run["id"], "question", {
+            "apply": {"kind": "regression", "sig": sig},
+            "question": f"원래 있던 테스트가 실패합니다 ({r.get('command')}{': ' + r['summary'] if r.get('summary') else ''}). "
+                        "이번 작업 전부터 실패하던 테스트입니까?",
+            "choices": [REGRESSION_NEW, REGRESSION_OLD]})
+        key = "regression_known" if ans.get("choice") == REGRESSION_OLD else "regression_asked"
+        inbox.update_run(settings, run["id"], lambda x, k=key: x.update(**{k: sorted(set(x.get(k) or []) | {sig})}))
+        if key == "regression_known":
+            r["preexisting"] = True
+    return res
+
+
+REGRESSION_NEW = "아니요 — 이번 변경 때문 (고치게 한다)"
+REGRESSION_OLD = "예 — 작업 전부터 실패하던 것 (이 실패는 막지 않는다)"
+
+
 def _project_state(chk: dict | None, fp_now: str) -> dict:
-    """검증 때 함께 돈 프로젝트 테스트·타입 검사 — 기록이 없으면(예전 실행·테스트 없는 프로젝트) 막지 않는다."""
+    """검증 때 함께 돈 프로젝트 테스트·타입 검사 — 기록이 없으면(예전 실행·테스트 없는 프로젝트) 막지 않는다. 원래 있던 테스트의
+    실패(회귀)도 막는다 — 사용자가 '작업 전부터 실패'로 확인한 것만 빼고."""
     if not chk:
         return {"ok": True, "why": None}
     d = chk["detail"]
-    bad = [r for r in d.get("results") or [] if not r.get("ok") and not r.get("skipped")]
+    bad = [r for r in d.get("results") or [] if not r.get("ok") and not r.get("skipped") and not r.get("preexisting")]
     if bad:
-        why = "프로젝트 " + " · ".join(f"{'테스트' if r.get('task') == 'test' else '타입 검사'} 실패 ({r.get('command')}"
-                                      f"{': ' + r['summary'] if r.get('summary') else ''})" for r in bad[:3])
+        why = "프로젝트 " + " · ".join(f"{'원래 있던 테스트(회귀)' if r.get('regression') else '테스트' if r.get('task') == 'test' else '타입 검사'}"
+                                      f" 실패 ({r.get('command')}{': ' + r['summary'] if r.get('summary') else ''})" for r in bad[:3])
+        if any(r.get("regression") for r in bad):
+            why += " — 바꾼 코드를 쓰는 기존 기능이 깨졌다. 고친다. 요청으로 동작이 바뀐 것이면 그 테스트를 요청에 맞게 고친다 (사용자가 차이를 확인한다)"
         return {"ok": False, "why": why, "failed": bad[:3]}
     if d.get("target_fp") != fp_now:
         return {"ok": False, "why": "검사 뒤 대상 코드가 바뀜"}
@@ -661,9 +698,29 @@ def _adequacy_state(src: dict | None, tgt: dict | None, fp_now: str) -> dict:
             "why": "케이스 실행 범위를 아직 재지 않음 — wb_port_verify 를 돌리면 툴킷이 잰다 (측정 명령·도구를 따로 만들지 않는다)"}
 
 
+def _finish_step(finished) -> str:
+    """마지막 단계 — 자동 실행에서는 완료 판정을 툴킷(실행기)이 하고 에이전트는 인계를 남긴다."""
+    if _auto_run() is not None:
+        return "완료 조건을 채웠다 — wb_handoff 로 인수인계를 남긴다 (완료 판정은 툴킷이 한다)"
+    if not finished or not finished.get("valid"):
+        return "wb_port_finish 로 완료 판정 받기 (완료 보고는 그 결과로만)"
+    return "완료 — wb_port_finish 판정 유효"
+
+
 def _next_step(gates: dict, *, counts, capture, diff, human, adequacy, finished) -> str:
     if not gates[GATE_INTEGRITY]:
         return "기록이 툴킷 밖에서 바뀜 — 사용자에게 알리고, 바뀐 단계를 툴킷으로 다시 실행 (capture·verify·map)"
+    run = _auto_run() or {}
+    if run.get("mode") == "reference":
+        # 자동 실행의 순서는 앱의 단계와 같다: 원본 기록(기준) → 계획 → (승인) → 구현·매핑 → 검증. 앱은 계획 카드를 기준과 한 장으로
+        # 띄운다 — 계획을 먼저 내게 하니 카드가 뜨지 않은 채 승인을 기다리며 라운드가 헛돌았다 (실험 135)
+        plan = run.get("plan") or {}
+        if capture is None:
+            return "wb_port_capture 로 원본 응답(골든) 저장 — 구현 전에 정하는 기준이다 (그다음 계획)"
+        if not plan.get("steps"):
+            return "wb_plan_set 으로 옮길 계획을 낸다 — 사용자는 원본 기록과 계획을 한 장으로 확인한다. 계획을 낸 뒤 라운드를 끝낸다"
+        if run.get("plan_approval", True) and run.get("confirm_at", "start") != "end" and not plan.get("approved"):
+            return "사용자 승인 대기 — 원본 기록과 계획을 확인받은 뒤 구현한다. 라운드를 끝낸다"
     if not gates[GATE_MAPPED]:
         return f"wb_port_map 으로 남은 {counts.get('pending', 0)}개 매핑 (ported 는 '경로:줄', omitted·replaced 는 사유)"
     if not gates[GATE_TARGETS]:
@@ -681,9 +738,7 @@ def _next_step(gates: dict, *, counts, capture, diff, human, adequacy, finished)
         return f"사용자 승인 대기 {n}건 — {APPROVE}"
     if not gates[GATE_LICENSE]:
         return "라이선스 경고 확인 (사용자 판단 필요)"
-    if not finished or not finished.get("valid"):
-        return "wb_port_finish 로 완료 판정 받기 (완료 보고는 그 결과로만)"
-    return "완료 — wb_port_finish 판정 유효"
+    return _finish_step(finished)
 
 
 def _next_step_request(gates: dict, *, req_state, capture, diff, human, adequacy, finished) -> str:
@@ -718,9 +773,7 @@ def _next_step_request(gates: dict, *, req_state, capture, diff, human, adequacy
     if not gates[GATE_HUMAN]:
         n = sum(1 for h in human if not h["approved"])
         return f"사용자 승인 대기 {n}건 — {APPROVE}"
-    if not finished or not finished.get("valid"):
-        return "wb_port_finish 로 완료 판정 받기 (완료 보고는 그 결과로만)"
-    return "완료 — wb_port_finish 판정 유효"
+    return _finish_step(finished)
 
 
 def agent_status(conn, port_id: str) -> dict:
@@ -834,8 +887,9 @@ def status_(conn, port_id: str, brief: bool = False, fp_max_age: float = 0) -> d
     if missing:  # 허용형이라도 저작권 표기는 남겨야 한다 — 막지 않고 할 일로 알린다
         out["license_notice"] = {"missing": missing,
                                  "todo": "원본은 허용형 라이선스라 옮긴 코드에도 원본 저작권 표기와 라이선스 문구를 남겨야 한다 — "
-                                         "대상에 LICENSE 가 없으면 원본 라이선스 전문(저작권 줄 포함)을 LICENSE 로, 대상에 이미 다른 "
-                                         "라이선스가 있으면 THIRD_PARTY_NOTICES 같은 파일에 원본 이름·저작권 줄·라이선스 전문을 둔다"}
+                                         "대상 루트의 THIRD_PARTY_NOTICES.md 에 원본 이름·저작권 줄·라이선스 전문을 둔다. 대상의 "
+                                         "LICENSE 는 만들거나 바꾸지 않는다 (LICENSE 는 그 프로젝트 자체의 라이선스라, 원본 것을 두면 "
+                                         "프로젝트 전체가 원본 저자의 라이선스로 보인다)"}
     if not integ["ok"] or integ.get("legacy"):
         out["integrity"] = integ
     if not brief:
@@ -1053,28 +1107,31 @@ class _Side:
             argv = self.docker_base() + ["-i", "--network", "none", self.image, "sh", "-c", cmd]
             return subprocess.run(argv, input=stdin, capture_output=True, timeout=timeout)
         run = _auto_run()
-        from beom_workbench.core import sandbox
+        from beom_workbench.core import execenv, sandbox
+        env = self.env()
         if run and sandbox.wraps_powershell(run) and not outside:
-            # 자동 실행 중 툴킷이 대신 돌리는 검증 명령도 같은 샌드박스 안에서 (대상 폴더·임시·도구 캐시 밖에는 못 쓴다)
-            return run_tree(sandbox.wrap_argv(["cmd", "/d", "/c", cmd], run), cwd=self.cwd, stdin=stdin, timeout=timeout, env=self.env())
-        return run_tree(cmd, shell=True, cwd=self.cwd, stdin=stdin, timeout=timeout, env=self.env())
+            from beom_workbench.config import load_settings
+            from beom_workbench.core import tasks
+            # 격리 안에서 돌지 않는 도구(Node 의 자식 프로세스·Maven·Gradle·.NET·Go·Cargo·Python 3.12.4+) — wb_task 와 같은 기준·같은
+            # 허락으로 격리 밖에서 (검증 케이스의 tsx·go run 이 spawn EPERM·접근 거부로 멈췄다)
+            why = execenv.outside_reason(cmd, env)
+            if why and tasks.permit_outside(load_settings(), run, cmd, why=why):
+                return run_tree(cmd, shell=True, cwd=self.cwd, stdin=stdin, timeout=timeout, env=env)
+            # 자동 실행 중 툴킷이 대신 돌리는 검증 명령도 같은 샌드박스 안에서 (대상 폴더·임시·도구 캐시·그 명령의 자리 밖에는 못 쓴다)
+            cp = run_tree(sandbox.wrap_argv(["cmd", "/d", "/c", cmd], run, self.cwd), cwd=self.cwd, stdin=stdin, timeout=timeout,
+                          env=sandbox.node_test_env(dict(env)))
+            out = (cp.stdout + cp.stderr).decode("utf-8", "replace")
+            if not why and execenv.denied(cp.returncode, out) and tasks.permit_outside(load_settings(), run, cmd, why="denied"):
+                return run_tree(cmd, shell=True, cwd=self.cwd, stdin=stdin, timeout=timeout, env=env)  # 격리 탓 — 밖에서 한 번 더
+            return cp
+        return run_tree(cmd, shell=True, cwd=self.cwd, stdin=stdin, timeout=timeout, env=env)
 
     def env(self) -> dict:
         # 파이썬 표준 입출력을 UTF-8 로 — 파이프로 돌리면 Windows 는 cp949 라 한글·✓ 가 깨지거나 쓰다가 죽는다
         # (사용자 터미널은 유니코드로 보여 주므로 이쪽이 실제와 같다). 출력은 UTF-8 로 읽는다.
-        env = runtime.safe_env({"PYTHONIOENCODING": "utf-8", **runtime.coverage_env(self.cwd)})
-        from beom_workbench.core import deps, sandbox
-        run = _auto_run()
-        if run and sandbox.wraps_powershell(run):
-            sandbox.node_test_env(env)  # 격리 안에서 도는 검증 명령의 node --test 도 한 프로세스로
-        extra = deps.env_paths(self.cwd)  # 툴킷이 준비한 의존성 — 'python app.py' 가 .beom/venv 의 파이썬으로 돈다
-        if extra:
-            key = next((k for k in env if k.upper() == "PATH"), "PATH")
-            env[key] = os.pathsep.join(extra + [env.get(key, "")])
-            from beom_workbench.core import layout
-            pyroot = layout.root_for(self.cwd, "python")
-            if deps.venv_python(pyroot).is_file():
-                env["VIRTUAL_ENV"] = str(deps.venv_dir(pyroot))
+        # 툴킷이 준비한 의존성('python app.py' 가 .beom/venv 의 파이썬으로)·프로젝트가 정한 JDK·Node·Go·.NET 버전 — 모든 실행 자리가 같은 것
+        from beom_workbench.core import execenv
+        env = execenv.command_env(self.cwd)
         if self.casecov is not None:
             self.casecov.apply(env)
         return env
@@ -1124,9 +1181,16 @@ def fill_port(cmd: str | None, url: str | None) -> tuple[str | None, str | None]
     return (cmd.replace("{port}", p) if cmd else cmd), (url.replace("{port}", p) if url else url)
 
 
-def _node_major() -> int:
+def _node_major(env: dict | None = None) -> int:
+    """검증 명령이 실제로 쓸 node 의 주 버전 — 그 환경의 PATH 로 (프로젝트가 정한 Node 를 앞에 둔 PATH). 시스템 node 로 보면
+    프로젝트의 Node 20 에 22 용 옵션을 붙이거나, 될 것을 안 된다고 했다."""
+    import shutil
+    path = next((v for k, v in (env or {}).items() if k.upper() == "PATH"), None) or os.environ.get("PATH", "")
+    node = shutil.which("node", path=path)
+    if not node:
+        return 0
     try:
-        out = subprocess.run(["node", "--version"], capture_output=True, timeout=20).stdout.decode().strip().lstrip("v")
+        out = subprocess.run([node, "--version"], capture_output=True, timeout=20).stdout.decode().strip().lstrip("v")
         return int(out.split(".")[0])
     except (OSError, ValueError, subprocess.SubprocessError):
         return 0
@@ -1146,6 +1210,8 @@ def _outside_refs(conn, port_id: str, root: Path) -> list[Path]:
 
 
 NODE_RUN_EXTS = (".js", ".mjs", ".cjs", ".ts", ".mts", ".cts")  # 케이스가 node 프로세스로 부르는 파일 (화면 코드 .jsx 등은 빼고)
+# 브라우저에서 도는 화면 코드 — .js 는 받은 내용이 파일과 같으면 그대로, 나머지(빌드·변환)는 개발 서버의 소스맵으로 잰다
+BROWSER_EXTS = (".js", ".mjs", ".ts", ".jsx", ".tsx", ".vue", ".svelte")
 
 CASECOV_SITE = r"""# beom-workbench: 검증 케이스가 띄운 파이썬 프로세스의 실행 범위를 잰다 (툴킷 작업 폴더에서만 쓰인다)
 import os
@@ -1279,7 +1345,8 @@ class _CaseCoverage:
         # 페이지가 불러가는 JS (브라우저에서 돈다) — 화면 케이스를 돌릴 때 브라우저 엔진에서 잰다
         from beom_workbench.core import layout
         try:
-            self.browser = [(root / r).resolve() for r in sorted(layout.browser_files(root)) if r.endswith((".js", ".mjs"))]
+            # 빌드 도구가 바꿔 보내는 화면 코드(Vue·JSX·TS)도 — 개발 서버의 소스맵으로 원래 줄에 맞춘다 (맵이 없으면 '못 잼')
+            self.browser = [(root / r).resolve() for r in sorted(layout.browser_files(root)) if r.endswith(BROWSER_EXTS)]
             self.browser += layout.inline_script_pages(root)  # HTML 안에 직접 쓴 <script> — 그 HTML 파일의 줄로 잰다
             py_dirs = sorted({str(r) for r in impact.scan_roots(root)} | {str(f.parent) for f in self.py})
         except (OSError, ValueError):
@@ -1347,7 +1414,11 @@ class _CaseCoverage:
             state["browser_ran"] = True
             resolve, transformed = self._browser_resolver(pages)
             text = _v8_lcov(pages, self.browser, resolve=resolve)
-            state["browser_transformed"] = sorted(transformed)
+            mapped_text, mapped, unaligned = self._mapped_lcov(pages)
+            text += mapped_text
+            state["browser_transformed"] = sorted(transformed - mapped)
+            state["browser_mapped"] = sorted(mapped)
+            state["browser_unaligned"] = unaligned
             if text:
                 f = self.dir / "browser.info"
                 f.write_text(text, encoding="utf-8")
@@ -1356,6 +1427,89 @@ class _CaseCoverage:
 
     def cleanup(self) -> None:
         shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _map_source(self, url: str, source_root: str, src: str) -> Path | None:
+        """소스맵의 원본 이름 → 대상 폴더의 파일 (절대 경로·file:·webpack:// · 받은 주소 기준 상대 경로)."""
+        import urllib.parse
+        import urllib.request
+        s = (source_root or "") + src
+        if s.startswith("file:"):
+            cand = Path(urllib.request.url2pathname(urllib.parse.urlsplit(s).path))
+        elif re.match(r"^/?[A-Za-z]:[\\/]", s):
+            cand = Path(s.lstrip("/"))
+        elif "://" in s and not s.startswith(("http://", "https://")):  # webpack:///./src/App.vue
+            cand = self.root / s.split("://", 1)[1].lstrip("/").removeprefix("./")
+        else:
+            path = urllib.parse.unquote(urllib.parse.urlsplit(urllib.parse.urljoin(url, s)).path).lstrip("/")
+            cand = self.root / path
+        try:
+            cand = cand.resolve()
+        except (OSError, ValueError):
+            return None
+        return cand if cand.is_file() and _under(cand, self.root) and "node_modules" not in cand.parts else None
+
+    def _mapped_lcov(self, pages: list[Path]) -> tuple[str, set[str], dict[str, list[int]]]:
+        """빌드·변환된 화면 코드 — 개발 서버가 붙여 보낸 소스맵으로 원래 파일의 줄에 실행 범위를 옮긴 LCOV, 그렇게 잰 파일들, 그리고
+        파일마다 잴 수 없는 줄. 맵의 원문과 지금 파일을 줄 단위로 맞춰(sourcemap.align) 같은 줄에만 옮긴다 — 개발 서버가 고쳐 쓴 줄
+        (import 경로 등)·맵을 만든 뒤 바뀐 줄은 짝이 없어 잴 수 없는 줄로 남는다 (낡은 맵이 엉뚱한 줄을 '거침' 으로 만들지 않게)."""
+        from beom_workbench.core import sourcemap
+        maps: dict[str, dict] = {}
+        runs: dict[str, list] = {}
+        datas = []
+        for p in pages:
+            try:
+                datas.append(json.loads(p.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                continue
+            maps.update(datas[-1].get("maps") or {})  # 맵은 그 주소를 처음 받은 화면에만 남는다 — 모두 모은 뒤 화면마다의 실행 범위를 옮긴다
+        for data in datas:
+            for sc in data.get("result") or []:
+                if sc.get("url") in maps:
+                    runs.setdefault(sc["url"], []).append(sc.get("functions") or [])
+        per_file: dict[Path, dict] = {}
+        for url, fn_lists in runs.items():
+            entry = maps.get(url) or {}
+            m, starts = entry.get("map") or {}, entry.get("starts") or [0]
+            try:
+                res = sourcemap.mapped_lines(m, starts, fn_lists)
+            except (TypeError, ValueError, KeyError):
+                continue
+            srcs, contents = m.get("sources") or [], m.get("sourcesContent") or []
+            for si, d in res.items():
+                if si >= len(srcs) or not isinstance(srcs[si], str):
+                    continue
+                f = self._map_source(url, m.get("sourceRoot") or "", srcs[si])
+                if f is None:
+                    continue
+                try:
+                    disk = f.read_bytes().decode("utf-8", "replace")
+                except OSError:
+                    continue
+                pair = sourcemap.align(contents[si] if si < len(contents) else None, disk)
+                if pair is not None and not pair:
+                    continue  # 같은 줄이 하나도 없다 — 다른 파일의 맵
+                to = (lambda ln: ln) if pair is None else pair.get
+                code = {i + 1 for i, x in enumerate(disk.splitlines()) if x.strip()}  # 빈 줄은 잴 것이 없다
+                agg = per_file.setdefault(f, {"lines": {}, "fns": {}, "known": set(), "code": code})
+                agg["known"] |= code if pair is None else set(pair.values())
+                for ln, cnt in d["lines"].items():
+                    if (t := to(ln)) is not None:
+                        agg["lines"][t] = max(agg["lines"].get(t, 0), cnt)
+                for name, ln, cnt in d["functions"]:
+                    if (t := to(ln)) is not None:
+                        key = (f"{name}@{t}", t)
+                        agg["fns"][key] = agg["fns"].get(key, 0) + cnt
+        out = []
+        for f, agg in per_file.items():
+            out.append(f"SF:{f}")
+            for (name, ln), cnt in sorted(agg["fns"].items(), key=lambda x: x[0][1]):
+                out += [f"FN:{ln},{name}", f"FNDA:{cnt},{name}"]
+            out.extend(f"DA:{ln},{cnt}" for ln, cnt in sorted(agg["lines"].items()))
+            out.append("end_of_record")
+        mapped = {os.path.relpath(f, self.root).replace("\\", "/") for f in per_file}
+        unaligned = {os.path.relpath(f, self.root).replace("\\", "/"): sorted(a["code"] - a["known"])
+                     for f, a in per_file.items() if a["code"] - a["known"]}
+        return ("\n".join(out) + "\n") if out else "", mapped, unaligned
 
     def _browser_resolver(self, pages: list[Path]):
         """브라우저가 받은 스크립트 주소 → 대상 폴더의 파일 — 받은 내용의 지문이 파일과 같을 때만 (빌드·변환된 코드는 줄 위치가 달라
@@ -1471,8 +1625,19 @@ def tasks_mod():
     return tasks
 
 
+import threading as _threading
+
+_BOUND = _threading.local()
+
+
+def bind_run(rid: str | None) -> None:
+    """이 스레드가 맡은 실행 — 러너·앱은 BEOM_WORKBENCH_RUN 환경 변수가 없어(툴킷 도구 서버에만 있다) 실행 설정을 못 읽고,
+    '다음 할 일'을 늘 '승인 대기 — 라운드를 끝낸다'로 계산했다 (끝에 한 번 확인 모드에서도). 검증 명령의 격리도 빠졌다."""
+    _BOUND.rid = rid
+
+
 def _auto_run() -> dict | None:
-    rid = os.environ.get("BEOM_WORKBENCH_RUN")
+    rid = os.environ.get("BEOM_WORKBENCH_RUN") or getattr(_BOUND, "rid", None)
     if not rid:
         return None
     try:
@@ -1539,7 +1704,9 @@ def check_url(url: str) -> None:
 
 
 def _http(base: str, case: dict, timeout: float) -> dict:
-    url = base.rstrip("/") + case["path"]
+    # 한글 같은 글자가 든 주소(/members/?keyword=하나)는 브라우저처럼 퍼센트 인코딩해 보낸다 — 그대로 보내면 HTTP 요청을 만들지 못해
+    # 검증이 매번 같은 오류로 끝났다 (실험: 에이전트가 케이스 주소를 고쳐 피해 가느라 승인 카드가 하나 더 떴다). 이미 인코딩된 %XX 는 그대로
+    url = base.rstrip("/") + urllib.parse.quote(str(case["path"]), safe="/?&=%:+,;@#!$'()*~-._[]")
     check_url(url)
     data = None
     headers = dict(case.get("headers") or {})
@@ -1562,7 +1729,67 @@ def _http(base: str, case: dict, timeout: float) -> dict:
     return {"status": status, "body": body}
 
 
+_GO_RUN = re.compile(r"^\s*go(?:\.exe)?\s+run\s+(?P<flags>(?:-\S+\s+)*)(?P<pkg>\S+)(?P<rest>.*)$", re.S)
+
+
+_GRADLE_RUN = re.compile(r"""^\s*(?P<exe>(?:\.[\\/])?gradlew(?:\.bat)?|gradle(?:\.bat)?)\s+(?P<flags>(?:-q|--quiet|--offline|-i)\s+)*
+                            (?P<task>(?::?(?P<proj>[\w-]+):)?run)\b(?:\s+--args=(?P<q>["'])(?P<args>.*?)(?P=q))?(?P<rest>.*)$""", re.S | re.X)
+
+
+_MVN_EXEC = re.compile(r"""^\s*(?P<exe>(?:\.[\\/])?mvnw(?:\.cmd)?|mvn(?:\.cmd)?)\b(?=.*\bexec:exec\b)
+                          (?=.*-Dexec\.executable=(?P<prog>[^\s"']+))(?:(?=.*-Dexec\.args=(?P<q>["'])(?P<args>.*?)(?P=q)))?.*$""", re.S | re.X)
+
+
+def _gradle_install(side: _Side, cmd: str, m, timeout: float) -> str:
+    """`gradle run` 은 프로그램이 0 이 아닌 코드로 끝나면 빌드 실패(1)로 바꾼다 — installDist 가 만드는 실행 스크립트는 그대로 넘긴다."""
+    proj = m.group("proj")
+    base = Path(side.cwd) / proj if proj else Path(side.cwd)
+    name = proj
+    if not name:
+        settings = next((base / f for f in ("settings.gradle", "settings.gradle.kts") if (base / f).is_file()), None)
+        hit = re.search(r"rootProject\.name\s*=\s*['\"]([^'\"]+)", settings.read_text(encoding="utf-8", errors="replace")) if settings else None
+        name = hit.group(1) if hit else base.name
+    task = f":{proj}:installDist" if proj else "installDist"
+    cp = side.shell(f"{m.group('exe')} -q {task}", timeout=max(timeout, 600))
+    script = base / "build" / "install" / name / "bin" / (f"{name}.bat" if os.name == "nt" else name)
+    if cp.returncode != 0 or not script.is_file():
+        return cmd
+    args = f" {m.group('args')}" if m.group("args") else ""
+    return f"{side.quote(str(script))}{args}{m.group('rest')}"
+
+
+def _cli_binary(side: _Side, cmd: str, timeout: float) -> str:
+    """빌드 도구의 실행 명령은 프로그램의 종료 코드를 바꾼다 — `go run .` 은 'exit status 3' 을 찍고 1, `gradle run` 은 빌드 실패로 1.
+    종료 코드 케이스가 모두 틀렸다 (npm·cargo·dotnet run 은 그대로 넘긴다 — 직접 확인함). 검증할 때 한 번 빌드해 그 실행 파일
+    (Go: .beom/tmp 의 실행 파일, Gradle: installDist 의 실행 스크립트)로 돌린다. 빌드가 안 되면 원래 명령 그대로."""
+    if side.image:
+        return cmd
+    built = side.__dict__.setdefault("_go_built", {})
+    x = _MVN_EXEC.match(cmd or "")
+    if x:  # mvn exec:exec 은 0 이 아닌 코드를 빌드 실패(1)로 바꾼다 (exec:java 는 그대로 넘긴다 — 직접 확인함)
+        if cmd not in built:
+            cp = side.shell(f"{x.group('exe')} -q compile", timeout=max(timeout, 600))
+            args = x.group("args") or ""
+            built[cmd] = f"{x.group('prog')} {args}".strip() if cp.returncode == 0 else cmd
+        return built[cmd]
+    g = _GRADLE_RUN.match(cmd or "")
+    if g:
+        if cmd not in built:
+            built[cmd] = _gradle_install(side, cmd, g, timeout)
+        return built[cmd]
+    m = _GO_RUN.match(cmd or "")
+    if not m:
+        return cmd
+    if cmd not in built:
+        out = Path(side.cwd) / ".beom" / "tmp" / f"cli-{hashlib.sha1(cmd.encode()).hexdigest()[:8]}{'.exe' if os.name == 'nt' else ''}"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        cp = side.shell(f"go build -o {side.quote(str(out))} {m.group('flags')}{m.group('pkg')}", timeout=max(timeout, 300))
+        built[cmd] = f"{side.quote(str(out))}{m.group('rest')}" if cp.returncode == 0 and out.is_file() else cmd
+    return built[cmd]
+
+
 def _cli(side: _Side, cmd: str, case: dict, timeout: float) -> dict:
+    cmd = _cli_binary(side, cmd, timeout)
     argv = " ".join(side.quote(str(a)) for a in case.get("argv", []))
     proc = side.shell(f"{cmd} {argv}".strip(), stdin=(case.get("stdin") or "").encode(), timeout=timeout)
     out = proc.stdout.decode("utf-8", "replace")
@@ -1626,7 +1853,7 @@ def _call(side: _Side, case: dict, timeout: float) -> dict:
         elif ext in (".js", ".cjs", ".mjs", ".ts", ".mts", ".cts"):
             exe = rt or "node"
             if not rt and ext in (".ts", ".mts", ".cts"):
-                major = _node_major()
+                major = _node_major(side.env())
                 if major and major < 22:
                     raise ToolError("capability_unavailable", f"Node {major} 은 .ts 를 바로 불러오지 못함 (22 이상 필요)",
                                     recovery=f'call.{side.name} 에 {{"cmd": "..."}} 로 빌드한 .js 를 부르는 명령을 지정')
@@ -2441,14 +2668,21 @@ def capture(conn, proj: dict, settings: Settings, port_id: str, cases_file: str,
                                  ensure_ascii=False, indent=2), encoding="utf-8")
     errors = [r for r in results if r.get("error")]
     rules = guard.case_rules(cases)
+    rules_legacy = guard.case_rules(cases, legacy=True)
     prev = _last_check(conn, port_id, "capture")
     if prev is None:
         baseline = rules
+        change = None
     else:
         pd = prev["detail"]
         prev_ok = not pd.get("change") or guard.is_approved(conn, port_id, f"cases:{prev['id']}", guard.fingerprint(pd["change"]))
         baseline = pd["rules"] if prev_ok else pd.get("baseline", pd["rules"])
-    change = guard.case_change(baseline, rules)
+        if pd.get("rules_v") == guard.RULES_V:
+            change = guard.case_change(baseline, rules)
+        else:  # 예전 방식의 기록 — 예전 방식으로 견주고, 바뀐 것은 다음에도 바뀐 것으로 남게 기준을 새 방식으로 옮긴다
+            change = guard.case_change(baseline, rules_legacy)
+            moved = set((change or {}).get("changed") or []) | set((change or {}).get("removed") or [])
+            baseline = {n: ("legacy:" + h if n in moved else rules.get(n, "legacy:" + h)) for n, h in baseline.items()}
     adq_id = run["adequacy"].get("check_id") if isinstance(run["adequacy"], dict) else None
     cid = "cap_" + uuid.uuid4().hex[:12]
     expectations = {c.get("name") or f"#{i}": {"expect": c["expect"], "new": bool(c.get("new")), "order": i,
@@ -2458,7 +2692,8 @@ def capture(conn, proj: dict, settings: Settings, port_id: str, cases_file: str,
                                                  {"status": r.get("status"), "body": json.dumps(r.get("body"), ensure_ascii=False)[:300]}}
                     for i, (c, r) in enumerate(zip(cases, results)) if c.get("expect")}
     detail = {"golden": str(golden), "golden_sha": hashlib.sha256(golden.read_bytes()).hexdigest(), "rules": rules,
-              "baseline": baseline, "change": change, "adequacy_check": adq_id, "expectations": expectations}
+              "baseline": baseline, "change": change, "adequacy_check": adq_id, "expectations": expectations,
+              "rules_legacy": rules_legacy, "rules_v": guard.RULES_V}
     if request_mode:
         detail["req_cover"] = make_mod.coverage_of(cases, [r["id"] for r in make_mod.requirements(conn, port_id)])
     with ledger.tx(conn):
@@ -2590,6 +2825,10 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
             pre = {str((root / rel).resolve()) for rel in base.get("files") or {}}
             tests_only = layout.test_files(root) - pre
         project = tasks_mod().project_checks(settings, _auto_run(), root, tests_only=tests_only) if root.is_dir() else []
+        if tests_only is not None and base is not None and (base.get("files") or {}) and root.is_dir():
+            # 회귀 확인 — 원래 있던 테스트도 계속 통과해야 한다 (SWE-bench 의 PASS_TO_PASS, 편집 뒤 전체 테스트를 돌리는 다른 도구들).
+            # 새 테스트만 돌려서, 바꾼 함수를 쓰는 기존 기능이 깨져도 완료로 넘어갔다
+            project += _regression(settings, root)
     finally:
         if server:
             server.close()
@@ -2603,7 +2842,7 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
     if cov_state is not None and side.casecov is not None and (side.casecov.py or side.casecov.js or side.casecov.browser):
         from beom_workbench.core import layout
         cov_state["forced_stop"] = bool(server and server.graceful is False)
-        browser = layout.browser_files(root)
+        browser = layout.browser_files(root) | set(cov_state.get("browser_mapped") or ())  # 별칭 등으로 못 따라간 것도 맵으로 잰 것은
         tgt_adq = _target_adequacy(conn, port, [root / r for r in reports], fp, browser=browser, state=cov_state)
         try:
             impact_res = _impact(conn, settings, proj, port_id, root, [root / r for r in reports], browser, cov_state, fp)
@@ -2688,7 +2927,8 @@ def verify(conn, proj: dict, settings: Settings, port_id: str, *, target_url: st
         conn.execute("INSERT INTO port_check (id, port_id, kind, cases, passed, failed, detail, evidence_id, created_at) "
                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      (cid, port_id, f"differential:{source_kind}", len(rows), passed, failed,
-                      ledger.dumps({"rows": rows, "concurrency": conc, "rules": guard.case_rules(cases), "target_fp": fp}),
+                      ledger.dumps({"rows": rows, "concurrency": conc, "rules": guard.case_rules(cases),
+                                    "rules_legacy": guard.case_rules(cases, legacy=True), "rules_v": guard.RULES_V, "target_fp": fp}),
                       ev_id, _now()))
         pcid = None
         if project:
@@ -2796,8 +3036,13 @@ def _fn_count(d: dict, path: Path, line: int, near: int) -> int | None:
         if stmt is not None and stmt in d["lines"]:
             return d["lines"][stmt]
         return None
-    fns = [n for _, fl, n in d["functions"] if fl and abs(fl - line) <= near]
-    return max(fns) if fns else None
+    # 가장 가까운 줄에서 시작하는 함수만 — 근처 함수 중 가장 많이 불린 것을 쓰면, 한 줄짜리 함수가 이어진 곳(const load = …;
+    # const reset = …)에서 불리지 않은 reset 이 바로 윗줄 load 의 횟수로 '거침' 이 됐다 (실험 142 의 Vue 화면)
+    near_fns = [(abs(fl - line), n) for _, fl, n in d["functions"] if fl and abs(fl - line) <= near]
+    if not near_fns:
+        return None
+    best = min(dist for dist, _ in near_fns)
+    return max(n for dist, n in near_fns if dist == best)
 
 
 def _merge_cov(data: dict, part: dict, norm=lambda k: k) -> None:
@@ -2826,9 +3071,14 @@ def _measured_fn(reports: list[Path], root: Path, browser: set, state: dict):
     def measured(path: str, line: int) -> bool | None:
         d = data.get(os.path.normcase(os.path.abspath(path)))
         rel = os.path.relpath(path, root).replace("\\", "/")
+        if line in ((state.get("browser_unaligned") or {}).get(rel) or ()):
+            return None  # 브라우저가 받은 코드(소스맵의 원문)에 이 줄이 없다 — 고쳐 쓰였거나 맵을 만든 뒤 바뀐 줄
         if d is None:
             if rel in browser:  # 화면 코드 — 브라우저에서 잰 결과가 있고 내용이 같은 파일이면 '안 거침'
-                return False if state.get("browser_ran") and rel not in (state.get("browser_transformed") or ()) else None
+                if not state.get("browser_ran") or rel in (state.get("browser_transformed") or ()):
+                    return None
+                # 빌드되는 화면 코드는 이 프로젝트에서 소스맵으로 잰 적이 있어야 '안 거침' 이다 (맵이 없으면 못 잰 것)
+                return None if VIEW_CODE.search(rel) and not state.get("browser_mapped") else False
             if not guard.measurable(root, rel, browser) or state.get("forced_stop") or (path.endswith(".py") and state.get("python_nocov")):
                 return None
             if (path.endswith(".py") and not state.get("python_ran")) or (path.endswith(NODE_RUN_EXTS) and not state.get("node_ran")):
@@ -2882,19 +3132,57 @@ def _screen_rules(conn, settings, proj: dict, port_id: str, root: Path, fp: str)
     plan = run.get("plan") or {}
     waits = run.get("plan_approval", True) and run.get("confirm_at", "start") != "end"
     allowed = {c["file"] for c in plan.get("shared_changes") or []} if (plan.get("approved") or not waits) else set()
-    found = conventions.differences(root, base, since=since) + conventions.shared_edits(root, base, allowed=allowed)
+    # 느낌만·전체 디자인을 바꾸는 작업은 공통 스타일을 고치는 것이 요청 자체다 — 실험: 느낌 바꾸기에서 공통 스타일의 색을 바꾼 것을
+    # '원래 있던 공통 스타일을 고침'으로 올려, 에이전트가 인계 위험에 '요청대로 바꿨다'를 적고서야 넘어갔다
+    if run and (plan.get("approved") or not waits):
+        from beom_workbench.core import runner as runner_core
+        try:
+            if runner_core.task_profile(run).get("design") in ("restyle", "redesign"):
+                allowed |= {rel for rel in base if rel.lower().endswith(conventions.STYLE_EXTS)}
+        except Exception:  # noqa: BLE001 — 작업 종류를 못 읽으면 그대로 본다
+            pass
+    found =conventions.differences(root, base, since=since) + conventions.shared_edits(root, base, allowed=allowed)
+    # 이미 있는 것을 다시 만든 곳 (번역 값·함수·클래스·값 목록·인라인 style·공백만 바꾼 줄) — 같은 카드로 올린다.
+    # 기록에 없는 번역 json·properties 의 원래 내용은 작업 가지를 만든 커밋에서 읽는다
+    git_base = next((r.get("base_commit") for r in ((run.get("work_branch") or {}).get("repos") or [])
+                     if r.get("base_commit") and r.get("repo") and _under(root, Path(r["repo"]))), None)
+    try:
+        found += conventions.duplicates(root, base, since=since, git_base=git_base)
+    except Exception as e:  # noqa: BLE001 — 중복 검사가 실패해도 화면 규칙 결과는 낸다
+        found.append({"at": ".", "summary": f"중복 검사 실패: {type(e).__name__}: {e}"[:300], "evidence": [], "kind": "reuse"})
+    # 자동 실행에서는 에이전트가 먼저 본다 — 고치거나, 일부러 둔 곳이면 까닭(wb_port_verify 의 kept)을 남긴 것만 사용자 카드에 올린다.
+    # 실험: 찾자마자 카드로 올리니 에이전트는 네 번 검증하는 동안 고치지 않고 라운드를 끝냈고, 사용자가 '고쳐 달라'고 돌려보내야 했다
+    kept = (run.get("rules_kept") or {}) if run else {}
+    for f in found:
+        why = kept.get(str(f.get("at") or "").rsplit(":", 1)[0])
+        if why:
+            f["kept"] = why
+    held = bool(run.get("id")) if run else False
     cid = "chk_" + uuid.uuid4().hex[:12]
     with ledger.tx(conn):
         conn.execute("INSERT INTO port_check (id, port_id, kind, cases, passed, failed, detail, evidence_id, created_at) "
                      "VALUES (?, ?, 'screen_rules', ?, ?, ?, ?, NULL, ?)",
-                     (cid, port_id, len(found), 0, len(found), ledger.dumps({"findings": found, "target_fp": fp}), _now()))
+                     (cid, port_id, len(found), 0, len(found),
+                      ledger.dumps({"findings": found, "target_fp": fp, **({"held": True} if held else {})}), _now()))
     guard.record(conn, port_id, "coverage", {"id": cid, "kind": "screen_rules"}, checks=[cid])
     if not found:
         return None
     return {"check_id": cid, "findings": found,
             "note": "새 화면이 같은 부품을 다른 화면들과 다르게 쓴다 (근거는 다른 화면들의 실제 코드) — 같은 방식으로 고치거나, 일부러 "
                     "다르게 했으면 이유를 보고에 쓴다. 원래 있던 공통 부품을 고친 곳은 다른 화면도 함께 바뀐다 — 요청이 시킨 일이 아니면 "
-                    "되돌리고 새 화면 쪽에서 해결한다. 툴킷이 사용자 확인 카드로 올렸다"}
+                    "되돌리고 새 화면 쪽에서 해결한다. kind=reuse 는 이미 있는 것(번역 키·함수·클래스·값 목록)을 다시 만든 곳 — 근거의 "
+                    "기존 것을 그 자리에서 불러 쓰게 고친다 (기존 파일을 옮기거나 다른 기능의 파일을 고치지 않는다 — 그러려면 계획의 shared_changes 로 승인받는다). "
+                    + ("고치지 않고 둘 곳은 wb_port_verify(kept=[{at: 파일, why: 까닭}]) 로 까닭을 남긴다 — 그 까닭과 함께 사용자 확인 카드에 "
+                       "올라간다. 고치지도 까닭을 남기지도 않은 곳이 있으면 인계되지 않는다 (툴킷이 확인한다)" if held else
+                       "고치지 않고 둔 곳은 인계의 risks 에 파일과 까닭을 적어야 인계된다 (툴킷이 확인한다). 툴킷이 사용자 확인 카드로도 올렸다")}
+
+
+def _under(path: Path, top: Path) -> bool:
+    """path 가 top 안인가 (드라이브가 달라도 오류 없이)."""
+    try:
+        return Path(path).resolve().is_relative_to(Path(top).resolve())
+    except (OSError, ValueError):
+        return False
 
 
 def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None, browser: set | None = None,
@@ -2925,8 +3213,9 @@ def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None
         """케이스 실행을 직접 쟀는데 이 파일 기록이 없을 때 — 툴킷이 잴 수 없었던 이유 (없으면 케이스가 안 거친 것)."""
         rel = os.path.relpath(root / path, root).replace("\\", "/")
         ext = PurePosixPath(path).suffix.lower()
-        if VIEW_CODE.search(path):
-            return "빌드 도구가 바꿔서 브라우저에 보내는 화면 코드 — 툴킷이 실행 범위를 재지 못함 (화면 케이스로 확인)"
+        if VIEW_CODE.search(path) and not (rel in browser and state.get("browser_mapped")):
+            # 개발 서버가 소스맵을 주면 원래 줄로 잰다 — 이 프로젝트에서 한 파일도 맵으로 못 쟀으면 못 잰 것
+            return "빌드 도구가 바꿔서 브라우저에 보내는 화면 코드 — 개발 서버가 소스맵을 주지 않아 툴킷이 실행 범위를 재지 못함 (화면 케이스로 확인)"
         if rel in browser:
             if rel in (state.get("browser_transformed") or ()):
                 return "브라우저가 받은 코드가 이 파일과 다름 (빌드·변환됨) — 툴킷이 실행 범위를 재지 못함 (화면 케이스로 확인)"
@@ -3000,6 +3289,11 @@ def _target_adequacy(conn, port: dict, report, fp: str, base: Path | None = None
             continue
         if d is None:
             rows.append({**row, "executed": None, "reason": "리포트에 이 파일이 없음"})
+            continue
+        if state is not None and ln in ((state.get("browser_unaligned") or {}).get(path.replace("\\", "/")) or ()):
+            rows.append({**row, "executed": None, "unmeasurable": True,
+                         "reason": "브라우저가 받은 코드(개발 서버의 소스맵 원문)에 이 줄이 지금 파일과 같게 없음 — 개발 서버가 고쳐 썼거나 "
+                                   "그 뒤에 바뀐 줄이라 툴킷이 실행 범위를 재지 못함 (화면 케이스로 확인) — 사용자 확인 카드로 넘김"})
             continue
         cnt = _fn_count(d, root / path, ln, 3)
         if STYLE_FILE.search(path) and cnt is None and ln not in d["lines"]:

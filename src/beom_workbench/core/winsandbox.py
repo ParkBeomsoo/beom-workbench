@@ -227,7 +227,11 @@ def grant(roots: list[str]) -> list[str]:
             path = key.split("\t")[0]
             done = {k for k in done if k.split("\t")[0] != path} | {key}
             out.append(str(p))
+        else:
+            # 권한을 바꿀 수 없는 폴더(관리자가 만든 폴더·네트워크 경로) — 조용히 넘어가면 그 안의 쓰기가 모두 '접근 거부'로만 보인다
+            sys.stderr.write(f"[격리] 이 폴더에 쓰기 권한을 줄 수 없음 — 그 안에 쓰는 명령은 '접근 거부'로 실패한다: {p}\n")
     if out:
+        done = {k for k in done if Path(k.split("\t")[0]).exists()}  # 지워진 폴더(끝난 실행의 사본 등)는 기록에서 뺀다
         _GRANTED.parent.mkdir(parents=True, exist_ok=True)
         _GRANTED.write_text("\n".join(sorted(done)), encoding="utf-8")
     return out

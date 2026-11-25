@@ -63,9 +63,15 @@ def notice(row: dict) -> str:
 def _sandbox_status() -> dict:
     try:
         from beom_workbench.core import sandbox
-        return sandbox.status()
+        return {"default_on": sandbox.default_on(), **sandbox.status()}
     except Exception:  # noqa: BLE001
         return {"ready": False}
+
+
+def sandbox_on(run: dict) -> bool:
+    """이 실행에서 격리를 켰는가 — 적혀 있지 않으면 이 PC 의 기본값 (Windows 는 끔)."""
+    from beom_workbench.core import sandbox
+    return run.get("sandbox", sandbox.default_on()) is not False
 
 
 REQUIRED_ENGINES = ("codebase-memory-mcp", "ast-grep")  # 레퍼런스 모드의 원본 분석에 꼭 필요한 것
@@ -124,6 +130,9 @@ def _unique_dest(folder: Path, src: Path) -> Path:
     return dest
 
 
+CHECKLIST_DOC = "__checklist__.md"  # 기획 패키지 보기의 '개발 인계 체크리스트' — 파일이 아니라 툴킷이 그때그때 모은다
+
+
 class Api(QObject):
     created = Signal(str)       # JSON {"run_id"} 또는 {"error"}
     notify = Signal(str, str)   # 제목, 내용 — 창 밖 알림
@@ -132,6 +141,7 @@ class Api(QObject):
     exportDone = Signal(str)     # PDF 내보내기가 끝남 — JSON {ok, path, folder}
     linkChecked = Signal(str)    # 첨부 링크를 미리 읽어 봄 — JSON {url, ok, needs_login, error, title}
     linkSaved = Signal(str)      # 앱 브라우저에서 로그인해 가져옴 — JSON {url, path} (path 빈 값 = 닫음)
+    browserToggled = Signal(str)  # 오른쪽 브라우저 패널 open · closed
     filesDropped = Signal(str)   # 창에 끌어다 놓은 파일 — JSON [경로] (창이 브라우저처럼 그 파일로 넘어가지 않게 가로챈다)
     updateFound = Signal(str)    # 새 버전이 나옴 — JSON {version, url}
 
@@ -144,6 +154,16 @@ class Api(QObject):
         self.threads: dict[str, threading.Thread] = {}
         self._last_status: dict[str, str] = {}    # 실행 → 마지막으로 본 알림 문구 ("" = 알릴 것 없음)
         self._unseen: dict[str, str] = {}         # 실행 → 사용자가 아직 못 본 창 밖 알림 문구
+        # 앱이 라운드 도중에 꺼져 에이전트 쪽(Claude Code·Codex 기록)에 남은 툴킷 대화를 옮긴다 — 화면을 늦추지 않게 뒤에서
+        threading.Thread(target=self._sweep_agent_records, daemon=True).start()
+
+    def _sweep_agent_records(self):
+        try:
+            from beom_workbench.core import agentrecords, agents as agents_mod
+            codex = agents_mod.get("codex")
+            agentrecords.sweep(self.settings, (lambda r: codex.base()) if codex.exe else None)
+        except Exception:  # noqa: BLE001 — 옮기지 못해도 앱은 연다
+            pass
 
     # -- 읽기
     @Slot(result=str)
@@ -274,11 +294,20 @@ class Api(QObject):
         if not v.get("target_root"):
             # 폴더를 안 고르면 새 프로젝트로 — 문서 폴더 아래 모드별 새 폴더 (툴킷 홈은 에이전트가 쓸 수 없는 곳이라 안 됨).
             # 기존 코드에 넣으려면 그 저장소나, 저장소 여럿을 모은 상위 폴더를 고른다.
-            slug = re.sub(r"[^\w가-힣-]+", "-", (v.get("request") or v.get("feature") or v.get("mode") or "work").strip()[:30]).strip("-") or "work"
+            # 폴더 이름은 작업 이름으로 — 요청 첫 30자(경로 조각·낱말 중간에서 잘림)를 쓰면 '20261124-171923-D-prime-에-있는-모듈에-Product-Fee'가 됐다
+            title = (v.get("name") or v.get("request") or v.get("feature") or v.get("mode") or "work").replace("…", "").strip()
+            slug = re.sub(r'[\\/:*?"<>|]+', " ", title)
+            slug = re.sub(r"\s+", " ", slug).strip(" .")[:40].strip(" .") or "work"
             docs_dir = Path.home() / "Documents"
             sub = {"plan": "기획", "request": "만들기", "reference": "레퍼런스", "free": "자유 대화"}.get(v.get("mode"), "작업")
             base = (docs_dir if docs_dir.is_dir() else Path.home()) / "beom-workbench" / sub
-            v["target_root"] = str(base / f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}")
+            stamp = time.strftime('%Y-%m-%d %H%M')
+            folder = base / f"{stamp} {slug}"
+            n = 2
+            while folder.exists():  # 같은 분에 같은 이름으로 또 만들면 '(2)'를 붙인다 — 앞 작업 폴더에 섞이지 않게
+                folder = base / f"{stamp} {slug} ({n})"
+                n += 1
+            v["target_root"] = str(folder)
         if not v.get("target_root"):
             raise ToolError("invalid_request", "작업할 폴더를 정해 주세요")
         if v["mode"] in ("plan", "free") and not (v.get("request") or "").strip() and not v.get("attachments"):
@@ -296,7 +325,7 @@ class Api(QObject):
         try:  # 다음 새 작업은 이번 선택으로 시작 (Claude 고정이 아니라 쓰던 에이전트)
             from beom_workbench.core import storage
             storage.save_prefs(self.settings, {"defaults": {k: v.get(k) for k in (
-                "agent", "model", "effort", "policy", "max_rounds", "plan_approval", "confirm_at", "auth") if k in v}})
+                "agent", "model", "effort", "policy", "max_rounds", "plan_approval", "confirm_at", "auth", "depth") if k in v}})
         except Exception:  # noqa: BLE001 — 기본값 저장 실패가 실행을 막지 않게
             pass
         return {"preparing": True}
@@ -311,7 +340,12 @@ class Api(QObject):
             request, notes = self._attach(v)
             v["request"] = request
             context = None
-            if v.get("context_dir"):
+            if v.get("context_dir") and v["mode"] == "plan":
+                base = Path(v["context_dir"]).expanduser()
+                if not base.is_dir():
+                    raise ToolError("not_found", f"기획 기준 폴더가 없음: {base}", recovery="폴더를 다시 고르세요")
+                v["base_dir"] = str(base.resolve())  # 기획은 코드를 고치지 않는다 — 복사·분석 없이 그 폴더를 읽는다
+            elif v.get("context_dir"):
                 opened = project.open_repo(self.settings, v["context_dir"])
                 conn, proj = project.load(self.settings, opened["project"]["id"])
                 if not proj.get("inventory_at"):
@@ -329,7 +363,9 @@ class Api(QObject):
                                 model=v.get("model") or None, auth=v.get("auth", "subscription"), policy=v.get("policy"),
                                 agent=v.get("agent", "claude"), plan_approval=bool(v.get("plan_approval", True)),
                                 effort=v.get("effort") or None, confirm_at=v.get("confirm_at") or "start",
-                                new_branch=v.get("new_branch", True) is not False, sandbox=v.get("sandbox", True) is not False)
+                                new_branch=v.get("new_branch", True) is not False, depth=v.get("depth") or "standard",
+                                auto_name=bool(v.get("auto_name")), base_dir=v.get("base_dir") or None,
+                                sandbox=None if v.get("sandbox") is None else v.get("sandbox") is not False)
             inbox.update_run(self.settings, run["id"], lambda r: r.update(origin=origin))
             for note in notes:
                 inbox.log(self.settings, run["id"], "note", text=note, tone="warn")
@@ -371,7 +407,7 @@ class Api(QObject):
         return {"mode": run["mode"], "name": run.get("name") or "", "request": o.get("request") or "", "attachments": atts, "missing": missing,
                 "target_root": run["target_root"] if keep_folder else "", "kept_folder": keep_folder,
                 "context_dir": o.get("context_dir") or "", "source": run.get("source") or "", "feature": run.get("feature") or "",
-                **{k: run.get(k) for k in ("agent", "model", "effort", "policy", "max_rounds", "confirm_at", "auth", "plan_approval")
+                **{k: run.get(k) for k in ("agent", "model", "effort", "policy", "max_rounds", "confirm_at", "auth", "plan_approval", "depth")
                    if run.get(k) is not None}}
 
     def _attach(self, v: dict, *, follow_up: bool = False) -> tuple[str, list[str]]:
@@ -406,8 +442,12 @@ class Api(QObject):
             if f.resolve().is_relative_to(brief.resolve()):  # 같은 폴더의 기획 패키지 — 그 자리에 있는 파일을 그대로 읽게
                 names.append(".beom/brief/" + f.resolve().relative_to(brief.resolve()).as_posix())
                 continue
-            dest = _unique_dest(brief, f)  # 같은 이름의 다른 파일(예: 두 번째 screenshot.png)이 앞의 첨부를 덮지 않게
-            shutil.copy2(f, dest)
+            same = brief / f.name  # 같은 파일을 다시 첨부했다 — 내용이 같으면 또 복사하지 않고 있던 것을 쓴다
+            if same.is_file() and same.stat().st_size == f.stat().st_size and same.read_bytes() == f.read_bytes():
+                dest = same
+            else:
+                dest = _unique_dest(brief, f)  # 같은 이름의 다른 파일(예: 두 번째 screenshot.png)이 앞의 첨부를 덮지 않게
+                shutil.copy2(f, dest)
             text = docs.to_text(f)
             if text:
                 md = brief / f"{dest.name}.md"  # spec.docx → spec.docx.md (spec.md 나 기획 결과 기획서.md 와 겹치지 않게)
@@ -427,7 +467,7 @@ class Api(QObject):
                 links.append(url)
                 why = "로그인이 필요한 페이지" if got.get("needs_login") else got.get("error", "가져오지 못함")
                 notes.append(f"{url} — {why}라 내용을 가져오지 못했습니다. 에이전트가 웹으로 읽으려 하면 권한을 묻습니다 "
-                                          "(새 작업 화면에서 링크의 '로그인'을 누르면 앱 브라우저로 로그인해 내용을 가져옵니다).")
+                                          "(첨부한 링크 옆 '로그인'을 누르면 앱 브라우저로 로그인해 내용을 가져옵니다).")
         if follow_up:  # 진행 중·끝난 실행에 보내는 메시지의 첨부 — 기준을 새로 세우는 게 아니라 이 메시지의 근거
             head = request or "첨부한 파일을 보고 반영한다."
             out = head + "\n\n[이 메시지의 첨부 — 먼저 읽고 반영한다]\n" + "\n".join(f"- {n}" for n in names)
@@ -458,7 +498,10 @@ class Api(QObject):
         from beom_workbench.core import brief
 
         run = inbox.load_run(self.settings, run_id)
-        return {**brief.files(run["target_root"]), "check": brief.check(run["target_root"])}
+        out = {**brief.files(run["target_root"]), "check": brief.check(run["target_root"])}
+        if any(d["name"] == "기획서.md" for d in out["docs"]):  # 툴킷이 문서에서 모은 개발 인계 체크리스트 — 문서 목록 끝에 (파일이 아니다)
+            out["docs"].append({"name": CHECKLIST_DOC, "title": "개발 인계 체크리스트", "virtual": True})
+        return out
 
     @Slot(str, str, result=str)
     @safe
@@ -484,15 +527,32 @@ class Api(QObject):
         run = inbox.load_run(self.settings, run_id)
         d = brief.folder(run["target_root"]) / "wireframes"
         out = []
+        from beom_workbench.core import wfkit
         for f in sorted(d.glob("*.htm*")) if d.is_dir() else []:
             if f.is_file() and not f.is_symlink() and f.stat().st_size <= 3 * 1024 * 1024:
-                out.append({"name": f.name, "html": f.read_text(encoding="utf-8", errors="replace")})
+                out.append({"name": f.name, "html": wfkit.inline(f.read_text(encoding="utf-8", errors="replace"), d)})  # 내보내기에도 부품째로
         return out
 
     @Slot(str, str, str, result=str)
     @safe
     def exportBrief(self, run_id, html, fmt):
         return self._export_brief(run_id, html, fmt, "")
+
+    @Slot(str, result=str)
+    @safe
+    def briefReqs(self, run_id):
+        """기획서의 요구사항 {R1: 내용} — 화면설계 보기에서 화면마다 맡는 요구사항을 보여 준다."""
+        from beom_workbench.core import brief
+        run = inbox.load_run(self.settings, run_id)
+        return brief.requirements(run["target_root"])
+
+    @Slot(str, result=str)
+    @safe
+    def briefChecklist(self, run_id):
+        """개발 인계 체크리스트 — 기획 문서의 표·번호에서 툴킷이 모은다 (내보내기와 기획 패키지 보기에 함께)."""
+        from beom_workbench.core import brief
+        run = inbox.load_run(self.settings, run_id)
+        return {"text": brief.checklist(run["target_root"])}
 
     @Slot(str, str, str, str, result=str)
     @safe
@@ -577,6 +637,8 @@ class Api(QObject):
         from beom_workbench.core import brief
 
         run = inbox.load_run(self.settings, run_id)
+        if name == CHECKLIST_DOC:
+            return {"path": "", "text": brief.checklist(run["target_root"])}
         d = brief.folder(run["target_root"])
         f = d / Path(name).name
         if f.suffix.lower() != ".md" or not f.is_file() or f.is_symlink() or not inbox._inside(str(f.resolve()), d.resolve()):
@@ -729,6 +791,10 @@ class Api(QObject):
             make.set_requirements(conn, run["port_id"], v["requirements"], actor=who)
             after = {r["id"]: r["text"] for r in make.requirements(conn, run["port_id"])}
             changed = [k for k in after if before.get(k) != after[k]] + [f"{k}(삭제)" for k in before if k not in after]
+            # 사용자가 직접 쓴·고친 요구사항 — 출처는 사용자다 (에이전트의 출처 칸 확인 대상이 아니다)
+            mine = {k for k in after if before.get(k) != after[k]}
+            inbox.update_run(self.settings, run_id, lambda r: r.update(req_meta={
+                k: ({"from": "user"} if k in mine else (r.get("req_meta") or {}).get(k) or {"from": "user"}) for k in after}))
             if changed:
                 notes.append("요구사항 " + ", ".join(changed))
         if v.get("cases") is not None:
@@ -760,12 +826,17 @@ class Api(QObject):
 
         def put(r):
             old = r.get("plan") or {}
-            hist = (old.get("history") or []) + ([{"steps": old["steps"], "summary": old.get("summary")}] if old.get("steps") else [])
+            hist = (old.get("history") or []) + ([{"steps": old["steps"], "summary": old.get("summary"),
+                                                   **({"reqs": old["reqs"]} if old.get("reqs") else {}),
+                                                   **({"decisions": old["decisions"]} if old.get("decisions") else {}),
+                                                   "approved": bool(old.get("approved"))}]
+                                                 if old.get("steps") else [])
             r["plan"] = {"steps": steps, "summary": str(v.get("summary") or old.get("summary") or "").strip()[:1000],
                          "approved": False, "history": hist[-5:], "at": view.now(), "edited_by": getpass.getuser(),
                          **({"design": str(v["design"] if v.get("design") is not None else old.get("design") or "")[:6000]}
                             if (v.get("design") is not None or old.get("design")) else {}),
-                         **({"decisions": old["decisions"]} if old.get("decisions") else {})}
+                         **({"decisions": old["decisions"]} if old.get("decisions") else {}),
+                         **({"reqs": old["reqs"]} if old.get("reqs") else {})}
 
         inbox.update_run(self.settings, run_id, put)
         inbox.log(self.settings, run_id, "user_edit", what=f"계획 {len(steps)}단계")
@@ -930,13 +1001,16 @@ class Api(QObject):
                 r["sandbox"] = bool(v["sandbox"])
             if v.get("confirm_at") in ("start", "end"):
                 r["confirm_at"] = v["confirm_at"]
+            if v.get("depth") in ("quick", "standard", "deep"):  # 다음 라운드의 지시부터
+                r["depth"] = v["depth"]
 
         run = inbox.update_run(self.settings, run_id, put)
         inbox.log(self.settings, run_id, "options", model=run.get("model"), mode=inbox.mode_of(run["policy"]),
                   max_rounds=run.get("max_rounds"))
         return {"model": run.get("model"), "effort": run.get("effort"), "policy": run["policy"], "max_rounds": run.get("max_rounds"),
-                "sandbox": run.get("sandbox", True),
-                "plan_approval": run.get("plan_approval", True), "confirm_at": run.get("confirm_at", "start")}
+                "sandbox": sandbox_on(run),
+                "plan_approval": run.get("plan_approval", True), "confirm_at": run.get("confirm_at", "start"),
+                "depth": run.get("depth") or "standard"}
 
     @Slot(str, result=str)
     @safe
@@ -1053,6 +1127,30 @@ class Api(QObject):
         inbox.log(self.settings, run_id, "tamper_ack")
         return {"ok": True, "status": r.get("status")}
 
+    @Slot(str, str, result=str)
+    @safe
+    def rememberLesson(self, run_id, text):
+        """사용자가 보낸 말을 이 폴더의 다음 작업에도 — 대화창의 '다음 작업에도 적용'."""
+        from beom_workbench.core import lessons
+        run = inbox.load_run(self.settings, run_id)
+        if not run.get("target_root"):
+            raise ToolError("not_found", "실행을 찾을 수 없습니다")
+        try:
+            data = lessons.add_rule(self.settings, run["target_root"], text, run_id)
+        except ValueError as e:
+            raise ToolError("invalid_request", str(e)) from e
+        inbox.log(self.settings, run_id, "lesson", text=" ".join(str(text).split())[:500])
+        return {"rules": data["rules"]}
+
+    @Slot(str, str, result=str)
+    @safe
+    def forgetLesson(self, run_id, rule_id):
+        from beom_workbench.core import lessons
+        run = inbox.load_run(self.settings, run_id)
+        if not run.get("target_root"):
+            raise ToolError("not_found", "실행을 찾을 수 없습니다")
+        return {"rules": lessons.remove_rule(self.settings, run["target_root"], rule_id)["rules"]}
+
     @Slot(str, result=str)
     @safe
     def accept(self, run_id):
@@ -1161,19 +1259,23 @@ class Api(QObject):
         tool = prereqs.TOOLS.get(tool_id)
         if not tool:
             raise ToolError("not_found", "모르는 도구입니다")
-        if tool_id in prereqs.MANAGED:  # winget·apt 에 쓸 만한 패키지가 없는 도구 — 공식 배포본을 받아 툴킷 폴더에 (체크섬 확인)
+        from beom_workbench.core import toolchains
+        fetch = tool_id in toolchains.FETCH  # JDK·Node·Go·.NET — 시스템에 설치하지 않고 공식 배포본을 툴킷 폴더에 (작업 때와 같게)
+        if tool_id in prereqs.MANAGED or fetch:  # winget·apt 에 쓸 만한 패키지가 없는 도구도 — 공식 배포본을 받아 툴킷 폴더에 (체크섬 확인)
             busy = self.__dict__.setdefault("_installing", set())
             if tool_id not in busy:  # 두 번 눌러도 한 번만 받는다
                 busy.add(tool_id)
 
                 def work():
                     try:
-                        res = prereqs.install(tool_id)
+                        res = toolchains.fetch(tool_id, "lts") if fetch else prereqs.install(tool_id)
+                        toolchains.forget()
                         self.__dict__.setdefault("_install_results", {})[tool_id] = res
                     finally:
                         busy.discard(tool_id)
                 threading.Thread(target=work, daemon=True).start()
-            return {"opened": False, "installing": True, "command": prereqs.install_command(tool_id),
+            return {"opened": False, "installing": True,
+                    "command": toolchains.describe(tool_id, "lts") if fetch else prereqs.install_command(tool_id),
                     "last": self.__dict__.get("_install_results", {}).get(tool_id)}
         other = tool[4] if tool[4].startswith(("sudo ", "curl ")) else None  # Linux — 배포판 패키지 명령이 있으면 그대로
         cmd = tool[2] if os.name == "nt" else tool[3] if sys.platform == "darwin" else other
@@ -1229,6 +1331,10 @@ class Api(QObject):
         # 폴더만 연다 — 파일 경로를 주면 기본 프로그램으로 실행돼 버린다 (에이전트가 만든 .exe·.bat 등)
         if not path or not Path(path).is_dir():
             raise ToolError("invalid_request", "폴더만 열 수 있습니다")
+        if sys.platform == "darwin":  # macOS 의 Foo.app 은 폴더이기도 하다 — 열면 앱이 실행되므로 Finder 에서 보여 주기만
+            import subprocess
+            subprocess.Popen(["open", "-R", path] if Path(path).suffix.lower() in (".app", ".bundle", ".pkg", ".framework") else ["open", path])
+            return True
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
         return True
 
@@ -1283,15 +1389,37 @@ class Api(QObject):
     @safe
     def loginLink(self, url):
         """로그인이 필요한 링크를 앱 안의 브라우저 창으로 연다 — 사용자가 로그인하고 '이 페이지 가져오기'를 누르면 글을 첨부로."""
-        from beom_workbench.app.linkbrowser import LinkBrowser
         if not re.match(r"https?://", url or ""):
             raise ToolError("invalid_request", "http(s) 주소만 됩니다")
-        dlg = LinkBrowser(self.settings, url, self.window)
-        dlg.saved.connect(lambda u, p: self.linkSaved.emit(json.dumps({"url": u, "path": p}, ensure_ascii=False)))
-        dlg.setAttribute(Qt.WA_DeleteOnClose)
-        dlg.show()
-        dlg.raise_()
+        self.window.show_browser(url, key=url)  # 오른쪽 브라우저 패널에서
         return {"opened": True}
+
+    @Slot(str, result=str)
+    @safe
+    def openBrowser(self, url):
+        """오른쪽 브라우저 패널을 연다 (주소가 없으면 빈 패널)."""
+        if url and not re.match(r"https?://", url):
+            raise ToolError("invalid_request", "http(s) 주소만 됩니다")
+        self.window.show_browser(url or "")
+        return {"opened": True}
+
+    @Slot(result=str)
+    @safe
+    def toggleBrowser(self):
+        """머리줄의 '브라우저' 단추 — 열려 있으면 닫고, 닫혀 있으면 연다 (패널의 닫기와 같은 동작)."""
+        br = getattr(self.window, "browser", None)
+        if br is not None and br.isVisible():
+            br.close_pane()
+            return {"open": False}
+        self.window.show_browser("")
+        return {"open": True}
+
+    @Slot(result=str)
+    @safe
+    def browserHosts(self):
+        """에이전트가 로그인한 상태로 화면을 찍어도 되는 사이트."""
+        from beom_workbench.core import browser_auth
+        return browser_auth.hosts(self.settings)
 
     @Slot(result=str)
     @safe

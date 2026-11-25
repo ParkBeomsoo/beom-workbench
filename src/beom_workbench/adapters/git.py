@@ -82,14 +82,6 @@ def show(repo: Path, commit: str, path: str) -> bytes:
     return run(["show", f"{commit}:{path}"], cwd=repo)
 
 
-def file_exists(repo: Path, commit: str, path: str) -> bool:
-    try:
-        run(["cat-file", "-e", f"{commit}:{path}"], cwd=repo)
-        return True
-    except ToolError:
-        return False
-
-
 def blob_shas(repo: Path, commit: str) -> dict[str, str]:
     out = run(["ls-tree", "-r", "-z", commit], cwd=repo)
     result = {}

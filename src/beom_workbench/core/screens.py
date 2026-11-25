@@ -6,6 +6,8 @@
 file 에 #조각·?질의 를 붙일 수 있다 ({"file": "index.html#q=패딩"}).
 screen.actions — 열고 나서 차례로: {"fill": "CSS 선택자", "value": "글자"}, {"click": "선택자"},
 {"press": "Enter", "on": "선택자"(생략하면 포커스된 요소)}, {"wait_ms": 300}. 그 뒤의 모습을 확인·촬영한다.
+브라우저 기본 대화 상자(alert·confirm·prompt)는 툴킷이 답한다 — confirm 은 '확인'이 기본이고, 누르기 전에 {"dialog": "dismiss"} 를
+두면 '취소', {"dialog": "넣을 글"} 은 prompt 의 답. 대화 상자에 뜬 글은 visible 로 확인할 수 있다 (결과의 dialogs 에도 남는다).
 """
 from __future__ import annotations
 
@@ -49,9 +51,10 @@ def page_spec(spec: dict, url: str | None, root, out: str, file_base: str | None
     else:
         raise ToolError("invalid_request", "화면 케이스에는 screen.file(로컬 파일) 또는 screen.path + 서버 주소(*_url)가 필요함")
     acts = spec.get("actions") or []
-    if not isinstance(acts, list) or any(not isinstance(a, dict) or not (set(a) & {"fill", "click", "dblclick", "press", "wait_ms"})
-                                         or set(a) - {"fill", "value", "click", "dblclick", "press", "on", "wait_ms"} for a in acts):
-        raise ToolError("invalid_request", "웹 화면의 actions 는 [{fill, value} | {click} | {dblclick} | {press, on?} | {wait_ms}] 목록")
+    if not isinstance(acts, list) or any(not isinstance(a, dict) or not (set(a) & {"fill", "click", "dblclick", "press", "wait_ms", "dialog"})
+                                         or set(a) - {"fill", "value", "click", "dblclick", "press", "on", "wait_ms", "dialog"} for a in acts):
+        raise ToolError("invalid_request", "웹 화면의 actions 는 [{fill, value} | {click} | {dblclick} | {press, on?} | {wait_ms} | "
+                                           "{dialog: accept·dismiss·prompt 에 넣을 글}] 목록")
     return {"url": target, "out": out, "width": int(spec.get("width") or w), "height": int(spec.get("height") or h),
             "wait_ms": int(spec.get("wait_ms") or 800), "actions": acts[:30], **({"audit": True} if spec.get("audit") else {})}
 
@@ -81,7 +84,10 @@ class serve_folder:
                     return os.path.join(base, "__outside__")
                 # 화면에 필요 없는 비밀·기록은 내보내지 않는다 — git 내부, .env, 툴킷 기록(.beom 의 brief 화면 설계·looks 디자인 시안은 예외)
                 parts = [x.lower() for x in os.path.relpath(real, base).split(os.sep)]
-                if ".git" in parts or any(x.startswith(".env") for x in parts) or (parts[:1] == [".beom"] and parts[1:2] not in (["brief"], ["looks"])):
+                # .beom/tmp/baseline-… 는 시작 전 모습 그대로 꺼낸 대상 폴더 — 고친 기존 화면을 그때 모습으로 견줄 때 연다
+                start = parts[:2] == [".beom", "tmp"] and len(parts) > 2 and parts[2].startswith("baseline-")
+                if ".git" in parts or any(x.startswith(".env") for x in parts) or (
+                        parts[:1] == [".beom"] and parts[1:2] not in (["brief"], ["looks"]) and not start):
                     return os.path.join(base, "__hidden__")
                 return full
 
@@ -117,6 +123,16 @@ def capture(pages: list[dict], timeout: float | None = None, coverage_dir: Path 
     # 결과는 UTF-8 로 받는다 — Windows 기본 코드 페이지(cp949)로 나오면 한글 확인 결과가 깨진다
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --disable-lcd-text",
                PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    if sys.platform.startswith("linux"):
+        # 사용자 네임스페이스가 막힌 배포판(Ubuntu 23.10+)·root 로 도는 컨테이너에서는 Chromium 샌드박스가 뜨지 못해 화면 엔진이
+        # 시작하지 않는다 — 그때만 끈다 (찍는 것은 대상 폴더의 화면·툴킷이 고른 참고 화면이다)
+        from beom_workbench.core import sandbox
+        try:
+            blocked = bool(sandbox._userns_blockers()[0]) or os.geteuid() == 0
+        except Exception:  # noqa: BLE001
+            blocked = False
+        if blocked:
+            env["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
     if coverage_dir is not None:
         import socket
         Path(coverage_dir).mkdir(parents=True, exist_ok=True)
@@ -155,6 +171,7 @@ def to_result(r: dict) -> dict:
     loaded = r.get("ok") and "페이지를 열지 못함" not in (r.get("errors") or [])
     return {"status": 200 if loaded else None,
             "body": {"title": r.get("title"), "visible": r.get("found", []), "missing": r.get("missing", []),
-                     "selectors_missing": r.get("selectors_missing", []), "errors": (r.get("errors") or [])[:5]},
+                     "selectors_missing": r.get("selectors_missing", []), "errors": (r.get("errors") or [])[:5],
+                     **({"dialogs": r["dialogs"][:5]} if r.get("dialogs") else {})},
             "screenshot": r.get("out") if loaded else None,
             **({} if loaded else {"error": "; ".join(r.get("errors") or ["페이지를 열지 못함"])[:300]})}

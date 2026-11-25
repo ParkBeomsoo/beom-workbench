@@ -72,11 +72,16 @@ def _java_major() -> int | None:
     return int(m.group(2) or 0) if major == 1 else major  # 1.8 → 8
 
 
-def resolve_managed(tool: str) -> dict:
+def resolve_managed(tool: str, version: str | None = None, java: int | None = None) -> dict:
     """설치할 버전 — 공식 정보에서 (Maven: 3.x 정식판 중 가장 높은 것, Gradle: 현재 정식판, 단 JDK 17 미만이면 8.x). 못 읽으면 고정 버전."""
     import json as _json
     import urllib.request
     m = dict(MANAGED[tool])
+    if version and re.fullmatch(r"\d+(?:\.\d+){1,2}", version):  # 프로젝트의 래퍼 설정이 정한 버전
+        if tool == "mvn":
+            return {**m, "ver": version, "dir": f"apache-maven-{version}",
+                    "url": f"https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/{version}/apache-maven-{version}-bin.zip"}
+        return {**m, "ver": version, "dir": f"gradle-{version}", "url": f"https://services.gradle.org/distributions/gradle-{version}-bin.zip"}
     try:
         if tool == "mvn":
             with urllib.request.urlopen(MAVEN_META, timeout=20) as r:  # noqa: S310 — 공식 주소
@@ -85,7 +90,8 @@ def resolve_managed(tool: str) -> dict:
                 v = max(vers, key=lambda x: tuple(int(p) for p in x.split(".")))
                 m.update(ver=v, dir=f"apache-maven-{v}",
                          url=f"https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/{v}/apache-maven-{v}-bin.zip")
-        elif tool == "gradle" and (_java_major() or 0) >= 17:  # Gradle 9 는 JDK 17 이상에서 돈다
+        # Gradle 9 는 JDK 17 이상에서 돈다 — 프로젝트가 쓸 JDK(java)로 본다. 시스템 JAVA_HOME 으로 보면 JDK 11 프로젝트에 Gradle 9 를 받았다
+        elif tool == "gradle" and (java or _java_major() or 0) >= 17:
             with urllib.request.urlopen(GRADLE_CURRENT, timeout=20) as r:  # noqa: S310
                 cur = _json.loads(r.read().decode("utf-8"))
             if cur.get("version") and cur.get("downloadUrl") and not cur.get("snapshot") and cur.get("final", True):
@@ -126,14 +132,14 @@ def install_command(tool: str) -> str | None:
     return win if sys.platform == "win32" else mac if sys.platform == "darwin" else other
 
 
-def install(tool: str, timeout: float = 1800) -> dict:
+def install(tool: str, timeout: float = 1800, version: str | None = None, java: int | None = None) -> dict:
     """도구를 설치한다 — Windows 는 winget 공식 패키지(약관 동의 포함, 관리자 확인 창이 뜰 수 있다), winget 에 없는 Maven·Gradle 은
     공식 배포본(체크섬 확인). macOS 는 Homebrew. Linux 는 관리자 암호가 필요해 직접 설치하게 안내한다. {ok, how, error?}"""
     import subprocess
     how = install_command(tool) or ""
     try:
         if tool in MANAGED:
-            _install_managed(tool, timeout)
+            _install_managed(tool, timeout, version, java)
         elif sys.platform == "win32":
             win = TOOLS[tool][2]
             if not win or not shutil.which("winget"):
@@ -151,9 +157,17 @@ def install(tool: str, timeout: float = 1800) -> dict:
                     tail = (r.stdout + r.stderr).decode("utf-8", "replace").strip().splitlines()[-3:]
                     return {"ok": False, "how": how, "error": f"winget 설치 실패 (코드 {r.returncode}): {' / '.join(tail)}"[:400]}
         elif sys.platform == "darwin" and TOOLS[tool][3]:
-            r = subprocess.run(TOOLS[tool][3], shell=True, capture_output=True, timeout=timeout)
+            cmd = TOOLS[tool][3]
+            if not shutil.which("brew"):
+                return {"ok": False, "how": how, "error": "Homebrew(brew)가 없음 — https://brew.sh 에서 설치한 뒤 다시 누르거나, 직접 설치해 주세요"}
+            if "--cask" in cmd:  # .pkg 설치는 관리자 암호를 묻는다 — 창 없이 돌리면 30분 동안 멈춰 있었다
+                return {"ok": False, "how": how, "error": f"관리자 암호가 필요한 설치라 터미널에서 직접 실행해 주세요: {cmd}"}
+            import shlex
+            r = subprocess.run(shlex.split(cmd), capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
             if r.returncode != 0:
                 return {"ok": False, "how": how, "error": (r.stdout + r.stderr).decode("utf-8", "replace")[-400:]}
+            from beom_workbench.core.agents import refresh_path as _rp
+            _rp(max_age=0)
         else:
             return {"ok": False, "how": how, "error": "이 운영체제에서는 관리자 암호가 필요해 툴킷이 설치하지 않음 — 직접 설치해 주세요"}
     except (OSError, subprocess.SubprocessError, ValueError) as e:
@@ -163,14 +177,14 @@ def install(tool: str, timeout: float = 1800) -> dict:
     return {"ok": _has(tool), "how": how, **({} if _has(tool) else {"error": "설치했지만 아직 찾지 못함 (앱을 다시 켜야 할 수 있음)"})}
 
 
-def _install_managed(tool: str, timeout: float) -> None:
+def _install_managed(tool: str, timeout: float, version: str | None = None, java: int | None = None) -> None:
     import hashlib
     import tempfile
     import urllib.request
     import zipfile
-    if _installed(tool):
+    m = resolve_managed(tool, version, java)
+    if (tools_home() / m["dir"] / "bin").is_dir() or (not version and _installed(tool)):
         return
-    m = resolve_managed(tool)
     base = tools_home()
     base.mkdir(parents=True, exist_ok=True)
     with urllib.request.urlopen(m["url"] + "." + m["algo"], timeout=60) as r:  # noqa: S310 — 고정한 공식 주소
@@ -198,7 +212,15 @@ def _install_managed(tool: str, timeout: float) -> None:
 def _has(name: str) -> bool:
     if name == "java":
         jh = os.environ.get("JAVA_HOME")
-        return bool(shutil.which("javac")) or bool(jh and any((Path(jh) / "bin" / f"javac{s}").is_file() for s in ("", ".exe")))
+        if jh and any((Path(jh) / "bin" / f"javac{s}").is_file() for s in ("", ".exe")):
+            return True
+        if sys.platform == "darwin":  # macOS 의 /usr/bin/javac 는 JDK 가 없어도 있는 껍데기 — 실행하면 설치 창을 띄운다
+            import subprocess
+            try:
+                return subprocess.run(["/usr/libexec/java_home"], capture_output=True, timeout=10).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                return False
+        return bool(shutil.which("javac"))
     if name == "dotnet":
         return _dotnet_sdk()
     if name == "msvc":
@@ -256,12 +278,12 @@ def needs(target_root: str | Path) -> list[dict]:
         return []
     from beom_workbench.core.agents import refresh_path
     refresh_path()  # 앱을 켠 뒤 설치한 도구도 (저장된 PATH 를 다시 읽어) 찾게
-    want: dict[str, list[str]] = {}
+    want: dict[str, list[Path]] = {}
 
     def add(tool: str, repo: Path) -> None:
         want.setdefault(tool, [])
-        if repo.name not in want[tool]:
-            want[tool].append(repo.name)
+        if repo not in want[tool]:
+            want[tool].append(repo)
 
     for repo in _repos(root)[:40]:
         files = {p.name for p in repo.iterdir()} if repo.is_dir() else set()
@@ -286,14 +308,20 @@ def needs(target_root: str | Path) -> list[dict]:
             add("gradle", repo)
         if "go.mod" in files:
             add("go", repo)
-    have = {"cargo": _has("cargo"), "node": _has("node"), "java": _has("java"), "go": _has("go"),
-            "mvn": _has("mvn"), "gradle": _has("gradle"), "msvc": _has("msvc"), "openssl": _openssl_dir() is not None}
+        if any(f.endswith((".csproj", ".fsproj", ".sln", ".slnx")) for f in files) and "dotnet" in TOOLS:
+            add("dotnet", repo)
+    from beom_workbench.core import toolchains
     out = []
     for tool, repos in want.items():
-        if have.get(tool):
+        if tool in toolchains.FETCH:
+            # 프로젝트가 정한 버전까지, 툴킷 폴더에 받아 둔 것도 — 받아 둔 Node 를 두고 'Node.js 없음'이라고 브리핑에 계속 적었다
+            if all(toolchains.ok(tool, r) for r in repos):
+                continue
+        elif {"cargo": _has("cargo"), "mvn": _has("mvn"), "gradle": _has("gradle"), "msvc": _has("msvc"),
+              "openssl": _openssl_dir() is not None}.get(tool, _has(tool)):
             continue
         name, why, win, mac, other = TOOLS[tool]
-        out.append({"id": tool, "name": name, "why": why, "repos": repos[:6],
+        out.append({"id": tool, "name": name, "why": why, "repos": [r.name for r in repos][:6],
                     "install": install_command(tool) if sys.platform in ("win32", "darwin") else None,
                     "hint": other if sys.platform not in ("win32", "darwin") else None})
     return out

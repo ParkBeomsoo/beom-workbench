@@ -105,13 +105,15 @@ _TS_TOOLS = (r"(?:npx )?tsc(?: (?:--noEmit|--pretty(?: false)?|(?:-p|--project) 
              r"|(?!\.\.)(?![\w.\\/-]*[\\/]\.\.)[\w][\w./\\-]*))*|")
 BUILD_COMMANDS = re.compile(
     # npm·pnpm·yarn: 출력만 줄이거나 보고·설치 스크립트를 끄는 옵션은 같은 명령이다 (실행하는 것을 바꾸지 않는다)
-    r"^((?:npm (ci|install|test|run (build|test|lint))|pnpm (install|test|build)|yarn (install|test|build))"
+    # 프로젝트의 관리자(pnpm·yarn·bun — 깔려 있지 않으면 corepack 을 거쳐)로 같은 스크립트를 돌리는 것도 같은 명령이다
+    r"^((?:npm (ci|install|test|run (build|test|lint|typecheck))|(?:corepack )?(?:pnpm|yarn) (install|test|build|run (build|test|lint|typecheck))"
+    r"|bun (install|test|run (build|test|lint|typecheck)))"
     r"(?: --(?:no-audit|no-fund|silent|prefer-offline|no-progress|ignore-scripts|loglevel=(?:error|warn|silent)))*|"
     # 빌드 스크립트에 출력 위치만 넘기는 옵션 (npm run build -- --outDir .beom/tmp/build) — 다른 코드를 불러오는 옵션(--require 등)이나
     # 테스트 실행기에 넘기는 옵션은 아니다. 경로는 상위(..)로 나가지 않는다
     r"npm run build -- (?:(?:--outDir|--out-dir|--base)(?:=| )(?!\S*\.\.)[\w./\\-]+|--emptyOutDir|--mode [\w-]+)"
     r"(?: (?:(?:--outDir|--out-dir|--base)(?:=| )(?!\S*\.\.)[\w./\\-]+|--emptyOutDir|--mode [\w-]+))*|"
-    r"cargo (build|test|check|fmt|clippy)" + _CARGO_OPT + r"|" + _TS_TOOLS + r"go (build|test|vet)( \./\.\.\.)?|mvn( -q)? (test|package|verify)|gradlew? (test|build)|"
+    r"cargo (build|test|check|fmt|clippy)" + _CARGO_OPT + r"|" + _TS_TOOLS + r"go (build|test|vet)( \./\.\.\.)?|(?:mvn|mvnw|mvnw\.cmd|\./mvnw)( -q)? (test|package|verify|compile)|(?:gradlew?|gradlew\.bat) (test|build)|"
     r"\./gradlew (test|build)|pip install -e \.|dotnet (build|test)|"
     # 의존성 설치(requirements 파일·현재 패키지)와 대상 폴더 안 가상 환경 만들기
     r"(?:pip|" + _PY + r" -m pip) install(?: -q| --quiet| -U| --upgrade)* (?:-r requirements[\w.-]*\.txt|-e \.(?:\[[\w,-]+\])?)(?: -q| --quiet)*|"
@@ -141,6 +143,10 @@ PUBLISH = re.compile(r"\bgit(?:\.exe)?\b[^;&|\n]*\bpush\b|\b(?:npm|pnpm|yarn|bun
 SYSTEM = re.compile(r"\b(?:setx|reg(?:\.exe)?\s+(?:add|delete|import)|sudo|chmod\s+-R\s+/|systemctl|launchctl|netsh|Set-ExecutionPolicy"
                     r"|schtasks|sc(?:\.exe)?\s+(?:create|config|delete|start|stop)|bcdedit|(?:New|Set|Remove)-ItemProperty|BEOM_WORKBENCH_)\b"
                     r"|HKCU:|HKLM:|Registry::"
+                    # macOS — 키체인(로그인 토큰이 여기 있다)·설정 쓰기·보안 설정·예약 작업
+                    r"|\bsecurity\s+(?:find|dump|add|delete|import|export|set|unlock)-?\w*|\bdefaults\s+(?:write|delete|import)\b"
+                    r"|\bosascript\b|\bxattr\s+-[dwcr]|\b(?:spctl|csrutil|networksetup|dscl|tccutil|nvram|pmset|scutil|systemsetup)\b"
+                    r"|\bcrontab\b(?!\s+-l\b)"
                     r"|\bgit(?:\.exe)?\s+(?:-C\s+\S+\s+)?config\s+(?!(?:--get|--get-all|--get-regexp|--list|-l)\b)\S+\s+\S", re.I)
 # 대상 폴더 안이라도 에이전트가 쓰면 안 되는 곳 — 에이전트 자신의 권한·훅 설정, git 내부(HEAD·hooks·config)
 CONFIG_PATHS = re.compile(r"(^|/)(\.claude|\.git|\.codex|\.gemini|\.cursor)(/|$)|(^|/)\.mcp\.json$", re.I)
@@ -258,6 +264,8 @@ def list_runs(settings: Settings) -> list[dict]:
     도중에 휴지통으로 옮겨진 폴더·쓰는 중인 파일은 건너뛴다 (목록 전체가 실패하지 않게)."""
     rows = []
     for d in runs_dir(settings).iterdir():
+        if not re.fullmatch(r"run_[0-9a-f]{12}", d.name):  # 실행 폴더가 아니다 — 목록의 다른 실행까지 못 열게 하지 않는다
+            continue
         f = d / "run.json"
         try:
             st = f.stat()
@@ -273,6 +281,8 @@ def list_runs(settings: Settings) -> list[dict]:
             except (OSError, json.JSONDecodeError):
                 continue
             _LIST[key] = (st.st_mtime_ns, run)
+        if not isinstance(run, dict) or run.get("id") != d.name:  # 다른 실행을 복사한 폴더 — 같은 id 가 둘 보이면 엉뚱한 것을 연다
+            continue
         rows.append((max(st.st_mtime, _mtime(d)), run))
     rows.sort(key=lambda x: x[0], reverse=True)
     return [json.loads(json.dumps(r)) for _, r in rows]  # 부르는 쪽이 고쳐도 캐시는 그대로
@@ -347,8 +357,19 @@ def tighten(policy: dict, changes: dict) -> dict:
 
 
 def _scratch(path: str | None) -> bool:
-    """에이전트 자신의 임시 작업 폴더 (Claude Code 는 %TEMP%/claude/… 에 메모·스크립트를 둔다) — 대상 폴더처럼 다룬다."""
-    return bool(path) and _inside(path, Path(tempfile.gettempdir()) / "claude")
+    """에이전트 자신의 임시 작업 폴더 (Claude Code 는 %TEMP%/claude/… 에 메모·스크립트를 둔다) — 대상 폴더처럼 다룬다.
+    macOS·Linux 에서는 판에 따라 $TMPDIR/claude 또는 /tmp/claude-<사용자 번호> 를 쓴다 — 둘 다 (claude 로 시작하는 폴더만)."""
+    if not path:
+        return False
+    if _inside(path, Path(tempfile.gettempdir()) / "claude"):
+        return True
+    return os.name != "nt" and _posix_claude_tmp(str(path))
+
+
+def _posix_claude_tmp(path: str) -> bool:
+    """/tmp/claude… 아래인가 — /tmp/claude 또는 /tmp/claude-<숫자> 폴더만 (claudette 같은 남의 폴더는 아니다). .. 로 빠져나가면 아니다."""
+    m = re.match(r"^(?:/private)?/tmp/(claude(?:-\d+)?)(/.*)?$", path.replace("\\", "/"))
+    return bool(m) and ".." not in (m.group(2) or "").split("/")
 
 
 def _inside(path: str | None, root: Path) -> bool:
@@ -358,7 +379,8 @@ def _inside(path: str | None, root: Path) -> bool:
     try:
         p = Path(path)
         p = (root / p) if not p.is_absolute() else p
-        a, b = os.path.normcase(str(p.resolve())), os.path.normcase(str(Path(root).resolve()))
+        import unicodedata  # macOS 한글 이름은 NFD 일 수 있다 — 같은 폴더를 '밖'으로 보지 않게 모아 쓴 꼴로 맞춘다
+        a, b = (unicodedata.normalize("NFC", os.path.normcase(str(x.resolve()))) for x in (p, Path(root)))
         return a == b or a.startswith(b.rstrip("\\/") + os.sep)
     except (OSError, ValueError):
         return False
@@ -387,8 +409,18 @@ def decide(run: dict, kind: str) -> str:
         kind = "commands"
     if kind == "shared":  # 어느 모드에서도 묻는다 — 사용자가 '항상'(허용)이나 '거절'로 정했을 때만 그대로
         v = run["policy"].get("shared")
-        return v if v in ("allow", "refuse") else "ask"
-    return run["policy"].get(kind, "ask")
+        if v not in ("allow", "refuse"):
+            v = "allow" if "shared" in (run.get("always_allow") or []) else "ask"
+        return v
+    v = run["policy"].get(kind, "ask")
+    # 카드에서 '이 프로젝트에서 항상' — 규칙(모드)은 그대로 두고 그 종류만 허용으로 (규칙을 바꾸면 모드가 '사용자 지정'이 되어
+    # 에이전트가 자기 권한 모드로 돌지 않고 툴킷 분류로 바뀌었다)
+    return "allow" if v == "ask" and kind in (run.get("always_allow") or []) else v
+
+
+def allow_always(settings, run_id: str, kind: str) -> None:
+    """사용자가 카드에서 '항상'을 골랐다 — 그 종류를 이 실행에서 묻지 않는다 (권한 규칙·모드는 바꾸지 않는다)."""
+    update_run(settings, run_id, lambda r: r.update(always_allow=sorted(set(r.get("always_allow") or []) | {kind})))
 
 
 def repo_roots(run: dict) -> list[str]:
@@ -400,6 +432,8 @@ def read_roots(run: dict, settings=None) -> list[str]:
     """묻지 않고 읽어도 되는 곳 — 대상 폴더를 품은 저장소, 그리고 오픈소스 참고 모드의 원본 (옮길 코드를 읽는 것이 그 모드의 일이다).
     원본이 주소(git URL)면 툴킷이 받아 둔 사본 폴더. 고치기는 그대로 '대상 폴더 밖'으로 묻는다."""
     roots = repo_roots(run)
+    if run.get("base_dir") and Path(str(run["base_dir"])).is_dir():  # 기획 기준 폴더 — 읽기만 묻지 않는다
+        roots.append(str(Path(str(run["base_dir"])).resolve()))
     if run.get("mode") == "reference" and run.get("source"):
         src = Path(str(run["source"]))
         if src.is_dir():
@@ -530,7 +564,7 @@ SERVER_HINT = ("개발 서버처럼 끝나지 않는 명령은 앞에서 돌리�
 
 # Windows 격리(쓰기 제한 토큰)에서는 Node 가 파이프로 자식 프로세스를 띄우지 못한다 (spawn EPERM) — 이름 있는 파이프의
 # 기본 권한이 쓰기를 Everyone 에게 주지 않아서다. npm 설치 스크립트·vite·esbuild·node --test 같은 Node 도구가 모두 여기에 걸린다.
-NODE_TOOLS = re.compile(r"(?:^|[;&|(]\s*)(?:npm|npx|pnpm|yarn|bun|node|vite|next|nuxt|astro|webpack|esbuild|rollup|vitest|jest|"
+NODE_TOOLS = re.compile(r"(?:^|[;&|(]\s*)(?:npm|npx|pnpm|yarn|bun|corepack|node|vite|next|nuxt|astro|webpack|esbuild|rollup|vitest|jest|"
                         r"playwright|ng|turbo|tsx|ts-node)(?:\.cmd|\.exe)?(?=$|[\s;&|)])", re.I)
 
 
@@ -721,9 +755,12 @@ READ_ONLY_WORDS = {
     "convertfrom-json", "convertto-json", "get-date", "write-output", "echo", "write-host", "get-filehash", "get-location", "pwd",
     "head", "tail", "wc", "grep", "rg", "findstr", "tree", "file", "stat", "du", "realpath", "basename", "dirname", "true",
     "if", "elseif", "else", "foreach",  # 제어문 자체는 실행이 아니다 — 안의 명령은 따로 검사된다
+    # Bash 의 읽기 (Windows 에서 격리를 끄면 Claude 가 Bash 를 쓴다 — PowerShell 읽기만 알아봐 cat·wc·for 반복에도 카드가 떴다)
+    "nl", "cut", "uniq", "printf", "comm", "diff", "find", "for", "done", "fi", "test", "[",
 }
-_RO_BAD = re.compile(r"[>`]|\$\(|@\(|&|::|\$env:|\$home\b|(?:^|[\s'\"(])~(?:[\\/]|$)|\\\\\\\\|-(?:delete|exec|execdir|ok)\b|\b(?:iex|icm)\b", re.I)
-_RO_SPLIT = re.compile(r"\|\||[|;{}()\n=]")
+_SED_PRINT = re.compile(r"""^['"]?(?:\d+(?:,(?:\d+|\$))?|\$|/[^/'"]*/(?:,/[^/'"]*/)?)p['"]?$""")
+_RO_BAD = re.compile(r"[>`]|\$\(|@\(|(?<!&)&(?!&)|::|\$env:|\$home\b|(?:^|[\s'\"(])~(?:[\\/]|$)|\\\\\\\\|-(?:delete|exec|execdir|ok)\b|\b(?:iex|icm)\b", re.I)
+_RO_SPLIT = re.compile(r"\|\||&&|[|;{}()\n=]")
 # 검색 결과를 줄 번호와 함께 찍기만 하는 꼴 — | ForEach-Object { "$($_.LineNumber): $($_.Line)" }. 블록 안이 문자열 하나뿐이고 그 안에
 # $_ 와 그 속성만 있을 때만 (다른 변수·하위 식·명령·`는 안 된다). 그 밖의 스크립트 블록은 그대로 묻는다
 _FORMAT_EACH = re.compile(r'\s*\|\s*(?:ForEach-Object|foreach|%)\s*\{\s*"(?:[^"$`\\]|\$\(\$_\.\w+\)|\$_\.\w+\b|\$_\b)*"\s*\}', re.I)
@@ -734,9 +771,12 @@ def _read_only_shell(cmd: str, root: Path) -> bool:
     """명령 전체가 읽기만 하는가 — 쓰기·실행으로 이어질 수 있는 것(리다이렉트, 하위 식, 호출 연산자, .NET 정적 호출,
     목록에 없는 명령)이 하나라도 있으면 아니다. 절대 경로는 모두 대상 폴더(또는 에이전트 임시 폴더) 안이어야 한다."""
     cmd = _FORMAT_EACH.sub("", cmd or "")
+    # 오류 출력 버리기(2>/dev/null · 2>$null · 2>&1)는 아무것도 쓰지 않는다 — 리다이렉트로 보아 읽기에도 카드가 떴다
+    cmd = re.sub(r"\s2>\s*(?:/dev/null|\$null|&1)(?=\s|$|[;|&)])", " ", cmd, flags=re.I)
     if not cmd or len(cmd) > 4000 or _RO_BAD.search(cmd):
         return False
-    bare = re.sub(r"'[^']*'|\"[^\"$`]*\"", "''", cmd)  # 따옴표 안의 | ; ( 는 명령 구분이 아니다 (-Pattern '^(a|b)')
+    # 따옴표 안의 | ; ( 는 명령 구분이 아니다 (-Pattern '^(a|b)'). 큰따옴표 안의 $ 는 뒤에 이름·{·( 가 올 때만 변수다 ("^\s*$" 는 글자)
+    bare = re.sub(r"'[^']*'|\"(?:[^\"$`\\]|\\.|\$(?![\w{(]))*\"", "''", cmd)
     for seg in _RO_SPLIT.split(bare):
         seg = seg.strip()
         if re.match(r"''\s*\S", seg) or seg.startswith('"'):  # 남은 "…" 는 $·` 가 든 문자열 — 무엇이 될지 모른다
@@ -744,15 +784,35 @@ def _read_only_shell(cmd: str, root: Path) -> bool:
         if not seg or seg.startswith(("$", "'", '"', "-", "#")) or re.fullmatch(r"[\d.,\s]+", seg):
             continue  # 변수·문자열·인자 조각·숫자 — 명령이 아니다 ($x = 'a' 의 오른쪽도 여기서 다시 본다)
         words = seg.split()
+        if words[0] in ("do", "then", "else") and len(words) > 1:  # for … ; do cat "$f"; done — do 뒤의 명령을 본다
+            words = words[1:]
         first = words[0].lower().strip("'\"")
+        if first == "sed":
+            # 줄 범위·패턴 찍기만 (sed -n 10,25p 파일) — -i(제자리 고치기)·w(파일 쓰기) 꼴은 아니다
+            if "-n" not in words or any(w.startswith("-i") or w == "--in-place" for w in words) \
+                    or not any(_SED_PRINT.match(w) for w in words[1:]):
+                return False
+            continue
         if first not in READ_ONLY_WORDS:
             return False
         if first in ("sort", "tail", "head") and any(w in ("-o", "--output", "-f", "--follow") for w in words):
             return False
+    # 슬래시로 시작하는 낱말 — 맨 루트 '/' 하나(find / …)는 위 정규식에 걸리지 않아 '안쪽 읽기'로 넘어갔고, Windows 의 Git Bash 경로
+    # (/c/Users/…)는 PowerShell 옵션(/s)으로 보고 건너뛰어 집 폴더 전체를 훑는 명령이 '대상 폴더 안 읽기' 카드로 나갔다 (전체 기능 시험 164)
+    for tok in re.findall(r"""(?:(?<=[\s'"=(])|^)(/[^\s'"`;|&()]*)""", cmd):
+        if tok == "/":
+            return False
+        drive = re.match(r"^/([A-Za-z])(/.*)$", tok)  # /c/… 꼴만 — /s · /i 같은 옵션 한 글자는 드라이브가 아니다
+        if drive and sys.platform == "win32":
+            win = drive.group(1).upper() + ":\\" + (drive.group(2) or "/").lstrip("/").replace("/", "\\")
+            if not (_inside(win, root) or _scratch(win)):
+                return False
+        elif sys.platform == "win32" and tok.count("/") >= 2 and not tok.startswith("//"):
+            return False  # /usr/bin · /proc/1 — Git Bash 의 맨 위 폴더들, 대상 폴더가 아니다
     for m in _RO_ABS.finditer(cmd):
         path = m.group(0).rstrip(".,")
         if path.startswith("/") and sys.platform == "win32":
-            continue  # PowerShell 안의 /옵션 따위 — Windows 경로가 아니다
+            continue  # PowerShell 안의 /옵션 따위 — Windows 경로가 아니다 (Git Bash 경로는 위에서 따로 본다)
         if not (_inside(path, root) or _scratch(path)):
             return False
     return True
