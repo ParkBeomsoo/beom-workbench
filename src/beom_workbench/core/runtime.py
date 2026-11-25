@@ -46,6 +46,8 @@ def _blank() -> dict:
 
 def parse(text: str) -> tuple[str, dict[str, dict]]:
     s = text.lstrip()
+    if not s or re.fullmatch(r"(?:TN:[^\n]*\s*)+", s):
+        return "lcov", {}  # 측정은 돌았지만 잰 파일이 없다 (빈 LCOV) — 형식 오류로 검증 전체를 멈추지 않는다
     if s.startswith("{"):
         data = json.loads(s)
         if isinstance(data.get("files"), dict) and "meta" in data:
@@ -66,6 +68,11 @@ def _coveragepy(data: dict) -> dict[str, dict]:
             d["lines"][int(ln)] = 1
         for ln in f.get("missing_lines", []):
             d["lines"].setdefault(int(ln), 0)
+        for name, fr in (f.get("functions") or {}).items():
+            # 함수 단위 (coverage 7.5+) — 'def' 줄은 모듈을 불러오기만 해도 실행된 줄로 찍혀, 줄만 보면 부르지 않은 함수도
+            # 실행된 것처럼 보인다. 몸통 줄이 하나라도 돌았으면 실행된 함수
+            if name and fr.get("start_line"):
+                d["functions"].append((name, int(fr["start_line"]), 1 if fr.get("executed_lines") else 0))
         out[path] = d
     return out
 
@@ -243,15 +250,6 @@ def runs(conn) -> dict:
     return {"items": ledger.rows_to_dicts(conn.execute("SELECT * FROM coverage_run ORDER BY created_at DESC").fetchall())}
 
 
-def symbol_runtime(conn, symbol_ids: list[str]) -> dict[str, list[str]]:
-    out: dict[str, list[str]] = defaultdict(list)
-    for r in conn.execute(f"SELECT symbol_id, evidence_id FROM coverage_hit WHERE symbol_id IN ({','.join('?' * len(symbol_ids))})",
-                          symbol_ids).fetchall():
-        if r["evidence_id"]:
-            out[r["symbol_id"]].append(r["evidence_id"])
-    return dict(out)
-
-
 # ---------------------------------------------------------------- 실행기
 
 SECRET_ENV_RE = re.compile(r"(?i)token|secret|passw|key|credential|cookie")
@@ -262,6 +260,13 @@ def safe_env(extra: dict | None = None) -> dict:
     env = {k: v for k, v in os.environ.items() if not SECRET_ENV_RE.search(k)}
     env.update(extra or {})
     return env
+
+
+def coverage_env(root) -> dict:
+    """커버리지 기록(.coverage)을 대상 폴더의 .beom/ 안에 — 툴킷·에이전트가 잰 기록이 사용자 저장소에 남지 않게.
+    .beom/ 이 있는 작업 폴더에서만 (원본 프로젝트처럼 우리 폴더가 아닌 곳은 건드리지 않는다)."""
+    beom = Path(root) / ".beom"
+    return {"COVERAGE_FILE": str(beom / ".coverage")} if beom.is_dir() else {}
 
 
 def docker_available() -> bool:
@@ -301,7 +306,8 @@ def run(conn, proj: dict, settings, command: str, *, report: str, trusted: bool 
     env = safe_env()
     try:  # 실패해도 임시 사본은 지운다
         try:
-            proc = subprocess.run(argv, cwd=copy, shell=isinstance(argv, str), capture_output=True, timeout=timeout, env=env)
+            from beom_workbench.core.port import run_tree  # 시간이 넘으면 손자 프로세스까지 끝낸다
+            proc = run_tree(argv, cwd=copy, shell=isinstance(argv, str), timeout=timeout, env=env)
         except subprocess.TimeoutExpired as e:
             raise ToolError("timeout", f"실행이 {timeout}초를 넘김") from e
         out_tail = proc.stdout.decode("utf-8", "replace")[-3000:]

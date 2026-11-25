@@ -1,6 +1,7 @@
 """데스크톱 앱 바로가기 — 시작 메뉴(검색에 나옴)·바탕화면에서 앱을 열 수 있게.
 
 Windows 는 기본 제공 WScript.Shell 로 .lnk 를 만든다 (추가 설치 없음). Linux 는 ~/.local/share/applications 의 .desktop.
+macOS 는 ~/Applications/beom-workbench.app — Finder·Launchpad·Spotlight 에서 열리고, Dock·메뉴 막대에 'Python' 대신 이름이 보인다.
 아이콘(.ico/.png)은 앱이 그려서 툴킷 홈에 둔다 (app/main.py: write_icon_files).
 """
 from __future__ import annotations
@@ -56,12 +57,18 @@ def paths() -> dict[str, Path]:
     if sys.platform.startswith("linux"):
         return {"start": Path.home() / ".local" / "share" / "applications" / f"{NAME}.desktop",
                 "desktop": Path.home() / "Desktop" / f"{NAME}.desktop"}
+    if sys.platform == "darwin":  # macOS 는 앱 하나 — 바탕화면 바로가기는 쓰지 않는다 (Dock 에 끌어 두면 된다)
+        return {"start": Path.home() / "Applications" / f"{NAME}.app"}
     return {}
+
+
+def _there(p: Path) -> bool:
+    return p.is_file() or (p / "Contents" / "Info.plist").is_file()
 
 
 def status() -> dict:
     return {"supported": bool(paths()), "exe": str(app_exe() or ""),
-            "installed": {w: p.is_file() for w, p in paths().items()}}
+            "installed": {w: _there(p) for w, p in paths().items()}}
 
 
 def _ps_quote(s: str) -> str:
@@ -75,8 +82,14 @@ def create(settings: Settings, where: tuple[str, ...] = LOCATIONS, icon: Path | 
     made = {}
     for w in where:
         dst = paths().get(w)
+        if dst is None and sys.platform == "darwin":
+            continue  # macOS 에는 앱 하나만 (바탕화면 바로가기 없음)
         if dst is None:
             raise ToolError("capability_unavailable", "이 운영체제에서는 바로가기를 만들 수 없음")
+        if sys.platform == "darwin":
+            _mac_app(dst, exe, icon)
+            made[w] = str(dst)
+            continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             # 경로는 환경 변수로 넘긴다 — 스크립트 글자에 넣으면 경로 속 따옴표(’ 등)가 명령으로 읽힐 수 있다
@@ -97,11 +110,44 @@ def create(settings: Settings, where: tuple[str, ...] = LOCATIONS, icon: Path | 
     return {"created": made, "exe": str(exe)}
 
 
+def _mac_app(dst: Path, exe: Path, icon: Path | None) -> None:
+    """작은 .app 꾸러미 — 실행하면 같은 환경의 앱 실행 파일을 띄운다. 아이콘은 PNG 를 sips 로 .icns 로 바꿔 넣는다(실패하면 기본 아이콘)."""
+    import plistlib
+    if dst.exists():
+        shutil.rmtree(dst)
+    macos, res = dst / "Contents" / "MacOS", dst / "Contents" / "Resources"
+    macos.mkdir(parents=True)
+    res.mkdir(parents=True)
+    launcher = macos / NAME
+    launcher.write_text("#!/bin/sh\n# beom-workbench — Finder 에서 연 앱은 PATH 가 짧다. 앱이 시작할 때 로그인 셸의 PATH 를 합친다\n"
+                        f"exec \"{exe}\" \"$@\"\n", encoding="utf-8", newline="\n")
+    launcher.chmod(0o755)
+    info = {"CFBundleName": NAME, "CFBundleDisplayName": NAME, "CFBundleIdentifier": "beom.workbench.app",
+            "CFBundleExecutable": NAME, "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "1.0",
+            "LSMinimumSystemVersion": "11.0", "NSHighResolutionCapable": True}
+    if icon and icon.is_file():
+        icns = res / "app.icns"
+        try:
+            if icon.suffix.lower() == ".icns":
+                shutil.copy2(icon, icns)
+            else:
+                subprocess.run(["sips", "-s", "format", "icns", str(icon), "--out", str(icns)], capture_output=True, timeout=60)
+            if icns.is_file():
+                info["CFBundleIconFile"] = "app.icns"
+        except (OSError, subprocess.SubprocessError):
+            pass
+    with (dst / "Contents" / "Info.plist").open("wb") as f:
+        plistlib.dump(info, f)
+
+
 def remove(where: tuple[str, ...] = LOCATIONS) -> dict:
     gone = []
     for w in where:
         p = paths().get(w)
         if p and p.is_file():
             p.unlink()
+            gone.append(str(p))
+        elif p and p.suffix == ".app" and _there(p):
+            shutil.rmtree(p)
             gone.append(str(p))
     return {"removed": gone}

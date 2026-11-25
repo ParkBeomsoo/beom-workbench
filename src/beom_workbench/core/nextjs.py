@@ -13,7 +13,6 @@ from pathlib import Path, PurePosixPath
 
 PAGE_EXT = {".tsx", ".ts", ".jsx", ".js", ".mdx", ".md"}
 HANDLER_EXT = {".ts", ".js", ".tsx", ".jsx", ".mjs"}
-HTTP_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
 EXPORT_METHOD_RE = re.compile(
     r"export\s+(?:async\s+)?(?:function|const|let)\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b"
     r"|export\s*\{([^}]*)\}"

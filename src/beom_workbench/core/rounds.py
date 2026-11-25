@@ -80,12 +80,3 @@ def describe(settings) -> dict:
             "fields": {k: {"default": v[0], "allowed": list(v[1]), "help": v[2]} for k, v in FIELDS.items()}}
 
 
-def transient_backoff(n: int) -> int:
-    """n 번째 재시도 전 기다릴 초 — 30, 60, 120, 240, 480, 600, 600…"""
-    return min(600, 30 * 2 ** max(0, n - 1))
-
-
-def limit_backoff(n: int) -> int:
-    """한도 해제 시각을 모를 때 n 번째로 기다릴 초 — 5, 10, 20, 30, 60분, 이후 60분."""
-    table = (300, 600, 1200, 1800, 3600)
-    return table[min(n, len(table)) - 1]

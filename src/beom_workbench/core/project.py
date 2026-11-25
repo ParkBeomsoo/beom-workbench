@@ -50,23 +50,79 @@ def load(settings: Settings, project_id: str) -> tuple[sqlite3.Connection, dict]
     return conn, row
 
 
+_SNAP_SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", "dist", "build", ".next", "target", ".beom"}
+
+
+def _repo_root(path: Path) -> bool:
+    """이 폴더가 커밋이 있는 git 저장소의 맨 위인가 (상위 저장소 안의 하위 폴더·커밋 없는 저장소는 아니다)."""
+    try:
+        top = git.run(["rev-parse", "--show-toplevel"], cwd=path).decode().strip()
+        git.resolve_commit(path, "HEAD")
+    except ToolError:
+        return False
+    return Path(top).resolve() == path.resolve()
+
+
+def _snapshot(settings: Settings, src: Path, slug: str) -> tuple[Path, str]:
+    """git 저장소가 아닌 원본 폴더 — 지금 내용을 그대로 떠서 커밋 하나짜리 저장소로 만든다 (원본은 건드리지 않는다).
+    날짜를 고정해 같은 내용이면 같은 커밋이 된다 — 다시 열면 앞의 분석을 그대로 쓴다."""
+    import os
+    import secrets
+    import shutil
+
+    settings.projects_dir.mkdir(parents=True, exist_ok=True)
+    tmp = settings.projects_dir / f".snap-{slug}-{secrets.token_hex(3)}"
+    shutil.copytree(src, tmp, ignore=lambda d, names: [n for n in names if n in _SNAP_SKIP])
+    env = dict(os.environ, GIT_AUTHOR_NAME="beom-workbench", GIT_AUTHOR_EMAIL="snapshot@localhost", GIT_COMMITTER_NAME="beom-workbench",
+               GIT_COMMITTER_EMAIL="snapshot@localhost", GIT_AUTHOR_DATE="2000-01-01T00:00:00Z", GIT_COMMITTER_DATE="2000-01-01T00:00:00Z")
+    import subprocess
+    for cmd in (["init", "-q"], ["add", "-A"], ["-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", f"snapshot of {src.name}"]):
+        proc = subprocess.run(["git", *cmd], cwd=tmp, env=env, capture_output=True)
+        if proc.returncode:
+            git.remove_tree(tmp)
+            raise ToolError("engine_error", f"원본 폴더를 뜨지 못함: {proc.stderr.decode('utf-8', 'replace').strip()[-400:]}")
+    return tmp, git.resolve_commit(tmp, "HEAD")
+
+
 def open_repo(settings: Settings, source: str, ref: str | None = None, name: str | None = None) -> dict:
     warnings = []
     src_path = Path(source)
+    snap = None
     if src_path.exists():
         source = str(src_path.resolve())
-        try:
-            dirty = git.run(["status", "--porcelain"], cwd=src_path).decode().strip()
-        except ToolError:
-            dirty = ""
-        if dirty:
-            warnings.append({"code": "dirty_worktree", "message": "원본 작업 트리의 커밋되지 않은 변경은 분석에 포함되지 않음 (고정 커밋 기준)"})
-        commit = git.resolve_commit(src_path, ref or "HEAD")
+        if not src_path.is_dir():
+            raise ToolError("invalid_request", f"원본은 폴더여야 함: {source}", recovery="저장소 폴더나 git 주소를 고르세요")
+        if not _repo_root(src_path):
+            if ref:
+                raise ToolError("invalid_request", f"git 저장소가 아니라 '{ref}' 를 고를 수 없음: {source}",
+                                recovery="ref 없이 열면 지금 폴더 내용 그대로 분석합니다")
+            snap, commit = _snapshot(settings, src_path, _slug(name or source))
+            warnings.append({"code": "not_git", "message": "원본 폴더가 git 저장소가 아니라 지금 내용을 그대로 떠서 분석함 (원본은 바꾸지 않음)"})
+        else:
+            try:
+                dirty = git.run(["status", "--porcelain"], cwd=src_path).decode().strip()
+            except ToolError:
+                dirty = ""
+            if dirty:
+                warnings.append({"code": "dirty_worktree", "message": "원본 작업 트리의 커밋되지 않은 변경은 분석에 포함되지 않음 (고정 커밋 기준)"})
+            commit = git.resolve_commit(src_path, ref or "HEAD")
     else:
         commit = None
 
     slug = _slug(name or source)
-    if commit:
+    if snap is not None:
+        project_id = f"{slug}-{commit[:8]}"
+        ws = workspace(settings, project_id)
+        if (ws / "ledger.db").exists():
+            git.remove_tree(snap)
+            conn, project = load(settings, project_id)
+            return {"project": project, "reused": True, "_warnings": warnings}
+        ws.mkdir(parents=True, exist_ok=True)
+        if (ws / "repo").exists():
+            git.remove_tree(ws / "repo")
+        snap.rename(ws / "repo")
+        repo = ws / "repo"
+    elif commit:
         project_id = f"{slug}-{commit[:8]}"
         ws = workspace(settings, project_id)
         if (ws / "ledger.db").exists():

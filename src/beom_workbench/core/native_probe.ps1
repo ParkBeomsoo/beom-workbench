@@ -37,7 +37,9 @@ function Get-Tree([int]$root) {
     $grew = $false
     foreach ($p in $all) { if ($ids.Contains([int]$p.ParentProcessId) -and $ids.Add([int]$p.ProcessId)) { $grew = $true } }
   }
-  return $ids
+  # ',' keeps the HashSet: PowerShell unrolls a returned collection, and a one-process tree came back as a bare int
+  # whose .Contains() threw (swallowed below) - single-process apps such as tkinter were never found
+  return ,$ids
 }
 
 function Find-Window {

@@ -1,8 +1,15 @@
 "use strict";
 // 화면 상태와 그리기. 데이터는 Qt WebChannel 로 같은 프로세스의 툴킷(Api)에서만 받는다.
 let api = null;
+// macOS: 단축키는 Cmd(⌘) — Ctrl+N 은 글 입력 안에서 '다음 줄' 키라 가로채면 안 된다
+const IS_MAC = /Mac/i.test(navigator.platform || navigator.userAgent || "");
+const modKey = (e) => IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey;
+const MOD = IS_MAC ? "⌘" : "Ctrl";
+// 한글 조합 중의 Enter — macOS 의 Chromium 은 조합 중에도 key "Enter" 를 보낸다(Windows 는 "Process"). 그대로 두면 마지막 글자가
+// 남거나 두 번 보내진다. 모든 입력의 Enter 처리보다 먼저(캡처 단계) 한 곳에서 막는다
+document.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.isComposing || e.keyCode === 229)) e.stopImmediatePropagation(); }, true);
 const S = { runs: [], agents: [], kinds: {}, policy: {}, current: null, detail: null, tab: "progress", mode: "request",
-  draft: { request: "", target_root: "", context_dir: "", source: "", feature: "", agent: "claude", model: "", effort: "", max_rounds: 0, confirm_at: "start",
+  draft: { request: "", target_root: "", context_dir: "", source: "", feature: "", agent: "claude", model: "", effort: "", max_rounds: 0, confirm_at: "start", depth: "standard",
            auth: "subscription", plan_approval: true, policy: null }, permModes: [], preparing: false,
   changes: null, file: null, sig: { feed: "", right: "", side: "" }, startedAt: null };
 
@@ -11,6 +18,9 @@ const $ = (s) => document.querySelector(s);
 // 표의 {0}·{1} 은 바뀌는 부분(숫자·이름) — 그런 항목은 패턴으로 맞춘다.
 const I18N = { lang: "ko", map: new Map(), pats: [], cache: new Map() };
 const HANGUL = /[가-힣]/;
+// 격리 실행을 켰는가 — 정하지 않았으면 이 PC 의 기본값 (macOS·Linux 는 켬, Windows 는 끔: 권한 규칙으로 지키고 필요하면 켠다)
+function sandboxOn(d) { return d.sandbox == null ? (S.sandbox || {}).default_on !== false : d.sandbox !== false; }
+
 function setI18n(info) {
   I18N.lang = (info && info.lang) || "ko"; I18N.map = new Map(); I18N.pats = []; I18N.cache = new Map(); I18N.info = info || {};
   document.documentElement.lang = I18N.lang;
@@ -75,12 +85,18 @@ function call(name, ...args) {
 let toastTimer;
 function toast(text, ms) {
   const el = $("#toast"); el.textContent = t(text); el.classList.add("show");
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("show"), ms || 3200);
+  const hide = () => { toastTimer = setTimeout(() => el.classList.remove("show"), ms || 3200); };
+  clearTimeout(toastTimer); hide();
+  el.onmouseenter = () => clearTimeout(toastTimer);   // 읽거나 고르는 동안은 그대로
+  el.onmouseleave = () => { clearTimeout(toastTimer); hide(); };
+  el.onclick = (e) => e.stopPropagation();
 }
 const fmtMoney = (v) => v == null ? "—" : "$" + Number(v).toFixed(2);
 // 비용을 알려 주지 않는 에이전트(Codex 등)는 토큰 수로 — 사용량이 비어 보이지 않게
 const fmtTokens = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
-const usageText = (run) => run.cost_usd ? fmtMoney(run.cost_usd) : run.tokens ? "토큰 " + fmtTokens(run.tokens) : null;
+// 구독 로그인이면 실제 청구액이 아니라 같은 사용량을 API 가격으로 셈한 값 — 숫자만 보이면 청구액으로 읽힌다
+// 사용량은 토큰으로 — 가격은 보여 주지 않는다 (구독 로그인에서는 실제 청구액이 아닌 환산값이라 헷갈렸다)
+const usageText = (run) => run.tokens ? "토큰 " + fmtTokens(run.tokens) : null;
 function ago(iso) {
   if (!iso) return "";
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -90,29 +106,30 @@ function ago(iso) {
 
 // ---------------------------------------------------------------- 공용 조각: 아이콘 · 팝오버 메뉴 · 알약 버튼 · 토글
 const ICONS = {
-  folder: '<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/>',
+  folder: '<path d="M3.5 7.5a2 2 0 0 1 2-2h3.7l2 2h7.3a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
   down: '<path d="m7 10 5 5 5-5"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
-  sliders: '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
-  up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
-  stop: '<rect x="7" y="7" width="10" height="10" rx="1.5"/>',
-  shield: '<path d="M12 3.5 5 6v5.5c0 4.2 2.9 7.6 7 9 4.1-1.4 7-4.8 7-9V6z"/>',
-  chip: '<rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/>',
-  agent: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01"/>',
-  play: '<path d="M8 5.5v13l11-6.5z"/>',
-  clip: '<path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.3 3.3 0 0 1 4.7 4.7L9.2 17.2a1.7 1.7 0 0 1-2.4-2.4L14.5 7"/>',
-  gauge: '<path d="M4.5 16a7.5 7.5 0 1 1 15 0"/><path d="m12 16 3.5-4"/>',
-  book: '<path d="M5 4.5h9.5A2.5 2.5 0 0 1 17 7v12.5H7.5A2.5 2.5 0 0 1 5 17z"/><path d="M5 17a2.5 2.5 0 0 1 2.5-2.5H17"/>',
-  spark: '<path d="M12 3.5v4M12 16.5v4M3.5 12h4M16.5 12h4M6 6l2.6 2.6M15.4 15.4 18 18M6 18l2.6-2.6M15.4 8.6 18 6"/>',
-  branch: '<circle cx="6.5" cy="6" r="2"/><circle cx="6.5" cy="18" r="2"/><circle cx="17.5" cy="8" r="2"/><path d="M6.5 8v8M17.5 10c0 4-5 3.5-9.6 6.6"/>',
-  doc: '<path d="M7 3.5h7l4 4V20a.5.5 0 0 1-.5.5h-10A.5.5 0 0 1 7 20z" transform="translate(-1 0)"/><path d="M13 3.5V8h4M9 12.5h6M9 16h4"/>',
-  chat: '<path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6a2.5 2.5 0 0 1-2.5 2.5H11l-4 3.5V15h0a2.5 2.5 0 0 1-2-2.5z"/>',
+  sliders: '<path d="M4 7.5h8.5M16.5 7.5H20M4 16.5h3.5M11.5 16.5H20"/><circle cx="14.5" cy="7.5" r="2"/><circle cx="9.5" cy="16.5" r="2"/>',
+  up: '<path d="M12 19V5.5M6.5 11 12 5.5 17.5 11"/>',
+  stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/>',
+  shield: '<path d="M12 3.5 5.5 6v5.5c0 4 2.7 7.4 6.5 9 3.8-1.6 6.5-5 6.5-9V6z"/><path d="m9.4 12 1.8 1.8 3.5-3.6"/>',
+  chip: '<rect x="7" y="7" width="10" height="10" rx="2.5"/><path d="M10 3.5V7M14 3.5V7M10 17v3.5M14 17v3.5M3.5 10H7M3.5 14H7M17 10h3.5M17 14h3.5"/>',
+  agent: '<rect x="4.5" y="8" width="15" height="11" rx="3"/><path d="M12 4.5V8M9.5 12.5v1.5M14.5 12.5v1.5"/>',
+  play: '<path d="M8.5 6.3v11.4a.8.8 0 0 0 1.2.7l9.1-5.7a.8.8 0 0 0 0-1.4L9.7 5.6a.8.8 0 0 0-1.2.7z"/>',
+  clip: '<path d="m19.5 11.5-7.8 7.8a4.6 4.6 0 0 1-6.5-6.5l8.3-8.3a3.1 3.1 0 0 1 4.4 4.4l-8.1 8.1a1.5 1.5 0 0 1-2.2-2.2l7.3-7.3"/>',
+  gauge: '<path d="M4.5 16.5a7.5 7.5 0 0 1 15 0"/><path d="m12 16.5 3.4-4.4"/><path d="M4.5 16.5h1.5M18 16.5h1.5"/>',
+  book: '<path d="M5.5 5.5a2 2 0 0 1 2-2H18v14H7.5a2 2 0 0 0-2 2z"/><path d="M5.5 19.5a2 2 0 0 0 2 1H18v-3.5"/>',
+  spark: '<path d="M10 7h9.5M10 12h9.5M10 17h9.5"/><path d="m4.5 7 1.3 1.3L8 6M4.5 12l1.3 1.3L8 11M4.5 17l1.3 1.3L8 16"/>',
+  branch: '<circle cx="7" cy="6" r="2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="7.5" r="2"/><path d="M7 8v8M17 9.5c0 4.3-4 4.4-8.4 7.2"/>',
+  doc: '<path d="M13.5 3.5h-6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8.5z"/><path d="M13.5 3.5v5h5M9 13h6M9 16.5h4"/>',
+  chat: '<path d="M5 7a2.5 2.5 0 0 1 2.5-2.5h9A2.5 2.5 0 0 1 19 7v6a2.5 2.5 0 0 1-2.5 2.5H11.5L7.5 19v-3.5A2.5 2.5 0 0 1 5 13z"/>',
   clock: '<circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/>',
-  alert: '<path d="M12 4 3.5 19h17z"/><path d="M12 10v4M12 16.8v.2"/>',
-  list: '<path d="M9 7h10M9 12h10M9 17h10M5 7h.01M5 12h.01M5 17h.01"/>',
-  plus: '<path d="M12 5v14M5 12h14"/>',
-  key: '<circle cx="8" cy="15" r="3.5"/><path d="m10.5 12.5 8-8M16 7l2 2M14 9l1.5 1.5"/>',
-  download: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>',
+  alert: '<path d="M10.3 4.7 3.7 16.3a2 2 0 0 0 1.7 3h13.2a2 2 0 0 0 1.7-3L13.7 4.7a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4M12 16.5v.01"/>',
+  list: '<path d="M9 7h10.5M9 12h10.5M9 17h10.5M4.5 7h.01M4.5 12h.01M4.5 17h.01"/>',
+  plus: '<path d="M12 5.5v13M5.5 12h13"/>',
+  key: '<circle cx="8.5" cy="15.5" r="3.5"/><path d="m11 13 8-8M16.5 7.5l2 2M14.5 9.5l1.5 1.5"/>',
+  globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.3 3.6 5.1 3.6 8.5s-1.2 6.2-3.6 8.5M12 3.5C9.6 5.8 8.4 8.6 8.4 12s1.2 6.2 3.6 8.5"/>',
+  download: '<path d="M12 4.5V15M7.5 10.5 12 15l4.5-4.5M5.5 19.5h13"/>',
 };
 function ico(name, cls) {
   const s = h("span", { class: "ico" + (cls ? " " + cls : "") });
@@ -126,7 +143,8 @@ function applyLang(info) {
   for (const el of document.querySelectorAll("[data-t]")) { el.dataset.src = el.dataset.src || el.textContent; el.textContent = t(el.dataset.src); }
   for (const el of document.querySelectorAll("[data-tp]")) el.placeholder = t(el.dataset.tp);
   const names = (info && info.languages) || {};
-  const lab = $("#langlabel"); if (lab) lab.textContent = names[I18N.lang] || I18N.lang;
+  // 사이드바 아래 줄에 세 단추가 들어가게 — 언어는 코드로 짧게, 이름은 말풍선으로
+  const lab = $("#langlabel"); if (lab) { lab.textContent = String(I18N.lang || "ko").toUpperCase(); lab.parentElement.title = names[I18N.lang] || I18N.lang; }
 }
 function langPop(anchor) {
   const info = I18N.info || {}, names = info.languages || { ko: "한국어" };
@@ -160,7 +178,7 @@ function popover(anchor, { title, items, onPick, content, width }) {
   return pop;
 }
 function pill(icon, label, value, onclick, cls) {
-  const b = h("button", { class: "pill" + (cls ? " " + cls : ""), title: label }, ico(icon), value != null ? h("span", { class: "pv", text: value }) : h("span", { class: "pv", text: label }), ico("down", "dn"));
+  const b = h("button", { class: "pill" + (cls ? " " + cls : ""), title: label }, ico(icon), value != null ? h("span", { class: "pv", text: value, title: value }) : h("span", { class: "pv", text: label, title: label }), ico("down", "dn"));
   b.addEventListener("click", (e) => { e.stopPropagation(); if (openPop && b.classList.contains("open")) { closePop(); return; }
     document.querySelectorAll(".pill.open").forEach((x) => x.classList.remove("open")); b.classList.add("open"); onclick(b);
     const pop = openPop; if (pop) new MutationObserver((_, o) => { if (!pop.isConnected) { b.classList.remove("open"); o.disconnect(); } }).observe(document.body, { childList: true }); });
@@ -218,7 +236,7 @@ function effortMenu(anchor, agentId, model, cur, set) {
       ...effortLevels(agentId, model).map((l) => ({ id: l.id, label: l.label, note: l.id, desc: l.desc, on: cur === l.id }))],
     onPick: (it) => set(it.id) });
 }
-// 에이전트 · 모델 · 노력을 한 메뉴에서 (Claude 데스크톱의 모델 고르기처럼)
+// 에이전트 · 모델 · 노력을 한 메뉴에서
 function brainLabel(agentId, model, effort) {
   const cur = currentOf(agentId), eff = effort || cur.effort;
   const lv = effortLevels(agentId, model || cur.model).find((x) => x.id === eff);
@@ -289,7 +307,8 @@ function permMenu(anchor, policy, set, openDetail) {
     onPick: (it) => it.id === "custom" ? openDetail() : set({ ...S.permModes.find((m) => m.id === it.id).policy }) });
 }
 function policyRows(policy, set) {
-  return h("div", { class: "prow-list" }, ...Object.entries(S.kinds).map(([k, t]) => h("div", { class: "prow" },
+  // 'shared'(기존 공통 부품 수정)는 계획에서 신고·승인하는 것 — 권한 표에서 미리 정하지 않는다 (작업 중 카드의 '항상'으로만)
+  return h("div", { class: "prow-list" }, ...Object.entries(S.kinds).filter(([k]) => k !== "shared").map(([k, t]) => h("div", { class: "prow" },
     h("span", { text: t }), segmented([["allow", "허용"], ["ask", "확인"], ["refuse", "거절"]], policy[k], (v) => set({ ...policy, [k]: v })))));
 }
 
@@ -307,21 +326,19 @@ function fmtBytes(n, atLeast) {
 async function usagePop(anchor) {
   const r = await call("usageSummary"); if (!r.ok) return;
   const U = r.data;
-  const line = (b) => [b.cost_usd ? fmtMoney(b.cost_usd) : null, b.tokens ? "토큰 " + fmtTokens(b.tokens) : null].filter(Boolean).join(" · ") || "—";
+  const line = (b) => (b.tokens ? "토큰 " + fmtTokens(b.tokens) : "—");
   const stat = (label, b) => h("div", { class: "ustat" }, h("span", { text: label }), h("b", { text: line(b) }),
     h("span", { class: "pd", text: `작업 ${b.runs}개 · ${b.rounds}라운드` }));
   const agentRows = Object.entries(U.agents).map(([id, a]) => h("div", { class: "urow" },
     h("span", { text: agentName(id) }), h("span", { class: "uv", text: line(a) }), h("span", { class: "pd", text: `작업 ${a.runs}개` })));
   const top = U.top.map((x) => h("button", { class: "urow link", title: "열기", onclick: () => { closePop(); openRun(x.id); } },
     h("span", { class: "un", text: x.name || "프로젝트" }), h("span", { class: "uv", text: line(x) }), h("span", { class: "pd", text: agentName(x.agent) })));
-  const subs = Object.values(U.agents).some((a) => a.subscription && a.cost_usd);
   popover(anchor, { width: 340, content: h("div", { class: "optpop usagepop" },
     h("div", { class: "pt", text: "사용량" }),
     U.total.runs ? h("div", { class: "ustats" }, stat("이번 달", U.this_month), stat("전체", U.total)) : h("div", { class: "pnote", text: "아직 사용 기록이 없습니다" }),
     agentRows.length ? h("div", { class: "pt sub2", text: "에이전트별" }) : null, ...agentRows,
     top.length ? h("div", { class: "pt sub2", text: "많이 쓴 작업" }) : null, ...top,
-    h("div", { class: "pnote", text: "에이전트가 보고한 값입니다 — Claude Code 는 비용, Codex 는 토큰. 기간은 작업을 만든 날 기준." +
-      (subs ? " 구독 로그인의 비용은 실제 청구액이 아니라 같은 사용량을 API 가격으로 셈한 값입니다." : "") })) });
+    h("div", { class: "pnote", text: "에이전트가 보고한 토큰 수입니다. 기간은 작업을 만든 날 기준." })) });
 }
 async function dataPop(anchor) {
   const r = await call("dataReport"); if (!r.ok) return;
@@ -378,7 +395,7 @@ async function retryRun(id) {
   const v = x.data;
   goHome();
   S.mode = v.mode; S.agentPicked = true;
-  Object.assign(S.draft, { request: v.request, attachments: v.attachments, target_root: v.target_root, context_dir: v.context_dir,
+  Object.assign(S.draft, { name: v.name || "", request: v.request, attachments: v.attachments, target_root: v.target_root, context_dir: v.context_dir,
     source: v.source, feature: v.feature, agent: v.agent || S.draft.agent, model: v.model || "", effort: v.effort || "",
     policy: v.policy || S.draft.policy, max_rounds: v.max_rounds || 0, confirm_at: v.confirm_at || "start", auth: v.auth || S.draft.auth,
     plan_approval: v.plan_approval !== false });
@@ -404,7 +421,7 @@ function renderSide() {
     const more = h("button", { class: "more", title: "이름 바꾸기 · 숨기기", onclick: (e) => { e.stopPropagation(); runMenu(e.currentTarget, r); } }, "⋯");
     const el = h("div", { class: "run" + (r.id === S.current ? " on" : ""), onclick: () => openRun(r.id),
       oncontextmenu: (e) => { e.preventDefault(); runMenu(more, r); } },
-      h("span", { class: "t", text: r.name || "프로젝트" }), h("span", { class: "dot tone-" + r.tone }),
+      h("span", { class: "t", title: r.name || "", text: r.name || "프로젝트" }), h("span", { class: "dot tone-" + r.tone }),
       h("span", { class: "m", text: `${r.mode_text} · ${r.status}` }), more);
     return el;
   };
@@ -428,13 +445,31 @@ function renderSide() {
       !a.ready && a.login ? h("button", { onclick: () => call("loginAgent", a.id).then((r) => r.ok && toast("터미널에서 로그인을 마쳐 주세요")) }, "로그인") : null,
       !a.ready && !a.exe && a.install ? h("button", { title: a.install, onclick: () => call("installAgent", a.id).then((r) => r.ok && toast("터미널에서 설치가 끝나면 창으로 돌아오세요 — 자동으로 다시 확인합니다", 6000)) }, "설치") : null));
   }
-  // 격리 실행 — 처음 설정의 한 항목 (Windows 는 Codex 실행 파일의 샌드박스, Linux 는 bubblewrap, macOS 는 기본 내장)
-  ag.append(h("div", { class: "agent" + (sb.ready ? " ok" : ""), title: [sb.how, sb.note, sb.install].filter(Boolean).join("\n") }, h("i"),
-    h("span", { class: "an", text: "격리 실행" }), h("span", { class: "as", text: sb.ready ? "준비됨" : "구성 필요" }),
-    !sb.ready && sb.install ? h("button", { title: sb.install, onclick: () => call("installSandbox").then((r) => r.ok && toast("터미널에서 설치가 끝나면 창으로 돌아오세요 — 자동으로 다시 확인합니다", 6000)) }, "구성") : null));
-  if (S.engines) ag.append(h("div", { class: "agent" + (en.ready ? " ok" : ""), title: en.ready ? "레퍼런스 모드의 원본 분석 엔진 — 준비됨" : [en.note, en.install].filter(Boolean).join("\n") }, h("i"),
-    h("span", { class: "an", text: "분석 엔진" }), h("span", { class: "as", text: en.ready ? "준비됨" : "설치 필요" }),
-    !en.ready && en.install ? h("button", { title: en.install, onclick: () => call("installEngines").then((r) => r.ok && toast("터미널에서 설치가 끝나면 창으로 돌아오세요 — 자동으로 다시 확인합니다", 6000)) }, "설치") : null));
+  // 도구 — 에이전트 말고 툴킷이 쓰는 것(격리 실행·분석 엔진)을 한 줄로. 없는 것이 있으면 [설치] 한 번, 누르면 항목별로
+  const tools = toolList(sb, en);
+  const need = tools.filter((x) => !x.ready), canInstall = need.filter((x) => x.install);
+  ag.append(h("div", { class: "agent toolsrow" + (need.length ? "" : " ok"), title: t("눌러서 항목별로 보기"), onclick: (e) => toolsPop(e.currentTarget, tools) }, h("i"),
+    h("span", { class: "an", text: "도구" }),
+    h("span", { class: "as", text: need.length ? t("{0}개 설치 필요").replace("{0}", need.length) : t("준비됨") }),
+    canInstall.length ? h("button", { onclick: (e) => { e.stopPropagation(); canInstall.forEach((x) => x.install()); } }, "설치") : null));
+}
+function toolList(sb, en) {
+  const done = (r) => r.ok && toast("터미널에서 설치가 끝나면 창으로 돌아오세요 — 자동으로 다시 확인합니다", 6000);
+  const out = [{ name: "격리 실행", ready: !!sb.ready, what: "에이전트가 실행하는 명령을 운영체제 샌드박스 안에서 돌립니다 — 대상 폴더·임시 폴더·도구 캐시 밖에는 쓰지 못합니다",
+    note: [sb.how, sb.note].filter(Boolean).join(" "), cmd: sb.install, install: !sb.ready && sb.install ? () => call("installSandbox").then(done) : null }];
+  if (S.engines) out.push({ name: "분석 엔진", ready: !!en.ready, what: "레퍼런스 모드에서 원본 저장소를 분석해 옮길 범위를 찾습니다",
+    note: en.ready ? "" : en.note || "", cmd: en.install, install: !en.ready && en.install ? () => call("installEngines").then(done) : null });
+  return out;
+}
+function toolsPop(anchor, tools) {
+  popover(anchor, { width: 340, content: h("div", { class: "toolpop" },
+    h("div", { class: "pt", text: "도구" }),
+    ...tools.map((x) => h("div", { class: "orow" },
+      h("div", {}, h("b", {}, h("i", { class: "tdot" + (x.ready ? " ok" : "") }), x.name), h("span", { text: x.what }),
+        x.note ? h("span", { class: "tnote", text: x.note }) : null),
+      x.ready ? h("span", { class: "tstat", text: "준비됨" })
+        : x.install ? h("button", { class: "btn sm", title: x.cmd || "", onclick: (e) => { e.stopPropagation(); x.install(); closePop(); } }, "설치")
+          : h("span", { class: "tstat", text: "설치 필요" })))) });
 }
 
 // ---------------------------------------------------------------- 홈
@@ -462,8 +497,34 @@ function checkLinks(items) {
 function loginLink(u) {
   call("loginLink", u).then((r) => r.ok && toast("열린 창에서 로그인한 뒤, 문서가 보이면 '이 페이지 가져오기'를 눌러 주세요", 7000));
 }
+function linkTag(f) {
+  const st = (S.links || {})[f]; if (!st) return null;
+  if (st.state === "checking") return h("span", { class: "attst", text: "확인 중" });
+  if (st.state === "login") return h("button", { class: "attlogin", title: "앱 안의 브라우저에서 로그인하고 내용을 가져옵니다", onclick: () => loginLink(f) }, "로그인 필요 · 로그인");
+  if (st.state === "error") return h("span", { class: "attst warn", title: st.error || "", text: "못 읽음" });
+  return null;
+}
+// 첨부 메뉴 — 새 작업(d = 초안)과 진행 중인 대화(d 없음) 둘 다. 대화 중에도 링크를 붙여 앱 창에서 로그인해 가져올 수 있어야 한다
+// (기획이 '스테이징 주소를 링크로 붙여 앱 창에서 로그인해 주세요'라고 하는데 대화 입력창에는 파일 선택뿐이었다)
+// '링크' 단추 — 문서·화면 주소를 붙여 가져온다. 로그인이 필요한 화면(개발·스테이징 관리자 등)은 앱 창에서 로그인해 그 화면을 가져온다
+function linkPop(anchor, d) {
+  const add = (u) => { if (d) { d.attachments = [...new Set([...(d.attachments || []), u])]; } else addAtts([u]); checkLinks([u]); closePop(); if (d) renderHome(); };
+  const input = h("input", { class: "pin", placeholder: "https://… 주소 붙여넣고 Enter",
+    onkeydown: (e) => { const u = e.target.value.trim(); if (e.key === "Enter" && /^https?:\/\//.test(u)) add(u); } });
+  popover(anchor, { width: 360, content: h("div", { class: "optpop" },
+    h("div", { class: "pt", text: "링크로 가져오기 — 문서·화면" }),
+    h("div", { class: "pf", style: "border:none;margin:0;padding-top:0" }, input),
+    h("button", { class: "pi", onclick: () => { const u = input.value.trim(); closePop(); call("openBrowser", /^https?:\/\//.test(u) ? u : ""); } },
+      h("span", { class: "pl" }, h("b", { text: "오른쪽 브라우저에서 열기" })),
+      h("span", { class: "pd", text: "로그인해 여러 화면을 둘러보며 가져오거나, 에이전트가 그 사이트 화면을 찍게 허락합니다" })),
+    h("div", { class: "pnote", text: "공개 페이지는 바로 내용을 가져옵니다. 로그인이 필요한 페이지(개발·스테이징 관리자 화면, 사내 위키·이슈 관리 등)는 앱 안의 브라우저 창이 열립니다 — 로그인하고 원하는 화면으로 간 뒤 '이 페이지 가져오기'를 누르면 그 화면 캡처와 내용이 첨부됩니다. 로그인 정보는 에이전트에게 넘어가지 않습니다." })) });
+  setTimeout(() => input.focus(), 0);
+}
 function attachPop(anchor, d) {
-  const add = (items) => { d.attachments = [...new Set([...(d.attachments || []), ...items])]; checkLinks(items); closePop(); renderHome(); };
+  const add = (items) => {
+    if (d) d.attachments = [...new Set([...(d.attachments || []), ...items])]; else addAtts(items);
+    checkLinks(items); closePop(); if (d) renderHome();
+  };
   const link = h("input", { class: "pin", placeholder: "https://… 문서·페이지 주소 붙여넣고 Enter",
     onkeydown: (e) => { if (e.key === "Enter" && /^https?:\/\//.test(e.target.value.trim())) add([e.target.value.trim()]); } });
   popover(anchor, { width: 340, content: h("div", { class: "optpop" },
@@ -474,12 +535,12 @@ function attachPop(anchor, d) {
       h("span", { class: "pl" }, h("b", { text: "파일 선택" })), h("span", { class: "pd", text: "md · txt · pdf · docx · pptx · xlsx · hwpx · 이미지 — 오피스·한글 문서는 글로 바꿔 함께 넘깁니다. 한글 .hwp 는 HWPX 로 저장해 주세요" })),
     h("div", { class: "pt sub2", text: "링크" }),
     h("div", { class: "pf", style: "border:none;margin:0;padding-top:0" }, link),
-    h("div", { class: "pnote", text: "공개 페이지는 내용을 저장해 넘깁니다. 로그인이 필요한 페이지(컨플루언스·지라 등)는 앱 안의 브라우저 창에서 로그인을 요청하고, 로그인한 뒤 보이는 내용을 가져옵니다." })) });
+    h("div", { class: "pnote", text: "공개 페이지는 내용을 저장해 넘깁니다. 로그인이 필요한 페이지(사내 위키·이슈 관리·개발·스테이징 관리자 화면 등)는 앱 안의 브라우저 창에서 로그인을 요청하고, 로그인한 뒤 보이는 화면과 내용을 가져옵니다." + (d ? "" : " 화면 캡처는 입력창에 붙여 넣거나 끌어다 놓아도 됩니다.") })) });
   setTimeout(() => link.focus(), 0);
 }
 const PLAN_EXAMPLES = [
   "동네 카페 단골 적립 앱. 사장님은 태블릿으로 적립, 손님은 폰 번호로 확인.",
-  "사내 회의실 예약 웹. 겹치면 막고, 슬랙으로 알림.",
+  "사내 회의실 예약 웹. 겹치면 막고, 메신저로 알림.",
   "쇼핑몰 관리자에서 상품 일괄 수정 화면. 엑셀 업로드·미리보기·되돌리기.",
 ];
 function renderHome() {
@@ -502,29 +563,28 @@ function renderHome() {
   const mode = (id, icon, title, body, flow) => h("button", { class: "mode" + (S.mode === id ? " on" : ""), onclick: () => { S.mode = id; renderHome(); } },
     h("span", { class: "mi" }, ico(icon)), h("b", { text: title }), h("span", { class: "md2", text: body }), h("span", { class: "flow", text: flow }));
   const srcFields = S.mode !== "reference" ? null : h("div", { class: "srcrow" },
-    h("label", { class: "sf" }, h("span", { text: "원본" }), h("input", { placeholder: "참고할 저장소 — github.com/조직/저장소 또는 로컬 경로 (오픈소스·사내)", value: d.source,
+    h("label", { class: "sf" }, h("span", { text: "원본" }), h("input", { placeholder: "참고할 저장소 주소나 폴더", title: "github.com/조직/저장소 같은 주소, 또는 이 PC 의 폴더 (오픈소스·사내)", value: d.source,
       oninput: (e) => { d.source = e.target.value; } })),
-    h("label", { class: "sf" }, h("span", { text: "기능" }), h("input", { placeholder: "(선택) 비워 두면 기능 목록을 보여 주고 고르게 합니다", value: d.feature,
+    h("label", { class: "sf" }, h("span", { text: "기능" }), h("input", { placeholder: "가져올 기능 (선택)", title: "비워 두면 기능 목록을 보여 주고 고르게 합니다", value: d.feature,
       oninput: (e) => { d.feature = e.target.value; } })));
   const brainBtn = pill("agent", "에이전트 · 모델 · 노력", brainLabel(d.agent, d.model, d.effort), (b) => brainPop(b, () => d,
     (patch) => { Object.assign(d, patch); const bb = document.querySelector(".toolbar .pill.brain .pv"); if (bb) bb.textContent = brainLabel(d.agent, d.model, d.effort); }, true), "brain");
-  const linkTag = (f) => { const st = (S.links || {})[f]; if (!st) return null;
-    if (st.state === "checking") return h("span", { class: "attst", text: "확인 중" });
-    if (st.state === "login") return h("button", { class: "attlogin", title: "앱 안의 브라우저에서 로그인하고 내용을 가져옵니다", onclick: () => loginLink(f) }, "로그인 필요 · 로그인");
-    if (st.state === "error") return h("span", { class: "attst warn", title: st.error || "", text: "못 읽음" });
-    return null; };
   const atts = (d.attachments || []).length ? h("div", { class: "atts" }, ...(d.attachments || []).map((f) => h("span", { class: "att", title: f },
     ico(/^https?:/.test(f) ? "book" : "clip"), /^https?:/.test(f) ? f.replace(/^https?:\/\//, "").slice(0, 40) : f.split(/[\\/]/).pop(), linkTag(f), h("button", { title: "빼기", onclick: () => { d.attachments = d.attachments.filter((x) => x !== f); renderHome(); } }, "×")))) : null;
+  // 폴더 칸은 자기 줄 — 도구 줄과 한 줄에 두면 칸이 늘 때 깊이·옵션만 둘째 줄로 떨어져 꺾였다
+  const where = h("div", { class: "where" },
+    folder("target_root", { request: "만들 곳", reference: "옮길 곳", plan: "기획서 저장할 곳", free: "작업 폴더" }[S.mode] || "폴더",
+      "안 고르면 새 폴더"),
+    req ? folder("context_dir", "구조 참고", "저장소 (선택)") : S.mode === "plan" ? folder("context_dir", "기획 기준", "저장소 (선택)") : null);
   const fields = h("div", { class: "toolbar" },
     h("div", { class: "tl" },
       h("button", { class: "iconbtn", title: "기획서·문서·링크 첨부", onclick: (e) => { e.stopPropagation(); attachPop(e.currentTarget, d); } }, ico("clip")),
-      folder("target_root", { request: "만들 곳", reference: "옮길 곳", plan: "저장할 곳", free: "작업 폴더" }[S.mode] || "폴더",
-        "안 고르면 새 폴더"),
-      req ? folder("context_dir", "구조 참고", "저장소 (선택)") : null,
+      h("button", { class: "linkbtn", title: "링크로 문서·화면 가져오기 — 로그인이 필요한 화면은 앱 창에서 로그인", onclick: (e) => { e.stopPropagation(); linkPop(e.currentTarget, d); } }, ico("globe"), "링크"),
       pill("shield", "권한", modeLabel(d.policy), (b) => permMenu(b, d.policy, (p) => { d.policy = p; renderHome(); }, () => optionsPop(b, true))),
+      DEPTH_MODES.includes(S.mode) ? pill("gauge", "작업 깊이", "깊이 " + DEPTH_NAME[d.depth || "standard"], (b) => depthMenu(b, S.mode, d.depth, (v) => { d.depth = v; renderHome(); })) : null,
       h("button", { class: "iconbtn", title: "실행 옵션 (라운드·계획 승인·인증·세부 권한)", onclick: (e) => { e.stopPropagation(); optionsPop(e.currentTarget, false); } }, ico("sliders"))),
     h("div", { class: "tr" }, brainBtn,
-      h("button", { class: "send", disabled: S.preparing || !d.request.trim() && S.mode !== "reference" && !(d.attachments || []).length, title: "시작 (Ctrl+Enter)", onclick: create },
+      h("button", { class: "send", disabled: S.preparing || !d.request.trim() && S.mode !== "reference" && !(d.attachments || []).length, title: `시작 (${MOD}+Enter)`, onclick: create },
         S.preparing ? h("span", { class: "spin" }) : ico("up"))));
   const wrap = h("div", { class: "homewrap" }, h("div", { class: "homein" },
     shortcutBanner(),
@@ -540,9 +600,14 @@ function renderHome() {
            "파악 → 기획서 → 정책 → 화면 → 시나리오 → 점검"),
       mode("free", "chat", "자유 대화", "우리 절차 없이 Claude Code·Codex 를 그대로 — 폴더에서 대화하며 작업합니다.",
            "메시지 → 작업 → 메시지 …")),
-    h("div", { class: "homebox" }, h("div", { class: "box" }, srcFields, ta, atts, fields)),
+    S.createError ? h("div", { class: "createerr", role: "alert" }, ico("alert"),
+      h("div", { class: "ce-body" }, h("b", { text: "작업을 시작하지 못했습니다" }), h("pre", { text: S.createError })),
+      h("button", { class: "btn sm", onclick: () => { if (navigator.clipboard) navigator.clipboard.writeText(S.createError); toast("복사했습니다", 1500); } }, "복사"),
+      h("button", { class: "btn sm quiet", title: "닫기", onclick: () => { S.createError = null; renderHome(); } }, "닫기")) : null,
+    h("div", { class: "homebox" }, h("div", { class: "box" }, srcFields, ta, atts, where, fields)),
+    S.mode === "plan" ? h("div", { class: "fnote" }, ico("folder"), h("span", { text: "기획서(.beom/brief)는 '기획서 저장할 곳'에 저장됩니다 — 기존 기능을 바탕으로 기획하려면 그 저장소를 '기획 기준'으로 고르세요 (그 코드·화면·문서를 근거로 씁니다). 여러 저장소면 그 저장소들이 든 상위 폴더를 저장할 곳으로 고르면 모두 봅니다" })) : null,
     !d.target_root && S.mode !== "plan" ? h("div", { class: "fnote" }, ico("folder"), h("span", { text: "폴더를 안 고르면 문서 폴더 아래 새 폴더에 새로 만듭니다 — 기존 코드에 넣으려면 그 저장소나, 저장소 여럿이 든 상위 폴더를 고르세요 (요청에 맞는 저장소를 찾아 작업합니다)" })) : null,
-    d.git && d.target_root ? h("div", { class: "fnote git" }, ico("branch"), h("span", { text: d.new_branch === false
+    d.git && d.target_root && S.mode !== "plan" ? h("div", { class: "fnote git" }, ico("branch"), h("span", { text: d.new_branch === false
         ? (d.git.workspace ? `저장소 ${d.git.repos}개가 든 폴더입니다 — 각 저장소의 지금 브랜치에서 그대로 작업합니다`
           : `git 저장소입니다 — 지금 브랜치(${d.git.branch || "브랜치 아님"})에서 그대로 작업합니다`)
         : d.git.workspace
@@ -560,12 +625,12 @@ function renderHome() {
             if (r.ok) toast("터미널에서 설치가 끝나면 폴더를 다시 골라 확인하세요", 6000); } }, "설치")
             : h("span", { class: "mono", text: n.hint || "" }))))) : null,
     common && S.mode !== "free" ? h("div", { class: "fnote" }, ico("folder"), h("span", { text: `${common}에는 바로 만들지 않고, 그 안에 작업 이름으로 새 폴더를 만들어 그 안에 만듭니다 — 개인 파일과 섞이지 않게` })) : null,
-    h("div", { class: "homehint" }, h("span", { text: `${agentName(d.agent)} · ${modelLabel(d.agent, d.model)}${d.effort ? " · " + effortLabel(d.agent, d.model, d.effort) : ""} · 권한 ${modeLabel(d.policy)} · ${+d.max_rounds ? `최대 ${d.max_rounds}회` : "끝날 때까지"} · ${(d.confirm_at || "start") === "start" ? "처음에 한 번 확인" : "마지막에 한 번 확인"}` }),
-      h("span", { class: "k", text: "Ctrl Enter 시작" })),
+    h("div", { class: "homehint" }, h("span", { text: `${agentName(d.agent)} · ${modelLabel(d.agent, d.model)}${d.effort ? " · " + effortLabel(d.agent, d.model, d.effort) : ""} · 권한 ${modeLabel(d.policy)} · ${+d.max_rounds ? `최대 ${d.max_rounds}회` : "끝날 때까지"} · ${(d.confirm_at || "start") === "start" ? "처음에 한 번 확인" : "마지막에 한 번 확인"}${DEPTH_MODES.includes(S.mode) ? " · 깊이 " + DEPTH_NAME[d.depth || "standard"] : ""}` }),
+      h("span", { class: "k", text: MOD + " Enter 시작" })),
     (req || S.mode === "plan") && !d.request ? h("div", { class: "examples" }, ...(S.mode === "plan" ? PLAN_EXAMPLES : EXAMPLES).map((x) => h("div", { class: "ex", onclick: () => { d.request = x; renderHome(); } }, x))) : null,
     S.runs.length ? h("div", { class: "recent" }, h("h4", { text: "최근 작업" }),
       h("div", { class: "rtable" }, ...S.runs.slice(0, 6).map((r) => h("div", { class: "rrow", onclick: () => openRun(r.id) },
-        h("span", { class: "dot tone-" + r.tone }), h("span", { class: "t", text: r.name }), h("span", { class: "m", text: r.mode_text }),
+        h("span", { class: "dot tone-" + r.tone }), h("span", { class: "t", title: r.name || "", text: r.name }), h("span", { class: "m", text: r.mode_text }),
         h("span", { class: "m", text: r.status }), h("span", { class: "m", text: ago(r.created_at) }))))) : null));
   m.append(wrap);
   $("#right").replaceChildren();
@@ -631,8 +696,39 @@ function commonFolder(p) {
   return "";
 }
 // 실행 옵션 — 홈에서는 초안(S.draft)을, 실행 화면에서는 그 실행을 바꾼다
+// 작업 깊이 — 만들기·옮기기 실행이 얼마나 조사하고 넓게 만드는지
+// 요청 첫 문장에서 이름 — 경로(C:\work\app, ./src/…)와 그 뒤 '에 있는'·'의' 같은 말을 빼고, 낱말 중간에서 자르지 않는다
+function autoName(text) {
+  let s = String(text || "").split(/[.\n?!]/)[0];
+  s = s.replace(/[A-Za-z]:[\\/][^\s]*/g, " ").replace(/(^|\s)[.~]?\/[^\s]+/g, " ")
+    .replace(/^\s*(안에 있는|폴더에 있는|에 있는|폴더의|안의|에서|에|의)\s+/, "").replace(/\s+/g, " ").trim();
+  s = s.replace(/^(모듈|프로젝트|저장소|폴더)(에|의)\s+/, "");
+  if (s.length > 28) { const cut = s.slice(0, 28); s = (cut.lastIndexOf(" ") > 12 ? cut.slice(0, cut.lastIndexOf(" ")) : cut) + "…"; }
+  // 영문·숫자 뒤에 붙은 조사는 뺀다 ('Optimization를…' → 'Optimization…') — 한글 낱말 끝('평가')은 조사인지 알 수 없어 그대로 둔다
+  s = s.replace(/([A-Za-z0-9)])(을|를|은|는|이|가|의|에|에서|으로|로|와|과)(…?)$/, "$1$3").replace(/\s+…$/, "…");
+  return s || "새 프로젝트";
+}
+const DEPTH_MODES = ["request", "reference", "plan"];
+const DEPTH_NAME = { quick: "간단히", standard: "표준", deep: "깊게" };
+const PLAN_DEPTH_HINT = {
+  quick: "기획서·정책 결정표 중심으로 짧게 — 비슷한 서비스 조사 없이, 주요 화면·핵심 시나리오만",
+  standard: "기획서·정책·화면·테스트 시나리오를 갖춘 기획 패키지",
+  deep: "기능·연동(API)·데이터·성능·보안·운영을 출처와 함께 검토하고, 방법마다 장단점과 추천을 표로 (시간·사용량이 더 듭니다)",
+};
+const depthHint = (mode, v) => (mode === "plan" ? PLAN_DEPTH_HINT : DEPTH_HINT)[v || "standard"];
+function depthMenu(anchor, mode, cur, set) {
+  popover(anchor, { title: "작업 깊이 — 얼마나 조사하고 설계할지", width: 380,
+    items: ["quick", "standard", "deep"].map((k) => ({ id: k, label: DEPTH_NAME[k], desc: depthHint(mode, k), on: (cur || "standard") === k })),
+    onPick: (it) => set(it.id) });
+}
+const DEPTH_HINT = {
+  quick: "요청한 것만 빠르게 — 참고 화면 조사·디자인 시안 없이 만들고 검사는 그대로 합니다",
+  standard: "정할 것은 선택지별 장단점을 보고 고르고, 화면이 있으면 참고 화면을 본 시안 2개 중에서 골라 만듭니다",
+  deep: "비슷한 서비스·업계 규칙을 출처와 함께 조사해 계획에 보여 주고, 빠진 기능은 제안으로 고르게 합니다 (시간·사용량이 더 듭니다)",
+};
 function optionsPop(anchor, focusPerm, run) {
   const d = run ? { max_rounds: run.max_rounds, plan_approval: run.plan_approval ?? S.detail.plan_approval, confirm_at: run.confirm_at ?? S.detail.confirm_at,
+    depth: run.depth ?? (S.detail.run && S.detail.run.depth),
     sandbox: run.sandbox ?? (S.detail.run && S.detail.run.sandbox),
     policy: { ...(run.policy || S.detail.policy) }, auth: run.auth } : S.draft;
   const save = (patch) => {
@@ -653,6 +749,8 @@ function optionsPop(anchor, focusPerm, run) {
         toggle(+d.max_rounds > 0, (on) => save({ max_rounds: on ? 20 : 0 })),
         +d.max_rounds > 0 ? h("div", { class: "step" }, h("button", { onclick: (e) => { e.stopPropagation(); save({ max_rounds: Math.max(1, +d.max_rounds - 5) }); } }, "−"),
           h("span", { text: String(d.max_rounds) }), h("button", { onclick: (e) => { e.stopPropagation(); save({ max_rounds: Math.min(500, +d.max_rounds + 5) }); } }, "+")) : null)),
+    DEPTH_MODES.includes(run ? run.mode : S.mode) ? h("div", { class: "orow" }, h("div", {}, h("b", { text: "작업 깊이" }), h("span", { text: depthHint(run ? run.mode : S.mode, d.depth) })),
+      segmented([["quick", "간단히"], ["standard", "표준"], ["deep", "깊게"]], d.depth || "standard", (v) => save({ depth: v }))) : null,
     h("div", { class: "orow" }, h("div", {}, h("b", { text: "사람 확인" }), h("span", { text: (d.confirm_at || "start") === "start"
         ? "처음에 기준과 계획을 한 번에 확인하면 끝날 때까지 맡깁니다" : "멈추지 않고 만들고 검증한 뒤, 마지막에 한 번 확인합니다" })),
       segmented([["start", "처음에 한 번"], ["end", "마지막에 한 번"]], d.confirm_at || "start", (v) => save({ confirm_at: v }))),
@@ -661,7 +759,7 @@ function optionsPop(anchor, focusPerm, run) {
     h("div", { class: "orow" }, h("div", {}, h("b", { text: "격리 실행" }),
       h("span", { text: (S.sandbox || {}).ready ? "에이전트가 실행하는 명령을 운영체제 샌드박스 안에서 — 대상 폴더·임시 폴더·도구 캐시 밖에는 쓰지 못합니다"
         : "이 PC 에 아직 구성되지 않았습니다 — '구성'을 누르면 설치합니다" })),
-      (S.sandbox || {}).ready ? toggle(d.sandbox !== false, (v) => save({ sandbox: v }))
+      (S.sandbox || {}).ready ? toggle(sandboxOn(d), (v) => save({ sandbox: v }))
         : h("button", { class: "btn sm", onclick: () => call("installSandbox").then((r) => r.ok && toast("터미널에서 설치가 끝나면 창으로 돌아오세요", 6000)) }, "구성")),
     roundRows(() => optionsPop(anchor, focusPerm, run)),
     run ? null : h("div", { class: "orow" }, h("div", {}, h("b", { text: "요금" }), h("span", { text: (d.auth || "subscription") === "subscription"
@@ -670,8 +768,22 @@ function optionsPop(anchor, focusPerm, run) {
       segmented([["subscription", "구독 로그인"], ["api_key", "API 키 (사용량 청구)"]], d.auth || "subscription", (v) => save({ auth: v }))),
     h("div", { class: "pt sub2", text: "권한 — 작업 종류별" }),
     agent && agent.note ? h("div", { class: "pnote", text: agent.note }) : null,
-    policyRows(d.policy, (p) => save({ policy: p }))) });
+    policyRows(d.policy, (p) => save({ policy: p })),
+    ...ruleRows(run, (rules) => optionsPop(document.querySelector("#cbar .iconbtn") || anchor, focusPerm, { ...run, cmd_rules: rules }))) });
   if (focusPerm) pop.querySelector(".prow-list").scrollIntoView({ block: "nearest" });
+}
+// '이 명령은 항상'으로 기억한 명령 — 이 작업에서만 쓰이고, 지우면 다음부터 다시 묻는다
+function ruleRows(run, rerender) {
+  const rules = (run && run.cmd_rules) || [];
+  if (!rules.length) return [];
+  return [h("div", { class: "pt sub2", text: "이 작업에서 기억한 명령" }),
+    h("div", { class: "pnote", text: "이 꼴로 시작하는 한 줄 명령은 묻지 않고 허용합니다. 지우면 다음부터 다시 묻습니다" }),
+    ...rules.map((rule) => h("div", { class: "orow" }, h("code", { class: "rulecode", text: rule + " …" }),
+      h("button", { class: "btn sm", onclick: async (e) => {
+        e.stopPropagation();
+        const r = await call("forgetRule", run.id, rule);
+        if (r.ok) { await refresh(); rerender(r.data.cmd_rules); }
+      } }, "지우기")))];
 }
 // 라운드 규칙 — 모든 작업에 쓰이고, 도는 중인 작업도 다음 판단부터 따른다 (core/rounds.py)
 function roundRows(rerender) {
@@ -706,10 +818,10 @@ async function create() {
   const needLogin = (d.attachments || []).filter((f) => ((S.links || {})[f] || {}).state === "login");
   if (needLogin.length) { toast("로그인이 필요한 링크가 있습니다 — 열린 창에서 로그인하고 가져오거나, 링크를 빼고 시작하세요", 8000); loginLink(needLogin[0]); return; }
   const payload = { mode: S.mode, request: d.request, target_root: d.target_root, context_dir: d.context_dir, source: d.source,
-    feature: d.feature, agent: d.agent, model: d.model, effort: d.effort, confirm_at: d.confirm_at, attachments: d.attachments || [], max_rounds: d.max_rounds, auth: d.auth,
+    feature: d.feature, agent: d.agent, model: d.model, effort: d.effort, confirm_at: d.confirm_at, depth: d.depth || "standard", attachments: d.attachments || [], max_rounds: d.max_rounds, auth: d.auth,
     plan_approval: d.plan_approval === true || d.plan_approval === "true", policy: d.policy || S.policy, new_branch: d.new_branch !== false,
-    sandbox: d.sandbox !== false,
-    name: (d.request || d.feature || "새 프로젝트").split(/[.\n]/)[0].slice(0, 28) };
+    sandbox: d.sandbox == null ? null : d.sandbox !== false,  // 정하지 않았으면 이 PC 의 기본값 (Windows 는 끔)
+    name: d.name || autoName(d.request || d.feature), auto_name: !d.name };  // 같은 요청으로 새 작업이면 원래 이름
   S.preparing = true; renderHome();
   const r = await call("createRun", JSON.stringify(payload));
   if (!r.ok) { S.preparing = false; renderHome(); }
@@ -739,28 +851,37 @@ function renderRun() {
     drawMsgAtts();  // 불러오는 동안 끌어다 놓은 첨부
   }
   $("#head").replaceChildren(...[
-    h("span", { class: "crumb", text: D.mode_text + " /" }), h("h1", { text: run.name || "프로젝트" }),
+    h("span", { class: "crumb", text: D.mode_text + " /" }), h("h1", { text: run.name || "프로젝트", title: run.name || "프로젝트" }),  // 좁으면 … — 올리면 전체
     h("span", { class: "state " + D.tone }, h("i"), D.status),
     h("span", { class: "sp" }), h("span", { id: "procs" }),
-    h("button", { class: "path", title: run.target_root + " — 폴더 열기", onclick: () => call("openFolder", run.target_root) }, ico("folder"), h("span", { text: run.target_root.split(/[\\/]/).slice(-2).join("/") })),
-    run.work_branch ? h("button", { class: "path wb", title: wbTitle(run.work_branch) + " — 눌러서 합치기", onclick: (e) => mergeMenu(e.currentTarget, run, D.running) }, ico("branch"),
+    h("button", { class: "linkbtn" + (S.browserOpen ? " on" : ""), "aria-pressed": S.browserOpen ? "true" : "false",
+      title: S.browserOpen ? "브라우저 닫기" : "오른쪽에 브라우저 열기 — 로그인이 필요한 화면을 보고 가져오거나, 에이전트가 찍게 허락",
+      onclick: () => call("toggleBrowser") }, ico("globe"), "브라우저"),
+    D.folder_missing ? h("span", { class: "path gone", title: run.target_root + " — 이 폴더가 지워졌거나 옮겨졌습니다. 기록은 볼 수 있지만 이어서 진행할 수는 없습니다" },
+      ico("folder"), h("span", { text: "폴더 없음 · " + run.target_root.split(/[\\/]/).slice(-1)[0] }))
+      : h("button", { class: "path", title: run.target_root + " — 폴더 열기", onclick: () => call("openFolder", run.target_root) }, ico("folder"), h("span", { text: run.target_root.split(/[\\/]/).slice(-2).join("/"), title: run.target_root })),
+    run.work_branch && run.mode !== "plan" && !(run.work_branch.workspace && !(run.work_branch.repos || []).length) ? h("button", { class: "path wb", title: wbTitle(run.work_branch) + " — 눌러서 합치기", onclick: (e) => mergeMenu(e.currentTarget, run, D.running) }, ico("branch"),
       h("span", { text: run.work_branch.branch + (run.work_branch.workspace ? ` · 저장소 ${(run.work_branch.repos || []).length}` : "") }), ico("down", "dn")) : null,
   ].filter(Boolean));
-  $("#meter").replaceChildren(h("div", { class: "stepper" }, ...D.stages.map((s, i) => h("div", { class: "st " + (i < D.stage ? "done" : i === D.stage ? "now" : "") },
-    h("i", {}, i < D.stage ? ico("check") : String(i + 1)), h("span", { text: s })))));
+  // 기획은 문서마다 실제로 있는지로(stage_marks) — 앞 단계를 모두 끝난 것으로 칠하지 않는다
+  const mark = (i) => D.stage_marks ? D.stage_marks[i] || "" : i < D.stage ? "done" : i === D.stage ? "now" : "";
+  $("#meter").replaceChildren(h("div", { class: "stepper" }, ...D.stages.map((s, i) => h("div", { class: "st " + mark(i) },
+    h("i", {}, mark(i) === "done" ? ico("check") : String(i + 1)), h("span", { text: s })))));
   const act = $("#activity"); act.replaceChildren();
-  if (D.running) {
+  // 내 차례면 할 일을 다 하고 사용자를 기다리는 것 — 도는 것이 없으니 '진행 중'·작업 시간·멈추기를 보이지 않는다 (카드가 할 일을 말한다)
+  if (isBusy()) {
     if (!S.startedAt) S.startedAt = Date.now();
     const sec = Math.floor((Date.now() - S.startedAt) / 1000);
     // 에이전트가 긴 글·파일을 쓰는 중이면 얼마나 썼는지 (조각 출력을 주는 에이전트만)
     const st = run.streaming, fresh = st && Date.now() - new Date(st.at).getTime() < 20000;
     const writing = fresh ? (st.thinking ? "생각하는 중" : `${st.label ? st.label + " — " : ""}쓰는 중 · ${st.chars.toLocaleString()}자`) : "";
-    act.append(h("div", { class: "activity" }, h("span", { class: "pulse" }),
-      (D.activity && D.activity.text) || `라운드 ${run.round} 진행 중`,
+    const stage = (D.stages || [])[D.stage_marks ? Math.max(0, D.stage_marks.indexOf("now")) : D.stage];  // 단계 표시줄과 같은 '지금'
+    act.append(h("div", { class: "activity", title: "자세한 진행은 대화창의 '진행 중'을 펼쳐 봅니다" }, h("span", { class: "pulse" }),
+      stage ? `${stage} 단계 진행 중` : `라운드 ${run.round} 진행 중`,
       writing ? h("span", { class: "wr", text: writing }) : null,
       h("span", { class: "el", text: `${agentName(run.agent)} · ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}` })));
   } else S.startedAt = null;
-  const cbarSig = JSON.stringify([run.agent, run.model, run.effort, run.round, run.max_rounds, run.cost_usd, run.tokens, D.policy, D.running, run.status, run.accepted]);
+  const cbarSig = JSON.stringify([run.agent, run.model, run.effort, run.round, run.max_rounds, run.cost_usd, run.tokens, D.policy, D.running, D.tone, run.status, run.accepted]);
   if (cbarSig !== S.sig.cbar) {  // 메뉴가 열린 채로 1.5초마다 다시 그려지지 않게
     S.sig.cbar = cbarSig;
     const opt = (patch) => call("setRunOptions", run.id, JSON.stringify(patch)).then((r) => r.ok && (toast("바꿨습니다 — 다음 라운드부터 적용"), refresh()));
@@ -768,9 +889,9 @@ function renderRun() {
     const resumable = !D.running && !(run.status === "done" && run.accepted);
     $("#cbar").replaceChildren(
       h("div", { class: "tl" },
-        h("button", { class: "iconbtn", title: "파일 첨부 — 스크린샷·문서 (붙여 넣기·끌어다 놓기도 됩니다)", onclick: async () => { const r = await call("pickFiles"); if (!r.ok) return;
-          if (r.data.rejected.length) toast(r.data.rejected.join(" / "), 7000);
-          if (r.data.files.length) addAtts(r.data.files); } }, ico("clip")),
+        h("button", { class: "iconbtn", title: "첨부 — 파일·스크린샷·링크 (로그인이 필요한 화면은 앱 창에서 로그인해 가져옵니다)",
+          onclick: (e) => { e.stopPropagation(); attachPop(e.currentTarget, null); } }, ico("clip")),
+        h("button", { class: "linkbtn", title: "링크로 문서·화면 가져오기 — 로그인이 필요한 화면은 앱 창에서 로그인", onclick: (e) => { e.stopPropagation(); linkPop(e.currentTarget, null); } }, ico("globe"), "링크"),
         pill("shield", "권한", modeLabel(D.policy), (b) => permMenu(b, D.policy, (p) => opt({ policy: p }), () => optionsPop(b, true, run))),
         h("button", { class: "iconbtn", title: "실행 옵션 (라운드·계획 승인·세부 권한)", onclick: (e) => { e.stopPropagation(); optionsPop(e.currentTarget, false, { ...run, policy: D.policy, plan_approval: D.plan_approval }); } }, ico("sliders")),
         h("span", { class: "meta", text: `${run.round || 0}회째${run.max_rounds ? ` / ${run.max_rounds}` : ""}` + (usageText(run) ? " · " + usageText(run) : "") })),
@@ -778,11 +899,11 @@ function renderRun() {
         resumable && run.round ? h("button", { class: "btn quiet sm", title: "메시지 없이 이어서 진행", onclick: startRun }, ico("play"), "이어서") : null,
         pill("agent", "모델 · 노력 (다음 라운드부터)", brainLabel(run.agent, run.model, run.effort), (b) => brainPop(b, () => cur,
           (patch) => { Object.assign(cur, patch); opt(patch); }, false), "brain"),
-        // Claude 데스크톱처럼: 진행 중이고 입력이 비었으면 멈춤, 아니면 보내기
-        h("button", { class: "send" + (D.running ? " stopmode" : ""), title: D.running ? "멈추기 (Esc) — 입력하면 보내기로 바뀝니다" : (run.round ? "보내기 — 보내면 바로 이어서 진행" : "시작"),
-          disabled: !D.running && !run.round ? false : false,
-          onclick: () => { if (hasMsg()) sendMsg(); else if (D.running) call("stop", run.id).then(refresh); else startRun(); } },
-          ico(D.running ? "stop" : "up"))));
+        // 진행 중이고 입력이 비었으면 멈춤, 아니면 보내기
+        h("button", { class: "send" + (isBusy() ? " stopmode" : ""),
+          title: isBusy() ? "멈추기 (Esc) — 입력하면 보내기로 바뀝니다" : D.running ? "고칠 점을 보내기 — 반영해 다시 확인을 요청합니다" : (run.round ? "보내기 — 보내면 바로 이어서 진행" : "시작"),
+          onclick: () => { if (hasMsg()) sendMsg(); else if (isBusy()) call("stop", run.id).then(refresh); else if (!D.running) startRun(); } },
+          ico(isBusy() ? "stop" : "up"))));
     updateSendMode();
   }
   drawProcs();
@@ -795,7 +916,8 @@ function drawProcs() {
   const list = (S.procs && S.procs.run === S.current ? S.procs.rows : []) || [];
   const extra = list.filter((p) => p.kind !== "agent");
   box.replaceChildren();
-  if (!list.length) return;
+  // 내 차례면 에이전트는 멈춰 기다린다 — '에이전트 실행 중'을 띄우지 않는다 (남은 개발 서버 같은 백그라운드는 그대로 보인다)
+  if (!extra.length && (!list.length || !isBusy())) return;
   const agent = list.find((p) => p.kind === "agent");
   box.append(h("button", { class: "procchip" + (extra.length ? " has" : ""), title: "이 작업이 띄운 프로세스 — 눌러서 보고 끄기",
     onclick: (e) => { e.stopPropagation(); procPop(e.currentTarget); } },
@@ -820,11 +942,12 @@ function procPop(anchor) {
 }
 function updateSendMode() {
   const b = document.querySelector(".composer .send"); if (!b || !S.detail) return;
-  const typed = hasMsg(), running = S.detail.running;
-  b.classList.toggle("stopmode", running && !typed);
-  b.replaceChildren(ico(running && !typed ? "stop" : "up"));
+  const typed = hasMsg(), busy = isBusy();
+  b.classList.toggle("stopmode", busy && !typed);
+  b.replaceChildren(ico(busy && !typed ? "stop" : "up"));
   const r = S.detail.run;
-  b.disabled = !typed && !running && (r.status === "done" && r.accepted);
+  // 내 차례(승인·답 대기)에 빈 입력은 보낼 것도 멈출 것도 없다 — 카드로 답한다
+  b.disabled = !typed && ((S.detail.running && !busy) || (!S.detail.running && r.status === "done" && r.accepted));
 }
 // 쓰던 에이전트가 연결돼 있지 않으면 연결된 것으로 (Claude 고정이 아니라)
 function pickReadyAgent() {
@@ -842,7 +965,8 @@ async function startRun() {
 function hasMsg() { const t = $("#msg"); return !!((t && t.value.trim()) || (S.msgAtts || []).length); }
 function drawMsgAtts() {
   const box = $("#msgatts"); if (!box) return;
-  box.replaceChildren(...(S.msgAtts || []).map((f) => h("span", { class: "att", title: f }, ico("clip"), f.split(/[\\/]/).pop(),
+  box.replaceChildren(...(S.msgAtts || []).map((f) => h("span", { class: "att", title: f }, ico(/^https?:/.test(f) ? "book" : "clip"),
+    /^https?:/.test(f) ? f.replace(/^https?:\/\//, "").slice(0, 40) : f.split(/[\\/]/).pop(), linkTag(f),
     h("button", { title: "빼기", onclick: () => { S.msgAtts = S.msgAtts.filter((x) => x !== f); drawMsgAtts(); updateSendMode(); } }, "×"))));
 }
 function addAtts(files) {
@@ -872,6 +996,14 @@ document.addEventListener("paste", (e) => {
     rd.readAsDataURL(blob);
   }
 });
+// 카드의 버튼이 보내는 말 — 입력창으로 보낸 것과 같다 (멈췄거나 끝난 실행이면 바로 이어서 진행)
+async function sendAndGo(text) {
+  const id = S.current, r = await call("sendMessage", id, text, "[]");
+  if (!r.ok || id !== S.current) return;
+  if (!S.detail.running) { const st = await call("start", id); if (st.ok) { S.startedAt = Date.now(); toast("보냈습니다 — 이어서 진행합니다"); } }
+  else toast("다음 라운드에 전달합니다");
+  refresh();
+}
 async function sendMsg() {
   const t = $("#msg"); const text = t.value.trim(), atts = S.msgAtts || [], id = S.current; if ((!text && !atts.length) || S.sending) return;
   S.sending = true;  // 두 번 눌러 두 번 보내지 않게
@@ -895,11 +1027,19 @@ function renderFeed() {
   if (S.edit) S.edit.drawn = true;
   const col = $("#col"), feed = $("#feed");
   const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
+  // 새 줄이 올 때마다 카드를 통째로 다시 그린다 — 질문에 답을 적는 중이면 글·커서를 옮겨 심는다 (전에는 1.5초마다 지워졌다)
+  const kept = {}, act = document.activeElement, focusKey = act && col.contains(act) ? act.dataset.keep : null;
+  col.querySelectorAll("[data-keep]").forEach((el) => { kept[el.dataset.keep] = el.value; });
+  const sel = focusKey && act.selectionStart != null ? [act.selectionStart, act.selectionEnd] : null;
   col.replaceChildren();
-  for (const it of D.feed) col.append(feedItem(it));
+  for (const it of D.feed) { const el = feedItem(it); if (el) col.append(el); }
   const cs = cards();
   for (const c of cs) col.append(row(null, "decision", c));
   if (!D.feed.length && !D.running) col.append(h("div", { class: "empty", text: "시작하면 에이전트의 작업이 여기에 시간순으로 쌓입니다.\n결정이 필요할 때만 멈추고 묻습니다." }));
+  col.querySelectorAll("[data-keep]").forEach((el) => {
+    if (kept[el.dataset.keep] != null && !el.value) { el.value = kept[el.dataset.keep]; el.dispatchEvent(new Event("input")); }
+    if (el.dataset.keep === focusKey) { el.focus(); if (sel) el.setSelectionRange(sel[0], sel[1]); }
+  });
   if (atBottom || S.sig.first !== D.run.id) { feed.scrollTop = feed.scrollHeight; S.sig.first = D.run.id; }
 }
 function hhmm(iso) {
@@ -922,25 +1062,36 @@ function feedItem(it) {
   switch (it.type) {
     case "request": return row(it.at, "message", h("div", { class: "req" }, h("div", { class: "who", text: S.detail.run.mode === "reference" ? "가져올 기능" : "요청" }),
       h("div", { class: "body", text: it.text })));
-    case "user": return row(it.at, "user", h("div", { class: "user" }, h("div", { class: "who", text: "추가 지시" }), it.text));
+    case "user": {
+      // '다음 작업에도 적용' — 이 폴더의 다음 실행이 처음부터 따른다 (툴킷 홈에 남는다, 저장소에는 쓰지 않는다)
+      const kept = (S.detail.lessons || []).find((l) => l.text === String(it.text || "").split(/\s+/).join(" "));
+      return row(it.at, "user", h("div", { class: "user" }, h("div", { class: "who", text: "추가 지시" }), it.text,
+        h("div", { class: "lesson-act" }, kept
+          ? h("button", { class: "btn sm quiet", title: "이 폴더의 다음 작업에서 빼기", onclick: () => call("forgetLesson", S.current, kept.id).then((r) => r.ok && (toast("다음 작업에서 뺐습니다", 1500), refresh())) }, "다음 작업에도 적용 중 · 빼기")
+          : h("button", { class: "btn sm quiet", title: "이 폴더에서 다음에 시작하는 작업도 처음부터 이 말을 따릅니다", onclick: () => call("rememberLesson", S.current, it.text).then((r) => r.ok && (toast("이 폴더의 다음 작업에도 적용합니다", 1800), refresh())) }, "다음 작업에도 적용"))));
+    }
     case "divider": return h("div", { class: "round" }, h("b", { text: it.text.replace("라운드 ", "R") }), it.at ? hhmm(it.at) : "");
     case "message": case "report": return row(it.at, "message", h("div", { class: "report" }, renderMd(String(it.text || ""))));
-    case "qa": return row(it.at, "qa", h("div", { class: "qa" },
+    case "qa": if (it.answer == null && (S.detail.asks || []).some((a) => String(a.id) === String(it.id))) return null;  // 답을 기다리는 질문은 아래 카드 하나로
+      return row(it.at, "qa", h("div", { class: "qa" },
       h("div", { class: "qa-q" }, h("span", { class: "who", text: "질문" }), renderMd(it.question || "")),
       h("div", { class: "qa-a" + (it.answer == null ? " wait" : "") }, h("span", { class: "who", text: it.answer == null ? "답 기다리는 중" : "내 답" }),
         it.answer == null ? null : h("div", { class: "qa-t", text: it.answer }))));
     case "work": {
-      const parts = [it.tools ? `도구 ${it.tools}회` : null, it.notes ? `메모 ${it.notes}개` : null].filter(Boolean).join(" · ");
+      const parts = [it.acts ? `단계 ${it.acts}개` : null, it.tools ? `도구 ${it.tools}회` : null, it.notes ? `메모 ${it.notes}개` : null].filter(Boolean).join(" · ");
+      const lastAct = [...(it.steps || [])].reverse().find((x) => x.kind === "activity");
       const key = "w:" + (it.at || "live");
       const lastNote = [...(it.steps || [])].reverse().find((x) => x.kind === "note");
-      const now = it.live ? ((S.detail.activity && S.detail.activity.text) || (lastNote ? String(lastNote.text).split("\n")[0] : "") || "시작하는 중") : "";
+      const now = it.live ? ((S.detail.activity && S.detail.activity.text) || (lastNote ? String(lastNote.text).split("\n")[0] : "") || "시작하는 중")
+        : (lastAct ? lastAct.text : "");
       const box = h("details", { class: "work" + (it.live ? " live" : ""), open: S.openWork && S.openWork.has(key) },
         h("summary", {}, it.live ? h("span", { class: "pulse" }) : null, h("span", { text: it.live ? "진행 중" : "작업 과정" }),
-          it.live ? h("b", { class: "wnow", text: now }) : null, h("em", { text: parts }), ico("down", "wchev")));
+          now ? h("b", { class: "wnow", text: now }) : null, h("em", { text: parts }), ico("down", "wchev")));
       const fill = () => {  // 펼칠 때만 그린다 — 도구 칩이 수백 개여도 기록이 무겁지 않게
         if (!box.open || box.dataset.drawn) return; box.dataset.drawn = "1";
         box.append(h("div", { class: "wbody" }, ...(it.steps || []).map((st) => st.kind === "note"
           ? h("div", { class: "wnote" }, ...inlineMd(String(st.text || "").replace(/\s*\n+\s*/g, " ")))
+          : st.kind === "activity" ? h("div", { class: "wact" }, h("i"), h("span", { text: st.text }))
           : h("div", { class: "tools" }, ...st.items.map((x) => h("span", { text: x, title: x })))),
           it.live && !(it.steps || []).length ? h("div", { class: "wnote", text: "아직 한 일이 없습니다" }) : null));
       };
@@ -962,7 +1113,10 @@ function feedItem(it) {
     default: {
       const left = it.until ? Math.max(0, Math.round((new Date(it.until) - Date.now()) / 60000)) : null;
       return row(it.at, it.tone === "ok" ? "ok" : it.tone === "fail" ? "fail" : it.tone === "wait" ? "wait" : "",
-        h("div", { class: "note " + (it.tone || ""), title: it.detail || "" }, it.tone === "wait" ? ico("clock") : it.tone === "fail" ? ico("alert") : null,
+        it.list && it.list.length
+          ? h("details", { class: "note notelist " + (it.tone || "") }, h("summary", {}, h("span", { text: it.text }), h("em", { text: "승인한 내용" }), ico("down", "wchev")),
+              h("ul", {}, ...it.list.map((x) => h("li", { text: x }))))
+          : h("div", { class: "note " + (it.tone || ""), title: it.detail || "" }, it.tone === "wait" ? ico("clock") : it.tone === "fail" ? ico("alert") : null,
           h("span", { text: it.text }), left != null && left > 0 && S.detail && S.detail.run.status === "waiting_limit" ? h("em", { text: `${left}분 남음` }) : null));
     }
   }
@@ -985,12 +1139,15 @@ function cards() {
   const planOpen = plan && plan.steps && plan.steps.length && !plan.approved && D.run.status !== "done";  // 끝난 작업에 승인할 계획은 없다
   // 처음 한 번 확인: 기준과 계획이 함께 떠 있으면 한 장으로 — 사용자가 무엇을 승인하는지 위에서부터 읽히게
   // 계획까지 세우는 중이면 기준만 먼저 띄우지 않는다 — 기준과 계획은 한 장으로 한 번에 확인한다
-  const waitPlan = D.running && D.run.mode === "request" && D.plan_approval !== false && !(plan && plan.steps && plan.steps.length);
-  if (D.reviews && D.reviews.count && planOpen && !S.edit && D.reviews.requirements.length) out.push(startCard(D.reviews, plan, asking));
-  else {
-    if (D.reviews && D.reviews.count && !(waitPlan && !S.edit)) out.push(reviewCard(D.reviews, asking));
-    // 기준과 계획은 함께 승인하므로 둘 다 보여 준다 — 보지 않은 계획(디자인 방향 포함)이 승인되지 않게
-    if (planOpen) out.push(planCard(plan, asking));
+  // 승인 카드는 사용자 차례일 때만 — 라운드가 끝나 실행기가 승인을 기다리거나 멈춰 있을 때. 라운드 도중에 띄우면
+  // '승인함'이 에이전트의 '올렸습니다, 확인해 주세요' 보고보다 먼저 쌓여 순서가 거꾸로 읽히고, 상태는 '실행 중'인데 카드가 뜬다
+  if (gateOpen()) {
+    if (D.reviews && D.reviews.count && planOpen && !S.edit && D.reviews.requirements.length) out.push(startCard(D.reviews, plan, asking));
+    else {
+      if (D.reviews && D.reviews.count) out.push(reviewCard(D.reviews, asking));
+      // 기준과 계획은 함께 승인하므로 둘 다 보여 준다 — 보지 않은 계획(디자인 방향 포함)이 승인되지 않게
+      if (planOpen) out.push(planCard(plan, asking));
+    }
   }
   // 레퍼런스: 원본 라이선스 경고 — 사람이 보고 옮겨도 된다고 확인해야 완료할 수 있다 (에이전트는 대신 못 한다)
   if (D.license && !D.license.acked && !D.run.accepted) out.push(licenseCard(D.license));
@@ -1120,13 +1277,26 @@ function reviewCard(R, asking) {
   const rows = [];
   const perReq = {};
   for (const e of R.expectations) for (const q of e.reqs || []) perReq[q] = (perReq[q] || 0) + 1;
-  if (R.requirements.length) rows.push(h("table", { class: "tbl" }, ...R.requirements.map((r) => h("tr", {}, h("td", { class: "k", text: r.id }), h("td", { text: r.text }),
+  // 승인한 계획의 결정에서 온 값 — 다시 확인하는 카드에서도 '내가 고른 값'인지 보이게 (안 보이면 정한 적 없는 값으로 읽었다)
+  const P = S.detail && S.detail.plan, chosen = {};
+  if (P && P.approved) for (const d of P.decisions || []) for (const id of d.reqs || []) chosen[id] = d;
+  const from = (r) => chosen[r.id] ? h("span", { class: "dmark dep", title: `계획에서 고른 값 — ${chosen[r.id].topic}: ${chosen[r.id].choice}`,
+    text: chosen[r.id].changed_by_user ? "직접 고른 값" : "승인한 추천값" }) : null;
+  if (R.requirements.length) rows.push(h("table", { class: "tbl" }, ...R.requirements.map((r) => h("tr", {}, h("td", { class: "k", text: r.id }), h("td", {}, from(r), r.text),
     h("td", { class: "r", text: perReq[r.id] ? `케이스 ${perReq[r.id]}` : "" })))));
   if (R.expectations.length) rows.push(caseFold(R));
   if (R.divergences.length) rows.push(h("div", { class: "sub", text: "원본과 다르게 두는 점" }),
     h("table", { class: "tbl" }, ...R.divergences.map((x) => h("tr", {}, h("td", { text: x.summary })))));
   if (R.omitted.length) rows.push(h("div", { class: "sub", text: "가져오지 않는 부분" }),
     h("table", { class: "tbl" }, ...R.omitted.map((x) => h("tr", {}, h("td", { text: x.summary })))));
+  if ((R.checks || []).length) rows.push(h("div", { class: "sub", text: "직접 확인할 점" }),
+    h("table", { class: "tbl" }, ...R.checks.map((x) => h("tr", {}, h("td", { text: x.summary + (x.files.length ? " — " + x.files.slice(0, 6).join(", ") : "") })))));
+  if ((R.tests_changed || []).length) rows.push(h("div", { class: "sub", text: "원래 있던 테스트를 바꿈" }),
+    h("div", { class: "desc", text: "원래 테스트는 예전 동작을 기대합니다. 요청으로 바뀐 동작만큼만 고쳤는지 보세요." }),
+    h("table", { class: "tbl" }, ...R.tests_changed.map((x) => h("tr", {}, h("td", { class: "diff" },
+      h("div", { class: "dfile", text: x.file }),
+      ...String(x.diff || "").split("\n").filter((l) => !/^(---|\+\+\+) /.test(l)).map((l) =>
+        h("div", { class: /^-/.test(l) ? "dl del" : /^\+/.test(l) ? "dl add" : /^@@/.test(l) ? "dl hunk" : "dl", text: l || " " })))))));
   if (R.case_changes.length) rows.push(h("div", { class: "sub", text: "케이스 변경" }),
     h("table", { class: "tbl" }, ...R.case_changes.flatMap((x) => [
       (x && x.removed && x.removed.length) ? h("tr", {}, h("td", { class: "k", text: "빠짐" }), h("td", { text: x.removed.join(", ") + " — 이전 승인 기준에서 빠진 케이스" })) : null,
@@ -1141,7 +1311,7 @@ function reviewCard(R, asking) {
     h("div", { class: "cf" }, h("span", { class: "hint", text: "직접 고치거나, 고칠 점을 입력창으로 보내세요" }),
       spec && S.detail.run.mode === "request" ? h("button", { class: "btn", onclick: () => startEdit("spec") }, "고치기") : null,
       h("button", { class: "btn primary", onclick: () => approveShown(bothPending() ? "both" : "reviews") },
-        bothPending() ? "기준과 계획 승인" : "승인", h("span", { class: "k", text: "Ctrl Enter" }))));
+        bothPending() ? "기준과 계획 승인" : "승인", h("span", { class: "k", text: MOD + " Enter" }))));
 }
 function shortInput(i) {
   const t = inputText(i);
@@ -1187,14 +1357,76 @@ function expectText(e) {
   return parts.join(" · ");
 }
 // ---- 첫 확인 조각들
-function lookList(plan) {  // 디자인 컨셉 — 한두 줄 (예전 계획은 앞의 두 줄만)
-  return (plan.look || []).length ? h("ul", { class: "looks" }, ...plan.look.slice(0, 2).map((x) => h("li", {}, ...inlineMd(x)))) : null;
+function lookList(plan) {  // 디자인 컨셉 — 한두 줄 (예전 계획은 앞의 두 줄만). 시안 없이 정한 근거가 있으면 함께
+  const items = (plan.look || []).slice(0, 2).map((x) => h("li", {}, ...inlineMd(x)));
+  if (plan.design_basis) items.push(h("li", { class: "basis" }, h("b", { text: "시안 없이 정한 근거 " }), h("span", { text: plan.design_basis })));
+  return items.length ? h("ul", { class: "looks" }, ...items) : null;
 }
-function reqList(R) {
+function sharedList(plan) {  // 다른 화면들이 쓰는 기존 공통 부품을 고치는 신고 — 승인하면 그 파일을 고칠 수 있다
+  const items = (plan.shared_changes || []).map((c) => h("li", { class: "basis" },
+    h("b", { text: c.file + " " }), h("span", { text: c.users ? `(다른 화면 ${c.users}곳도 바뀜)` : "(공통 스타일 — 다른 화면에도 걸림)" }),
+    h("span", { text: " " + (c.why || "") })));
+  return items.length ? h("ul", { class: "looks" }, ...items) : null;
+}
+function layoutList(plan) {  // 새 프로젝트를 정석과 다른 폴더 구조로 만드는 근거 (사용자가 정한 구조 등)
+  if (!plan.layout_basis) return null;
+  return h("ul", { class: "looks" }, h("li", { class: "basis" }, h("b", { text: "폴더 구조를 정한 근거 " }), h("span", { text: plan.layout_basis })));
+}
+function followList(plan) {  // 읽은 규칙 문서와 다른 화면에서 확인한 규칙 — 규칙마다 근거(파일:줄)
+  const docs = plan.rules_checked || [], rules = plan.follows || [];
+  if (!docs.length && !rules.length) return null;
+  return h("ul", { class: "follows" },
+    docs.length ? h("li", {}, h("span", { class: "fr", text: "읽은 규칙 문서" }), h("span", { class: "fe" }, ...docs.map((d) => h("code", { text: d })))) : null,
+    ...rules.map((f) => h("li", {}, h("span", { class: "fr", text: f.rule }), h("span", { class: "fe" }, ...(f.evidence || []).map((e) => h("code", { text: e }))))));
+}
+// 사용자가 앞서 본 계획 — 다시 낸 계획이면 무엇이 더해지고 바뀌고 빠졌는지 표시한다 (처음 낸 계획이면 null)
+function prevPlan(plan) {
+  const hist = (plan && plan.history) || [];
+  return hist.length ? hist[hist.length - 1] : null;
+}
+function reqList(R, plan) {
+  // 요구사항의 출처 — 요청에 직접 없는 것은 표시한다: 다른 요구사항을 이루려고 더한 동작, 지금 있는 동작, 화면 밖 동작 (에이전트가 적은 출처)
+  const origin = (r) => {
+    const o = r.origin || {};
+    if (o.from === "needed") return h("span", { class: "dmark dep", title: "요청에 직접 있지는 않고 " + (o.for || []).join("·") + " 을(를) 이루려고 더한 동작입니다", text: "더함" });
+    if (o.from === "existing") return h("span", { class: "dmark", title: "지금도 그렇게 동작합니다 — 바꾸지 않고 지킵니다", text: "기존 동작" });
+    return null;
+  };
+  // 요청에서 온 요구사항 — 근거로 든 요청의 말을 함께 (그 말이 정말 이 기능을 말하는지 사용자가 본다)
+  const said = (r) => {
+    const o = r.origin || {};
+    return o.from === "request" && o.quote ? h("span", { class: "rq-quote", title: "요구사항의 근거로 든 요청의 말", text: ` — 요청: “${o.quote}”` }) : null;
+  };
+  const offScreen = (r) => (r.origin || {}).screen === false ? h("span", { class: "dmark", title: "화면에서 보이지 않는 동작이라 화면 대신 함수·API 로 확인합니다", text: "화면 밖" }) : null;
   const perReq = {};
   for (const e of R.expectations) for (const q of e.reqs || []) perReq[q] = (perReq[q] || 0) + 1;
-  return h("ol", { class: "reqs" }, ...R.requirements.map((r) => h("li", {}, h("span", { class: "rid", text: r.id }), h("span", { class: "rt", text: r.text }),
-    perReq[r.id] ? h("span", { class: "rc", title: "이 요구사항을 확인하는 합격 케이스 수", text: `확인 ${perReq[r.id]}` }) : null)));
+  const prev = prevPlan(plan), before = prev && prev.reqs ? Object.fromEntries(prev.reqs.map((r) => [r.id, r.text])) : null;
+  const mark = (r) => !before ? null : !(r.id in before) ? h("span", { class: "dmark add", text: "추가" })
+    : before[r.id] !== r.text ? h("span", { class: "dmark chg", title: "전: " + before[r.id], text: "바뀜" }) : null;
+  const now = new Set(R.requirements.map((r) => r.id));
+  const gone = before ? prev.reqs.filter((r) => !now.has(r.id)) : [];
+  // 아직 고르지 않은 결정에 기대는 요구사항 — 적힌 값은 추천안이고, 아래 '정할 것'에서 바꾸면 그 값으로 바뀐다
+  const pending = {};
+  if (plan && !plan.approved) for (const d of plan.decisions || []) if (!d.settled) for (const id of d.reqs || []) (pending[id] = pending[id] || []).push(d.topic);
+  const dep = (r) => pending[r.id] ? h("span", { class: "dmark dep", title: "아래 '정할 것'에서 고르는 값으로 바뀝니다 — " + pending[r.id].join(", "),
+    text: "고를 값" }) : null;
+  return h("div", {},
+    h("ol", { class: "reqs" }, ...R.requirements.map((r) => h("li", {}, h("span", { class: "rid", text: r.id }),
+      h("span", { class: "rt" }, mark(r), dep(r), origin(r), offScreen(r), r.text, said(r)),
+      perReq[r.id] ? h("span", { class: "rc", title: "이 요구사항을 확인하는 합격 케이스 수", text: `확인 ${perReq[r.id]}` }) : null))),
+    gone.length ? h("ul", { class: "reqs gone" }, ...gone.map((r) => h("li", {}, h("span", { class: "rid", text: r.id }),
+      h("span", { class: "rt" }, h("span", { class: "dmark del", text: "빠짐" }), r.text), h("span")))) : null);
+}
+// 진행 순서 — 요구사항을 이루는 단계와, 요구사항에 묶이지 않은 단계(준비·확인 등)를 나눠 보인다. 요청에 없는 일이 섞였는지 보이게
+function stepList(plan) {
+  const steps = plan.steps || [];
+  const tied = steps.filter((s) => (s.requirements || []).length), loose = steps.filter((s) => !(s.requirements || []).length);
+  const item = (s) => h("li", {}, h("span", {}, s.title, (s.requirements || []).length ? h("span", { class: "sreq", text: " " + s.requirements.join("·") }) : null));
+  if (!tied.length) return h("ol", { class: "sorder" }, ...steps.map(item));
+  return h("div", {},
+    h("ol", { class: "sorder" }, ...tied.map(item)),
+    loose.length ? h("div", { class: "sloose" }, h("div", { class: "sh2", text: "요구사항 밖 단계 — 준비·확인 같은 일인지 보세요" }),
+      h("ul", { class: "sorder loose" }, ...loose.map(item))) : null);
 }
 function caseFold(R) {  // 합격 기준 — 무엇을 확인하는지만 (입력·기대값 같은 시험 방법은 '검증' 탭에)
   return R.expectations.length ? h("details", { class: "cfold" },
@@ -1202,20 +1434,51 @@ function caseFold(R) {  // 합격 기준 — 무엇을 확인하는지만 (입�
     h("ul", { class: "clist" }, ...R.expectations.map((e) => h("li", {}, h("span", { text: e.description || e.case }),
       (e.reqs || []).length ? h("span", { class: "r", text: e.reqs.join(" ") }) : null)))) : null;
 }
+function compareTable(d) {  // 결정의 선택지 비교 — 장점·단점·비용·난이도·근거
+  const rows = d.compare || [];
+  if (!rows.length) return null;
+  const cols = [["pros", "좋은 점"], ["cons", "아쉬운 점"], ["cost", "비용"], ["effort", "만드는 노력"]].filter(([k]) => rows.some((r) => r[k]));
+  const short = (k) => rows.every((r) => String(r[k] || "").length <= 12);  // 짧은 값(낮음·보통·무료)은 한 줄로
+  const src = rows.some((r) => /^https?:\/\//.test(r.source || ""));
+  return h("div", { class: "cmpwrap" }, h("table", { class: "cmp" },
+    h("thead", {}, h("tr", {}, h("th", { text: "선택지" }), ...cols.map(([, t]) => h("th", { text: t })), src ? h("th", { text: "근거" }) : null)),
+    h("tbody", {}, ...rows.map((r) => h("tr", { class: r.option === d.choice ? "rec" : "" },
+      h("td", { text: r.option + (r.option === d.choice ? " (추천)" : "") }), ...cols.map(([k]) => h("td", { class: short(k) ? "n" : "", text: r[k] || "" })),
+      src ? h("td", { class: "n" }, /^https?:\/\//.test(r.source || "") ? h("a", { href: r.source, title: r.source }, hostOf(r.source)) : null) : null)))));
+}
+function researchGroups(items) {  // 영역별로 — 기능·연동·API·데이터·성능·효율·보안·개인정보·운영·오류 (정해진 순서, 그 밖은 뒤에)
+  const order = ["기능", "사용 흐름·접근성", "연동·API", "데이터", "성능·효율", "비용·유지보수", "보안·개인정보", "운영·오류·검증"];  // 분야·… 는 뒤에
+  const areas = [...new Set([...order.filter((a) => items.some((r) => r.area === a)), ...items.map((r) => r.area || "")])];
+  return areas.map((a) => h("div", { class: "rgroup" }, a ? h("b", { class: "rarea", text: a }) : null,
+    h("ul", { class: "research" }, ...items.filter((r) => (r.area || "") === a).map((r) => h("li", {}, h("span", { text: r.finding }),
+      /^https?:\/\//.test(r.source || "") ? h("a", { class: "src", href: r.source, title: r.source }, hostOf(r.source)) : null)))));
+}
+function hostOf(u) {  // 출처 주소의 사이트 이름만 (www. 뺌)
+  try { return new URL(u).host.replace(/^www\./, ""); } catch (e) { return String(u || ""); }
+}
 function startCard(R, plan, asking) {
   const sec = (title, note, ...kids) => h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: title }), note ? h("span", { text: note }) : null), ...kids);
+  // '마지막에 한 번 확인' — 이미 다 만든 뒤라 '시작 전'이 아니다
+  const atEnd = S.detail && S.detail.run && S.detail.run.confirm_at === "end";
   return h("div", { class: "card start" },
-    h("div", { class: "ch" }, ico("list", "chi"), h("h3", { text: "시작 전 확인" }), h("span", { class: "tag", text: "확인 필요" })),
+    h("div", { class: "ch" }, ico("list", "chi"), h("h3", { text: atEnd ? "마지막 확인" : "시작 전 확인" }), h("span", { class: "tag", text: "확인 필요" })),
     plan.summary ? h("p", { class: "slead" }, ...inlineMd(plan.summary)) : null,
     asking ? h("div", { class: "callout" }, ico("chat"), h("span", { text: "아래 질문에 먼저 답하면 에이전트가 답을 반영한 뒤 다시 확인을 요청합니다. 지금 승인해도 됩니다." })) : null,
-    sec("만들 것", `${R.requirements.length}개 — 다 되면 완료`, reqList(R)),
-    (plan.decisions || []).length ? sec("정할 것", "추천이 골라져 있습니다 — 바꾸려면 누르세요", decisionTable(plan, true)) : null,
-    (plan.look || []).length ? sec("디자인 컨셉", "", lookList(plan)) : null,
-    sec("진행 순서", `${plan.steps.length}단계`, h("ol", { class: "sorder" }, ...plan.steps.map((s) => h("li", { text: s.title })))),
+    // '깊게' 실행의 조사 — 알게 된 것과 실제로 연 출처 (툴킷이 연 기록과 맞춰 본 것만 실린다)
+    (plan.research || []).length ? sec("설계 검토", `출처 ${new Set(plan.research.filter((r) => r.source).map((r) => hostOf(r.source))).size}곳 — 계획과 제안의 근거`,
+      ...researchGroups(plan.research)) : null,
+    sec("만들 것", `${R.requirements.length}개 — 다 되면 완료` + (prevPlan(plan) ? " · 앞서 본 계획과 달라진 곳 표시" : ""), reqList(R, plan)),
+    (plan.decisions || []).some((d) => !d.settled) ? sec("정할 것", "추천이 골라져 있습니다 — 바꾸려면 누르세요", decisionTable(plan, true, "open")) : null,
+    (plan.decisions || []).some((d) => d.settled) ? sec("앞에서 정한 것", "이미 승인한 결정 — 그대로 따릅니다", decisionTable(plan, true, "settled")) : null,
+    lookList(plan) ? sec("디자인 컨셉", "", lookList(plan)) : null,
+    followList(plan) ? sec("기존 규칙 따름", "규칙 문서와 다른 화면들에서 확인한 방식 그대로 만듭니다", followList(plan)) : null,
+    layoutList(plan) ? sec("폴더 구조", "", layoutList(plan)) : null,
+    sharedList(plan) ? sec("공통 부품 변경", "다른 화면들이 함께 쓰는 부품을 고칩니다 — 승인하면 고칩니다", sharedList(plan)) : null,
+    sec("진행 순서", `${plan.steps.length}단계`, stepList(plan)),
     h("div", { class: "cf" }, h("span", { class: "hint", text: "고칠 점은 입력창으로 보내면 반영해 다시 보여 줍니다" }),
       h("button", { class: "btn quiet", onclick: () => startEdit("spec") }, "기준 고치기"),
       h("button", { class: "btn quiet", onclick: () => startEdit("plan") }, "계획 고치기"),
-      h("button", { class: "btn primary", onclick: () => approveShown("both") }, "승인하고 시작", h("span", { class: "k", text: "Ctrl Enter" }))));
+      h("button", { class: "btn primary", onclick: () => approveShown("both") }, atEnd ? "승인" : "승인하고 시작", h("span", { class: "k", text: MOD + " Enter" }))));
 }
 function planCard(plan, asking) {
   if (S.edit && S.edit.kind === "plan") return planEditCard();
@@ -1224,34 +1487,46 @@ function planCard(plan, asking) {
     plan.summary ? h("p", { class: "slead" }, ...inlineMd(plan.summary)) : null,
     decisionTable(plan),
     lookList(plan) ? h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: "디자인 컨셉" })), lookList(plan)) : null,
+    followList(plan) ? h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: "기존 규칙 따름" })), followList(plan)) : null,
+    layoutList(plan) ? h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: "폴더 구조" })), layoutList(plan)) : null,
+    sharedList(plan) ? h("div", { class: "ssec" }, h("div", { class: "sh" }, h("b", { text: "공통 부품 변경" })), sharedList(plan)) : null,
     h("div", { class: "sub", text: `진행 순서 · ${plan.steps.length}단계` }),
-    h("div", { class: "steps-list" }, ...plan.steps.map((s) => h("div", { class: "s" }, h("span", { text: s.title })))),
+    stepList(plan),
     h("div", { class: "cf" }, h("span", { class: "hint", text: "직접 고치거나, 바꿀 점을 입력창으로 보내세요" }),
       h("button", { class: "btn", onclick: () => startEdit("plan") }, "고치기"),
       h("button", { class: "btn primary", onclick: () => approveShown(bothPending() ? "both" : "plan") },
-        bothPending() ? "기준과 계획 승인" : "승인하고 구현 시작", h("span", { class: "k", text: "Ctrl Enter" }))));
+        bothPending() ? "기준과 계획 승인" : "승인하고 구현 시작", h("span", { class: "k", text: MOD + " Enter" }))));
 }
 // 사전 설계 결정 — 추천이 골라져 있고, 대안을 누르면 바꿔서 승인한다 (승인 전 계획에서만 고를 수 있다)
-function decisionTable(plan, bare) {
-  const list = plan.decisions || [];
+function decisionTable(plan, bare, only) {
+  // only: "open"(아직 고를 것) · "settled"(앞에서 승인한 것) · 없으면 전부
+  const list = (plan.decisions || []).filter((d) => !only || (only === "settled") === !!d.settled);
   if (!list.length) return null;
   const key = S.detail.plan_sig || "";
   if (!S.picks || S.picks.sig !== key) S.picks = { sig: key, v: {} };
   const open = !plan.approved;
+  const prev = prevPlan(plan);  // 예전 기록(reqs 없음)은 결정을 함께 남기지 않았다 — 그때는 표시하지 않는다
+  const oldTopics = open && prev && prev.reqs ? new Set((prev.decisions || []).map((d) => d.topic)) : null;
   return h("div", { class: "decisions" },
     bare ? null : h("div", { class: "sub", text: open ? "먼저 정할 것 — 추천이 골라져 있습니다. 바꾸려면 대안을 누르세요" : "정한 것" }),
     ...list.map((d) => {
-      const opts = [d.choice, ...(open ? d.options || [] : [])];
+      const fixed = !open || d.settled;  // 앞에서 승인한 결정 — 다시 고르지 않는다 (바꾸려면 입력창으로 말한다)
+      const opts = [d.choice, ...(fixed ? [] : d.options || [])];
       const row = h("div", { class: "dec" },
-        h("div", { class: "dt", text: d.topic }),
-        h("div", { class: "dv" }, h("div", { class: "dseg" }, ...opts.map((o, i) => {
-          const b = h("button", { class: "opt" + ((S.picks.v[d.topic] || d.choice) === o ? " on" : ""), disabled: !open,
+        h("div", { class: "dt" }, oldTopics && !oldTopics.has(d.topic) && !d.settled ? h("span", { class: "dmark add", text: "새로" }) : null, d.topic,
+          (d.reqs || []).length ? h("span", { class: "dreq", title: "이 결정에 따라 바뀌는 요구사항", text: " → " + d.reqs.join("·") }) : null),
+        h("div", { class: "dv" }, h("div", { class: "dseg" + (d.shots ? " looks" : "") }, ...opts.map((o, i) => {
+          // 시안이 있으면 그림으로 — 보고 고른다 (그림은 실행 폴더의 .beom 안 png 만 불러온다)
+          const pic = d.shots && d.shots[o] ? h("img", { class: "lookimg", alt: o }) : null;
+          if (pic) call("runImage", S.current, d.shots[o]).then((r) => { if (r.ok) pic.src = r.data.url; });
+          const b = h("button", { class: "opt" + (pic ? " look" : "") + ((S.picks.v[d.topic] || d.choice) === o ? " on" : ""), disabled: fixed,
             onclick: () => {
               if (o === d.choice) delete S.picks.v[d.topic]; else S.picks.v[d.topic] = o;
               for (const x of row.querySelectorAll(".opt")) x.classList.toggle("on", x === b);
-            } }, o, i === 0 && open ? h("span", { class: "rec", text: d.changed_by_user ? "바꿈" : "추천" }) : null);
+            } }, pic, h("span", { class: "lt", text: o }), i === 0 && open ? h("span", { class: "rec", text: d.settled ? "앞에서 정함" : d.changed_by_user ? "바꿈" : "추천" }) : null);
           return b;
-        })), d.why ? h("div", { class: "why", text: d.why }) : null));
+        })), d.why ? h("div", { class: "why", text: (d.compare || []).length && !fixed ? `추천하는 까닭 — ${d.why}` : d.why }) : null,
+        fixed ? null : compareTable(d)));
       return row;
     }));
 }
@@ -1278,6 +1553,7 @@ function permCard(a) {
     h("div", { class: "cmd", text: what }),
     h("div", { class: "cf" }, h("span", { class: "hint", text: "Y 허용 · N 거절" }),
       h("button", { class: "btn quiet", onclick: () => ans({ allow: false }) }, "거절"),
+      a.rule ? h("button", { class: "btn", title: `'${a.rule} …' 꼴의 명령은 이 작업에서 다시 묻지 않습니다`, onclick: () => ans({ allow: true, remember: true }) }, "이 명령은 항상") : null,
       h("button", { class: "btn", onclick: () => ans({ allow: true, always: true }) }, "이 프로젝트에서 항상"),
       h("button", { class: "btn primary", onclick: () => ans({ allow: true }) }, "허용")));
 }
@@ -1285,15 +1561,77 @@ function askCard(a) {
   const input = h("textarea", { class: "input qin", rows: 1, placeholder: "직접 답하기 — Enter 로 보내기, Shift+Enter 줄바꿈",
     oninput: (e) => { e.target.style.height = "auto"; e.target.style.height = Math.min(160, e.target.scrollHeight) + "px"; },
     onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (input.value.trim()) send({ text: input.value.trim() }); } } });
+  input.dataset.keep = "ask:" + a.id;
   const send = (data) => call("answer", S.current, a.id, JSON.stringify(data)).then(refresh);
-  const q = String(a.question || ""), recommends = /추천/.test(q);
+  // 글로 묻는 질문에는 '추천대로' 단추를 두지 않는다 — 글에 '추천'이란 낱말이 있는지로 짐작하지 않고, 추천은 고르는 질문(questions)의 구조로만 받는다
+  const q = String(a.question || "");
+  if ((a.questions || []).length) return askForm(a, send);
+  if (a.final) input.placeholder = "바꿀 것이 있으면 적어 주세요 (예: 2번은 100자로) — Enter 로 보내기";
   return h("div", { class: "card ask" },
-    h("div", { class: "ch" }, ico("chat", "chi"), h("h3", { text: "질문" }), h("span", { class: "tag", text: "답해 주세요" })),
+    h("div", { class: "ch" }, ico(a.final ? "check" : "chat", "chi"), h("h3", { text: a.final ? "최종 확인" : "질문" }), h("span", { class: "tag", text: a.final ? "확인해 주세요" : "답해 주세요" })),
     h("div", { class: "qbody" }, renderMd(q)),
     (a.choices || []).length ? h("div", { class: "qopts" }, ...(a.choices || []).map((c, i) => h("button", { class: "qopt", onclick: () => send({ choice: c }) },
       h("span", { class: "qn", text: String(i + 1) }), h("span", { class: "qt", text: c })))) : null,
-    h("div", { class: "qreply" }, recommends ? h("button", { class: "btn", onclick: () => send({ text: "추천대로 해 주세요" }) }, "추천대로") : null,
+    h("div", { class: "qreply" },
       input, h("button", { class: "btn primary", onclick: () => input.value.trim() && send({ text: input.value.trim() }) }, "보내기")));
+}
+// 고르는 질문 카드 — 질문마다 동그라미(하나)·네모(여럿) 단추, 추천이 미리 골라져 있고 '직접 입력'으로 바꿀 수 있다. 한 번에 보낸다.
+// 고른 것은 S.askPick 에 둔다 — 작업 흐름이 다시 그려져도 사용자가 바꾼 단추가 추천으로 되돌아가지 않게
+function askForm(a, send) {
+  const qs = a.questions;
+  S.askPick = S.askPick || {};
+  const st = S.askPick[a.id] = S.askPick[a.id] || qs.map((x) => [...(x.recommended || [])]);
+  const other = qs.map(() => "");
+  const sendBtn = h("button", { class: "btn primary" }, a.part && a.part[0] < a.part[1] ? "다음 질문" : "보내기");
+  const ready = () => qs.every((x, i) => st[i].length || other[i].trim());
+  const sync = () => { sendBtn.disabled = !ready(); };
+  const go = () => {
+    if (!ready()) return;
+    const answers = qs.map((x, i) => {
+      const ch = x.options.filter((o) => st[i].includes(o)), rec = x.recommended || [];
+      return { question: x.question, picked: ch, other: other[i].trim(),
+        followed: !other[i].trim() && ch.length === rec.length && ch.every((o) => rec.includes(o)) };
+    });
+    const text = answers.map((r, i) => `${qs.length > 1 || a.start ? (a.start || 0) + i + 1 + ". " : ""}${r.question} → `
+      + [...r.picked, ...(r.other ? ["직접 입력: " + r.other] : [])].join(", ") + (r.followed ? " (추천대로)" : "")).join("\n");
+    sendBtn.disabled = true; delete S.askPick[a.id]; send({ text, answers });
+  };
+  const sets = qs.map((x, i) => {
+    const type = x.multi ? "checkbox" : "radio", name = `q${a.id}_${i}`;
+    let otherIn;
+    const rows = x.options.map((op) => {
+      const inp = h("input", { type, name, value: op });
+      inp.checked = st[i].includes(op);
+      inp.onchange = () => {
+        if (!x.multi) { st[i] = []; if (otherIn.value) { otherIn.value = ""; other[i] = ""; } }
+        st[i] = inp.checked ? [...new Set([...st[i], op])] : st[i].filter((o) => o !== op); sync();
+      };
+      const rec = (x.recommended || []).includes(op);
+      return h("label", { class: "qo" + (rec ? " rec" : "") }, inp, h("span", { class: "qo-t", text: op }), rec ? h("em", { text: "추천" }) : null);
+    });
+    otherIn = h("input", { class: "qo-in", type: "text", placeholder: x.multi ? "더 적을 것이 있으면" : "다른 답이면 여기에 적어 주세요",
+      oninput: (e) => {
+        other[i] = e.target.value;
+        if (!x.multi && other[i].trim()) { st[i] = []; rows.forEach((r) => { r.querySelector("input").checked = false; }); }
+        sync();
+      },
+      onkeydown: (e) => { if (e.key === "Enter" && ready()) { e.preventDefault(); go(); } } });
+    otherIn.dataset.keep = `ask:${a.id}:${i}`;
+    return h("fieldset", { class: "qset" },
+      h("legend", {}, qs.length > 1 || a.start ? h("span", { class: "qs-n", text: String((a.start || 0) + i + 1) }) : null, h("span", { class: "qs-q", text: x.question }),
+        h("small", { text: x.multi ? "여럿 고를 수 있음" : "하나 고르기" })),
+      x.why ? h("p", { class: "qs-why", text: "추천 까닭 — " + x.why }) : null,
+      h("div", { class: "qs-opts" }, ...rows, h("label", { class: "qo other" }, h("span", { class: "qo-t", text: "직접 입력" }), otherIn)));
+  });
+  sendBtn.onclick = go; sync();
+  return h("div", { class: "card ask" },
+    h("div", { class: "ch" }, ico("chat", "chi"), h("h3", { text: qs.length > 1 ? `질문 ${qs.length}개` : "질문" }),
+      a.part && a.part[1] > 1 ? h("span", { class: "qpart", text: `묶음 ${a.part[0]} / ${a.part[1]} — 끝에 모아 한 번 더 확인합니다` }) : null,
+      h("span", { class: "tag", text: "답해 주세요" })),
+    String(a.question || "").trim() ? h("div", { class: "qbody" }, renderMd(String(a.question))) : null,
+    h("div", { class: "qsets" }, ...sets),
+    h("div", { class: "qreply qform" }, h("span", { class: "hint", text: "추천이 미리 골라져 있습니다 — 바꿀 것만 바꾸고 보내세요" }),
+      sendBtn));
 }
 // 글 한 덩어리를 목록으로 — "1) … 2) …", "(1) …", "Q1 …", 줄바꿈 목록을 항목으로 나눈다 (나눌 수 없으면 그대로)
 function splitItems(text) {
@@ -1327,6 +1665,27 @@ function hoItem(x, copy) {
   return h("li", {}, m ? h("span", { class: "ho-k", text: m[1] }) : null, h("span", { class: "ho-t" }, ...inlineMd(m ? m[2] : t)),
     copy && code ? h("button", { class: "ho-copy", title: "명령 복사", onclick: (e) => { e.stopPropagation(); copy(code); } }, "복사") : null);
 }
+// 고를 것 — 같은 사항에 방안이 여럿인 열린 질문. 누르면 그 방안으로 정했다고 보내고 실행이 관련 문서·코드를 모두 맞춘다
+function choicesBox(list) {
+  const items = (list || []).filter((c) => c && c.question && (c.options || []).length >= 2);
+  if (!items.length) return null;
+  const sent = new Set(); try { JSON.parse(localStorage.getItem("wb.choice." + S.current) || "[]").forEach((k) => sent.add(k)); } catch (e) { /* 기억 못 해도 고를 수는 있다 */ }
+  // 방안마다 고르면 어떻게 되는지(desc)와 추천 까닭(why)까지 — 이름만 늘어놓으면 무엇을 골라야 할지 몰랐다 (예전 인계의 문자열 방안도 그린다)
+  const opt = (o) => (typeof o === "string" ? { name: o, desc: "" } : o);
+  return h("div", { class: "ho-choices" }, h("div", { class: "hc-h" }, h("b", { text: "고를 것" }), h("span", { text: "기획에서 아직 정하지 않은 것입니다 — 고르면 그 방안으로 정하고 관련 문서를 모두 맞춰 고칩니다" })),
+    ...items.map((c) => h("div", { class: "hc" }, h("div", { class: "hc-q" }, c.id ? h("span", { class: "hc-id", text: c.id }) : null, h("span", { text: c.question })),
+      c.context ? h("p", { class: "hc-ctx", text: c.context }) : null,
+      h("div", { class: "hc-opts" }, ...c.options.map(opt).map((o) => {
+        const key = (c.id || c.question) + "=" + o.name, rec = o.name === c.recommended;
+        return h("button", { class: "opt" + (rec ? " rec" : "") + (sent.has(key) ? " on" : ""), disabled: [...sent].some((k) => k.startsWith((c.id || c.question) + "=")),
+          onclick: (e) => {
+            sent.add(key); try { localStorage.setItem("wb.choice." + S.current, JSON.stringify([...sent])); } catch (er) { /* 무시 */ }
+            e.currentTarget.parentElement.querySelectorAll("button").forEach((b) => { b.disabled = true; }); e.currentTarget.classList.add("on");
+            sendAndGo(`${c.id ? c.id + " " : ""}'${c.question}' — '${o.name}'(으)로 정합니다. 이 결정에 맞춰 관련 문서(와 코드)를 모두 고치고 다시 점검해 주세요.`);
+          } }, h("span", { class: "op-n" }, h("b", { text: o.name }), rec ? h("em", { text: "추천" }) : null), o.desc ? h("span", { class: "op-d", text: o.desc }) : null);
+      })),
+      c.why ? h("p", { class: "hc-why", text: "추천 까닭 — " + c.why }) : null)));
+}
 function handoffCard(o) {
   const D = S.detail, run = D.run, plan = run.mode === "plan";
   const B = D.brief || {};
@@ -1339,7 +1698,16 @@ function handoffCard(o) {
     head = m1 ? m1[1].trim() : ""; rest = head ? sum.slice(head.length).trim() : sum;
   }
   const changes = o.changes ? asItems(o.changes) : asItems(rest);
-  const steps = asItems(o.how_to_run), checked = asItems(o.checked), risks = asItems(o.risks), next = asItems(o.follow_ups);
+  // 확인한 것 — 툴킷이 자기 기록으로 쓴 것(실제로 돌린 테스트·빌드·디자인 점검)을 먼저, 에이전트가 따로 적은 것을 뒤에
+  const steps = asItems(o.how_to_run), checked = [...asItems(o.verified), ...asItems(o.checked)], risks = asItems(o.risks), next = asItems(o.follow_ups);
+  // 툴킷이 기존 화면을 함께 재서 가른 디자인 문제 — 에이전트의 말이 아니라 잰 결과
+  const di = o.design_issues || {}, oldFix = asItems(di.existing), newFix = asItems(di.new), layoutFix = asItems(di.layout);
+  // 독립 리뷰어(이 대화를 모르는 같은 에이전트)가 diff 만 읽고 남긴 지적 — 에이전트의 말과 따로
+  const rvw = o.review || null, sevKo = { high: "중요", medium: "보통", low: "낮음" };
+  const reviewed = rvw ? (rvw.findings || []).map((f) => `**${sevKo[f.severity] || f.severity}** ${f.file}${f.line ? ":" + f.line : ""} — ${f.problem}${f.fix ? ` (고치는 법: ${f.fix})` : ""}`) : [];
+  // 계획에서 정한 값 — 사용자가 승인한 결정을 출처와 함께 (추천을 그대로 승인했는지, 직접 바꿨는지). 에이전트의 말이 아니라 승인 기록
+  const P = D.plan || {};
+  const decided = P.approved ? (P.decisions || []).map((d) => `**${d.topic}** — ${d.choice} (${d.changed_by_user ? "직접 고름" : "추천안을 승인함"})`) : [];
   const metric = (n, label, tone) => h("div", { class: "ho-m" + (tone ? " " + tone : "") }, h("b", { text: String(n) }), h("span", { text: label }));
   const metrics = plan
     ? [metric((B.requirements || []).length, "요구사항"), metric((B.screens || []).length, "화면"), metric((B.tests || []).length, "테스트 시나리오"),
@@ -1361,9 +1729,24 @@ function handoffCard(o) {
     metrics.length ? h("div", { class: "ho-ms" }, ...metrics) : null,
     plan ? null : sec("실행 방법", steps, "num", true, true),  // 기획은 아래 '기획 패키지 보기' 단추가 그 역할
     sec(plan ? "핵심 결정" : "바뀐 것", changes, "", true),
+    plan ? null : sec("계획에서 정한 값 (승인 기록)", decided, ""),
     sec("확인한 것", checked, "ok"),
+    (P.research || []).length ? h("details", { class: "ho-sec" }, h("summary", {}, h("span", { text: "설계 검토 (계획 때 조사한 것)" }),
+      h("em", { text: String(P.research.length) }), ico("down", "ho-chev")), h("div", { class: "ho-research" }, ...researchGroups(P.research))) : null,
+    rvw && !reviewed.length ? h("p", { class: "hint", text: rvw.error ? `독립 리뷰를 돌리지 못했습니다 (${rvw.error})` : "독립 리뷰어가 이번 변경에서 확실한 결함을 찾지 못했습니다" }) : null,
+    sec("독립 리뷰어의 지적 (이 대화를 모르는 리뷰어가 변경만 읽음)", reviewed, "warn"),
+    choicesBox(o.choices),
     sec(plan ? "열린 질문·확인할 가정" : "남은 위험·확인 못 한 것", risks, "warn"),
     sec("이어서 할 일", next, "num"),
+    sec("새 화면에서만 나온 디자인 문제", newFix, "warn", true),
+    sec("기존 화면에도 있는 고칠거리 (툴킷이 기존 화면에서도 잼)", oldFix, ""),
+    // 공통 스타일에서 온 문제 — 에이전트는 공통 부품을 함부로 고치지 않으니, 고칠지는 사용자가 여기서 한 번에 정한다 (실험 141: 사용자가
+    // '모두 기존 문제라고만 하고 넘어갔다'며 따로 메시지를 써야 했다)
+    oldFix.length && !run.accepted ? h("div", { class: "ho-act" }, h("button", { class: "btn sm", onclick: () => sendAndGo(
+      `기존 화면에도 있는 디자인 문제 ${oldFix.length}개를 공통 스타일에서 함께 고쳐 줘. 다른 화면도 함께 바뀌니 계획의 shared_changes 로 `
+      + `신고해 확인받고, 고친 뒤 기존 화면들도 디자인 점검으로 확인해 줘:\n` + oldFix.map((x) => `- ${x}`).join("\n")) },
+      "공통 스타일에서 함께 고치기"), h("span", { class: "hint", text: "다른 화면도 함께 바뀝니다 — 고칠 공통 파일은 다시 확인을 받습니다" })) : null,
+    sec("배치를 그대로 둔 문제 (원래 있던 것인지 확인 못 함)", layoutFix, "warn"),
     h("div", { class: "cf" }, h("span", { class: "hint", text: "고칠 점은 입력창으로 보내면 이어서 고칩니다" }),
       plan ? h("button", { class: "btn quiet", onclick: () => { S.tab = "brief"; S.sig.right = ""; renderRight(); } }, "기획 패키지 보기")
         : h("button", { class: "btn quiet", onclick: () => { S.tab = "changes"; S.sig.right = ""; loadChanges(); renderRight(); } }, "변경 사항"),
@@ -1400,7 +1783,12 @@ function renderMd(md) {
   let i = 0;
   while (i < lines.length) {
     const l = lines[i];
-    if (/^```/.test(l)) { const buf = []; i++; while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]); i++; root.append(h("pre", { text: buf.join("\n") })); continue; }
+    if (/^```/.test(l)) {
+      const lang = l.slice(3).trim().toLowerCase(), buf = []; i++; while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]); i++;
+      const svg = lang === "flow" ? flowSvg(buf.join("\n")) : null;  // 업무 흐름 — 툴킷이 그림으로
+      if (svg) { const fig = h("figure", { class: "flowfig" }); fig.innerHTML = svg; root.append(fig); } else root.append(h("pre", { text: buf.join("\n") }));
+      continue;
+    }
     const hm = l.match(/^(#{1,6})\s+(.*)/);
     if (hm) { root.append(h("h" + Math.min(4, hm[1].length), {}, ...inlineMd(hm[2]))); i++; continue; }
     if (/^\s*\|/.test(l)) {
@@ -1431,7 +1819,18 @@ async function briefPane(p) {
   const r = await call("briefFiles", S.current);
   if (!r.ok) return;
   const B = r.data, chk = B.check || {};
-  if (!B.docs.length) { p.append(h("div", { class: "empty", text: "기획 패키지를 만드는 중입니다.\n질문이 오면 답해 주세요." })); return; }
+  const run = S.detail.run, done = !!S.detail.handoff, ready = done && !isBusy();
+  if (!done) {  // 다 만들기 전에는 내용 대신 문서별 진행만 — 쓰는 중인 문서가 보였다 바뀌면 헷갈린다
+    // 체크 표시는 점검을 마친 뒤에만 — 쓰는 중인 초안, 같은 폴더의 앞 작업이 남긴 문서는 '끝남'이 아니다
+    // 문서마다 상태는 툴킷이 하나로 정한다(plan_docs) — 단계 표시줄과 같은 판단
+    const say = { none: "아직", writing: "쓰는 중", written: "초안 작성함 — 점검 전", old: "앞 작업의 문서 — 이번 기획으로 다시 씁니다", checked: "점검 마침" };
+    p.append(h("div", { class: "briefwait" }, h("b", { text: "기획 패키지를 만드는 중입니다 — 다 쓰고 점검까지 마치면 여기에 보입니다" }),
+      ...(S.detail.plan_docs || []).map((x) => h("div", { class: "gate2 " + (x.state === "none" ? "none" : x.state) },
+        x.state === "writing" ? ico("clock", "gw") : x.state === "written" ? ico("doc", "gw") : h("i"),
+        h("div", {}, h("span", { text: x.label }), h("div", { class: "f", text: say[x.state] || "" })))),
+      h("button", { class: "btn primary build", disabled: true, title: "기획이 끝나면 누를 수 있습니다" }, "이 기획으로 만들기")));
+    return;
+  }
   if (!S.briefDoc || !B.docs.some((d) => d.name === S.briefDoc)) S.briefDoc = B.docs[0].name;
   const main = B.docs.find((d) => d.name === "기획서.md");
   // 위 줄: 보기·내보내기·폴더 세 단추를 같은 너비로 꽉 차게 / 아래 줄: '이 기획으로 만들기'를 따로 한 줄 꽉 차게
@@ -1439,7 +1838,9 @@ async function briefPane(p) {
     h("button", { class: "btn sm", onclick: () => briefReader(B, S.briefDoc) }, ico("doc"), "크게 보기"),
     h("button", { class: "btn sm", onclick: (e) => { e.stopPropagation(); exportMenu(e.currentTarget, B); } }, ico("download"), "내보내기"),
     h("button", { class: "btn sm", title: "기획 패키지 폴더 열기", onclick: () => call("openFolder", B.folder) }, ico("folder"), "폴더 열기"),
-    main ? h("button", { class: "btn primary build", onclick: () => buildFromPlan(B.folder + "/기획서.md", B) }, "이 기획으로 만들기") : null));
+    main ? h("button", { class: "btn primary build", disabled: !ready, title: ready ? "" : "고치는 중입니다 — 끝나면 누를 수 있습니다",
+      onclick: () => buildFromPlan(B.folder + "/기획서.md", B) }, "이 기획으로 만들기") : null));
+  if (!ready) p.append(h("div", { class: "callout" }, ico("clock"), h("span", { text: "보내신 내용을 반영하는 중입니다 — 끝나면 고친 문서로 바뀝니다." })));
   p.append(briefCheck(chk));
   p.append(h("div", { class: "doctabs" }, ...B.docs.map((d) => h("button", { "data-name": d.name, class: (d.name === S.briefDoc ? "on" : "") + (d.attachment ? " att" : ""),
     onclick: () => { S.briefDoc = d.name; S.sig.right = ""; renderRight(); } }, d.title))));
@@ -1505,16 +1906,18 @@ async function protoData(md) {
     (cur ? secs[cur].lines : head).push(l);
   }
   // 화면 목록 표: 머리줄에서 '기능'·'화면' 칸을 찾는다
-  const rows = [], feat = {}, names = {};
+  const rows = [], feat = {}, names = {}, reqOf = {};
   for (let i = 0; i < lines.length; i++) {
     if (!/^\s*\|/.test(lines[i]) || !/^\s*\|\s*S\s*\|/i.test(lines[i])) continue;
     const cells = (t) => t.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
     const hd = cells(lines[i]), fi = hd.findIndex((c) => /기능|그룹|영역|메뉴/.test(c)), ni = hd.findIndex((c, k) => k > 0 && /화면|이름/.test(c));
+    const ri = hd.findIndex((c) => /관련\s*R|요구/.test(c));
     for (let j = i + 1; j < lines.length && /^\s*\|/.test(lines[j]); j++) {
       const c = cells(lines[j]); const m = (c[0] || "").match(/^S(\d{1,3})$/); if (!m) continue;
       const id = "S" + (+m[1]); rows.push(id);
       if (fi >= 0 && c[fi]) feat[id] = c[fi].replace(/\*\*/g, "");
       if (ni >= 0 && c[ni]) names[id] = c[ni].replace(/\*\*/g, "");
+      if (ri >= 0 && c[ri]) reqOf[id] = [...new Set((c[ri].match(/R\d{1,3}/g) || []).map((x) => "R" + (+x.slice(1))))];
     }
     break;
   }
@@ -1522,12 +1925,16 @@ async function protoData(md) {
   for (const f of r.data) { const m = f.name.match(/^S(\d{1,3})(?![0-9])/i); if (m && !files["S" + (+m[1])]) files["S" + (+m[1])] = f.html; }
   const ids = [...new Set([...rows, ...order, ...Object.keys(files)])].filter((id) => files[id] || secs[id]);
   const screens = {};
+  const rq = await call("briefReqs", S.current), reqText = rq.ok ? rq.data : {};
+  // 화면마다 맡는 요구사항 — 기획 내용이 어느 화면에 들어가는지 (화면 목록 표의 '관련 R')
+  const reqBox = (id) => (reqOf[id] || []).length ? `<div class="pv-reqs"><b>이 화면이 맡는 요구사항</b><ul>${reqOf[id].map((x) =>
+    `<li><span class="pv-rid">${x}</span> ${esc(reqText[x] || "")}</li>`).join("")}</ul></div>` : "";
   for (const id of ids) {
     const html = files[id] || "";
     const links = [...new Set([...html.matchAll(/(?:href|data-go)\s*=\s*["']?(?:[^"'>]*[\\/])?S(\d{1,3})(?![0-9])/gi)].map((m) => "S" + (+m[1])))];
     const body = (secs[id] ? secs[id].lines : []).filter((l) => !/^\s*(와이어프레임|프로토타입)\s*[:：]/.test(l)).join("\n");
     const file = r.data.find((f) => new RegExp(`^${id}(?![0-9])`, "i").test(f.name));
-    screens[id] = { name: names[id] || (secs[id] && secs[id].title) || id, html, notes: renderMd(body).outerHTML, links,
+    screens[id] = { name: names[id] || (secs[id] && secs[id].title) || id, html, notes: reqBox(id) + renderMd(body).outerHTML, links,
       src: file ? `beomproto:/${S.current}/${encodeURIComponent(file.name)}` : null };
   }
   const groups = [];
@@ -1547,30 +1954,37 @@ function docBody(B, name, text) {
 }
 // 내보내기 — 지금 보는 모습 그대로 한 파일(HTML, 그림 포함)로. PDF 는 그 HTML 을 인쇄해 만든다. 공유는 이 파일 하나면 된다
 const EXPORT_CSS = `
-:root{--t:#1d1d1b;--m:#5f5f58;--f:#8e8e86;--l:#e6e6e1;--s:#f6f6f3;--a:#19735f}
-*{box-sizing:border-box}body{margin:0;font:14px/1.75 "Pretendard Variable",Pretendard,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif;color:var(--t);background:#fff;word-break:keep-all;overflow-wrap:anywhere}
-.wrap{max-width:1240px;margin:0 auto;padding:44px 40px 80px}
+:root{--t:#1d1d1b;--m:#5f5f58;--f:#6e6e67;--l:#e6e6e1;--s:#f6f6f3;--a:#19735f}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 Pretendard,"Malgun Gothic","맑은 고딕","Apple SD Gothic Neo","Noto Sans KR",sans-serif;color:var(--t);background:#fff;word-break:keep-all;overflow-wrap:break-word}
+.wrap{max-width:1680px;margin:0 auto;padding:0 32px 80px}  /* 창 너비를 거의 다 — 좌우 여백은 32px 만 */
+.md p,.md li,.md blockquote{max-width:1100px}
+@media (max-width:640px){.wrap{padding:0 14px 60px}.md td,.md th{min-width:5.5em}.md td:first-child,.md th:first-child{min-width:3em}}  /* 휴대폰: 칸이 한 글자 폭으로 줄지 않게 — 표는 옆으로 밀어 본다 */  /* 문단 글줄만 너무 길지 않게 — 표·그림·화면은 전체 폭 */
 .cover{border-bottom:1px solid var(--l);padding-bottom:22px;margin-bottom:8px}.cover small{color:var(--f);font-size:12px}.cover h1{font-size:30px;line-height:1.3;margin:6px 0 4px;letter-spacing:-.03em}
-.cover p{color:var(--m);margin:0}.toc{display:flex;flex-wrap:wrap;gap:6px;margin:16px 0 0;padding:0}.toc a{font-size:13px;color:var(--t);text-decoration:none;border:1px solid var(--l);border-radius:999px;padding:4px 12px}
-section.doc{padding-top:28px}section.doc>.dt{font-size:12px;color:var(--a);font-weight:700;letter-spacing:.04em;margin:0}
-section.doc>.md,section.doc>.scrdoc{max-width:880px}
-.tabbed .toc{position:sticky;top:0;z-index:5;background:#fff;margin:0;padding:12px 0;border-bottom:1px solid var(--l)}
-.tabbed .toc a.on{background:var(--t);color:#fff;border-color:var(--t)}.tabbed .cover{border-bottom:none;padding-bottom:0}
+.cover p{color:var(--m);margin:0}.toc{display:flex;flex-wrap:wrap;gap:6px;margin:16px 0 0;padding:0}.toc a{font-size:14px;color:var(--t);text-decoration:none;border:1px solid var(--l);border-radius:999px;padding:5px 14px}
+section.doc{padding-top:28px}
+.tabbed section.doc>.md>h1:first-child,.tabbed .pv-over .md>h1:first-child{display:none}  /* 문서 맨 위 제목은 위 문서 탭과 겹친다 */
+.tabbed .cover{position:sticky;top:0;z-index:5;background:#fff;padding:14px 0 12px;margin:0 0 4px;border-bottom:1px solid var(--l)}
+.tabbed .cover h1{font-size:22px;margin:2px 0 0}.tabbed .cover p{display:none}  /* 문서를 넘겨도 제목과 문서 탭은 위에 남는다 */
+.tabbed .toc{margin:10px 0 0;padding:0}.tabbed .toc a.on{background:var(--t);color:#fff;border-color:var(--t)}
+.tabbed .wrap{padding-top:0}
 .tabbed section.doc{display:none}.tabbed section.doc.on{display:block}
 .static-only{display:none}
-.md h1{font-size:24px;margin:4px 0 10px;letter-spacing:-.02em;line-height:1.35}.md h2{font-size:18px;margin:30px 0 8px;padding-bottom:6px;border-bottom:1px solid var(--l)}.md h3{font-size:15px;margin:20px 0 6px}.md h4{font-size:14px;color:var(--m);margin:16px 0 4px}
+.md h1{font-size:26px;margin:4px 0 10px;letter-spacing:-.02em;line-height:1.35}.md h2{font-size:20px;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--l)}.md h3{font-size:17px;margin:22px 0 6px}.md h4{font-size:15px;color:var(--m);margin:16px 0 4px}
 .md p{margin:6px 0}.md ul,.md ol{margin:4px 0 10px;padding-left:22px}.md li{margin:3px 0}
-.md table{border-collapse:separate;border-spacing:0;width:100%;margin:10px 0;font-size:13px;border:1px solid var(--l);border-radius:10px;overflow:hidden}
-.md th,.md td{padding:7px 10px;text-align:left;vertical-align:top;border-top:1px solid var(--l);min-width:3.4em}.md tr:first-child th,.md tr:first-child td{border-top:none}.md th{background:var(--s);font-weight:650}
+.md table{border-collapse:separate;border-spacing:0;width:100%;margin:10px 0;font-size:14.5px;border:1px solid var(--l);border-radius:10px;overflow:hidden}
+.md th,.md td{padding:7px 10px;text-align:left;vertical-align:top;border-top:1px solid var(--l);min-width:3.4em;overflow-wrap:break-word;word-break:keep-all}
+.md td:first-child,.md th:first-child{white-space:nowrap}.md td:first-child{font-weight:600}
+.md table{display:block;overflow-x:auto}.md table>tbody,.md table>thead{display:table;width:100%}.md tr:first-child th,.md tr:first-child td{border-top:none}.md th{background:var(--s);font-weight:650}
 .md code{font-family:"Cascadia Mono",Consolas,monospace;font-size:12px;background:var(--s);border:1px solid var(--l);border-radius:5px;padding:1px 5px}
 .md pre{font-family:"Cascadia Mono",Consolas,monospace;font-size:12px;background:var(--s);border:1px solid var(--l);border-radius:10px;padding:12px 14px;white-space:pre-wrap}
-.md blockquote{margin:10px 0;padding:10px 14px;border-left:3px solid var(--a);background:var(--s);border-radius:0 10px 10px 0;color:var(--m)}
+.md blockquote{margin:10px 0;padding:2px 0 2px 14px;border-left:2px solid var(--l);color:var(--m)}
 .md hr{border:none;border-top:1px solid var(--l);margin:18px 0}.md a{color:var(--a);text-decoration:none;border-bottom:1px solid rgba(25,115,95,.35)}
 .scr{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:28px;padding:26px 0;border-top:1px solid var(--l);align-items:start}
 .scr-fig{display:flex;flex-direction:column;gap:14px;position:sticky;top:16px}.scr figure,.wfgrid figure{margin:0}
 .scr img,.wfgrid img{width:100%;height:auto;border:1px solid var(--l);border-radius:12px;background:#fff;display:block}
 figcaption{font-size:12px;color:var(--f);margin-top:4px}.scr-txt .md h2{margin-top:0;border:none;padding:0}
 .wfgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.flowfig{margin:12px 0;padding:14px;border:1px solid var(--l);border-radius:12px;background:#fff;overflow-x:auto;text-align:center}
 @media print{.tabbed section.doc{display:block!important}.static-only{display:block}.proto-mount{display:none}.wrap{padding:0;max-width:none}section.doc{break-before:page;padding-top:0}.cover+section.doc{break-before:auto}.scr{break-inside:avoid}.scr-fig{position:static}
 table,tr,figure,blockquote,pre{break-inside:avoid}.toc{display:none}a{border:none}}
 @page{size:A4;margin:14mm 13mm}`;
@@ -1588,14 +2002,77 @@ async function exportBrief(B, fmt) {
     for (const a of b.el.querySelectorAll("a.doclink[data-doc]")) { const k = docs.findIndex((x) => x.name === a.dataset.doc); a.setAttribute("href", k >= 0 ? "#doc-" + k : "#"); }
     for (const img of b.el.querySelectorAll("img")) img.removeAttribute("title");
     const inner = isScr && proto ? `<div class="proto-mount"></div><div class="static-only">${b.el.outerHTML}</div>` : b.el.outerHTML;
-    secs.push(`<section class="doc" id="doc-${i}"><p class="dt">${i + 1} · ${esc(d.title)}</p>${inner}</section>`);
+    secs.push(`<section class="doc" id="doc-${i}">${inner}</section>`);
   }
+  // 개발 인계 체크리스트는 문서 목록 끝에 있다(briefFiles) — 같은 길로 읽어 싣는다
   const title = (run.name || "기획") + " — 기획 패키지", day = new Date().toLocaleDateString("ko-KR");
   const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><style>${EXPORT_CSS}</style></head>`
     + `<body><div class="wrap"><header class="cover"><small>${esc(day)} · beom-workbench</small><h1>${esc(run.name || "기획")}</h1><p>기획 패키지 — ${docs.map((d) => esc(d.title)).join(" · ")}</p>`
     + `<nav class="toc">${docs.map((d, i) => `<a href="#doc-${i}">${i + 1}. ${esc(d.title)}</a>`).join("")}</nav></header>${secs.join("")}</div></body></html>`;
   const r = await call("exportBriefWith", S.current, html, fmt, JSON.stringify(proto ? { proto } : {}));
   if (r.ok && fmt !== "pdf") { toast("내보냈습니다 — " + r.data.html, 5000); call("openFolder", r.data.folder); }
+}
+// 업무 흐름 그림 — 기획 문서의 ```flow 블록('가 -> 나 : 조건' 한 줄씩)을 툴킷이 그린다 (에이전트가 그림을 직접 그리면 매번 모양이 달랐다).
+// '?' 로 끝나는 단계는 판단(마름모). 위에서 아래로, 같은 깊이는 한 줄에. 앞 단계로 돌아가는 화살표는 옆으로 돌린다.
+function flowSvg(src) {
+  const edges = [], nodes = [], idx = {};
+  const node = (t) => { t = t.trim(); if (!(t in idx)) { idx[t] = nodes.length; nodes.push({ t, q: /[?？]$/.test(t) }); } return idx[t]; };
+  for (const raw of String(src).split(/\r?\n/)) {
+    const line = raw.trim(); if (!line || line.startsWith("#")) continue;
+    const m = line.match(/^(.+?)\s*(?:->|→)\s*(.+?)(?:\s*[:：]\s*(.+))?$/);
+    if (m) edges.push({ a: node(m[1]), b: node(m[2]), label: (m[3] || "").trim() }); else node(line);
+  }
+  if (!nodes.length) return null;
+  // 깊이 — 처음 나온 단계부터 넓이 우선, 이미 깊이가 있는 곳으로 가는 화살표(되돌아감)는 깊이를 늘리지 않는다
+  const level = new Array(nodes.length).fill(-1), back = new Set();
+  const starts = nodes.map((_, i) => i).filter((i) => !edges.some((e) => e.b === i));
+  const q = (starts.length ? starts : [0]).map((i) => { level[i] = 0; return i; });
+  while (q.length) {
+    const a = q.shift();
+    edges.forEach((e, k) => { if (e.a !== a) return; if (level[e.b] === -1) { level[e.b] = level[a] + 1; q.push(e.b); } else if (level[e.b] <= level[a]) back.add(k); });
+  }
+  nodes.forEach((n, i) => { if (level[i] === -1) level[i] = 0; });
+  const rows = []; nodes.forEach((n, i) => { (rows[level[i]] = rows[level[i]] || []).push(i); });
+  const W = 168, H = 54, GX = 36, GY = 54, PAD = 24;
+  const widest = Math.max(...rows.map((r) => r.length));
+  const width = PAD * 2 + widest * W + (widest - 1) * GX + 120, pos = {};
+  rows.forEach((r, y) => {
+    const rowW = r.length * W + (r.length - 1) * GX, x0 = (width - 120 - rowW) / 2;
+    r.forEach((i, k) => { pos[i] = { x: x0 + k * (W + GX), y: PAD + y * (H + GY) }; });
+  });
+  const height = PAD * 2 + rows.length * H + (rows.length - 1) * GY;
+  const esc2 = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const wrapText = (t, n) => { const words = t.split(/\s+/), out = []; let cur = "";
+    for (const w of words) { if ((cur + " " + w).trim().length > n && cur) { out.push(cur); cur = w; } else cur = (cur + " " + w).trim(); }
+    if (cur) out.push(cur); return out.slice(0, 3); };
+  let svg = `<svg class="flow" viewBox="0 0 ${width} ${height}" width="${width}" style="max-width:100%;height:auto" role="img" aria-label="업무 흐름">`
+    + `<defs><marker id="fa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6b7280"/></marker></defs>`;
+  let backN = 0;
+  edges.forEach((e, k) => {
+    const a = pos[e.a], b = pos[e.b]; if (!a || !b) return;
+    let d, lx, ly;
+    if (level[e.a] === level[e.b]) {  // 같은 줄 — 가까운 옆면끼리 곧게
+      const l2r = b.x > a.x, x1 = l2r ? a.x + W : a.x, x2 = l2r ? b.x : b.x + W;
+      d = `M${x1} ${a.y + H / 2} L${x2 + (l2r ? -2 : 2)} ${b.y + H / 2}`; lx = (x1 + x2) / 2 - 10; ly = a.y + H / 2 - 6;
+    } else if (back.has(k)) {  // 되돌아가는 화살표 — 그 사이 줄들의 오른쪽 끝 바깥으로 돌린다 (다른 상자를 지나가지 않게)
+      const lo = Math.min(level[e.a], level[e.b]), hi = Math.max(level[e.a], level[e.b]);
+      const edge = Math.max(...nodes.map((_, i) => (level[i] >= lo && level[i] <= hi ? pos[i].x + W : 0)));
+      const rx = edge + 26 + (backN++ % 4) * 12;
+      d = `M${a.x + W} ${a.y + H / 2} L${rx} ${a.y + H / 2} L${rx} ${b.y + H / 2} L${b.x + W + 2} ${b.y + H / 2}`; lx = rx + 4; ly = (a.y + b.y) / 2 + H / 2;
+    } else {
+      const x1 = a.x + W / 2, y1 = a.y + H, x2 = b.x + W / 2, y2 = b.y, my = (y1 + y2) / 2;
+      d = `M${x1} ${y1} L${x1} ${my} L${x2} ${my} L${x2} ${y2 - 2}`; lx = x2 + 6; ly = my + (y2 - my) / 2 + 4;
+    }
+    svg += `<path d="${d}" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#fa)"/>`;
+    if (e.label) svg += `<text x="${lx}" y="${ly}" font-size="12" fill="#374151">${esc2(e.label)}</text>`;
+  });
+  nodes.forEach((n, i) => {
+    const p = pos[i], lines = wrapText(n.t, n.q ? 10 : 13), cy = p.y + H / 2 - (lines.length - 1) * 8 + 4;
+    svg += n.q ? `<path d="M${p.x + W / 2} ${p.y - 6} L${p.x + W + 6} ${p.y + H / 2} L${p.x + W / 2} ${p.y + H + 6} L${p.x - 6} ${p.y + H / 2} Z" fill="#fff7ed" stroke="#c2410c" stroke-width="1.5"/>`
+      : `<rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="10" fill="#f8fafc" stroke="#475569" stroke-width="1.5"/>`;
+    lines.forEach((l, k) => { svg += `<text x="${p.x + W / 2}" y="${cy + k * 16}" text-anchor="middle" font-size="13" fill="#111827">${esc2(l)}</text>`; });
+  });
+  return svg + "</svg>";
 }
 function esc(t) { return String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
 function exportMenu(anchor, B) {
@@ -1656,7 +2133,7 @@ function shotImg(path, title) {
 // ---------------------------------------------------------------- 오른쪽 패널
 function renderRight() {
   const D = S.detail; if (!D) return;
-  const sig = JSON.stringify([S.tab, D.stage, D.gates, D.requirements, D.checks, D.plan, D.items, D.run.cost_usd, D.run.tokens, D.checkpoints, S.changes, S.file, D.spec, D.handoff, D.run.round]);
+  const sig = JSON.stringify([S.tab, D.stage, (D.plan_docs || []).map((x) => x.state), D.gates, D.requirements, D.checks, D.plan, D.items, D.run.cost_usd, D.run.tokens, D.checkpoints, S.changes, S.file, D.spec, D.handoff, D.run.round]);
   if (sig === S.sig.right) return; S.sig.right = sig;
   const right = $("#right");
   const nfiles = S.changes ? S.changes.files.length : null;
@@ -1687,7 +2164,7 @@ function progressPane(p) {
       D.run.mode === "request" ? (reqs.length ? impl / reqs.length : 0) : D.items && D.items.total ? D.items.done / D.items.total : 0),
     stat(ck.cases ? `${ck.passed}/${ck.cases}` : "—", "케이스 통과", ck.cases ? ck.passed / ck.cases : 0),
     stat(gates.length ? `${gok}/${gates.length}` : "—", "완료 조건", gates.length ? gok / gates.length : 0),
-    stat(usageText(D.run) || "—", `사용량 · ${D.run.round || 0}라운드`))));
+    stat(D.run.tokens ? fmtTokens(D.run.tokens) : "—", `토큰 · ${D.run.round || 0}라운드`))));
   if (D.plan && D.plan.steps && D.plan.steps.length) {
     const done = D.plan.steps.filter((s) => s.status === "done").length;
     p.append(h("div", { class: "sec plan" }, h("h4", {}, "계획", h("span", { text: D.plan.approved ? `${done}/${D.plan.steps.length}` : "승인 전" })),
@@ -1815,6 +2292,9 @@ async function approveShown(what) {
     + (changed.length ? ` · 결정 ${changed.length}개를 바꿔 전달했습니다` : ""));
   refresh();
 }
+// 에이전트가 실제로 일하는 중인가 — 실행기가 살아 있어도 사용자를 기다리면(내 차례) 일하는 중이 아니다
+function isBusy() { const D = S.detail; return !!D && !!D.running && D.tone !== "turn"; }
+function gateOpen() { const D = S.detail; return !!D && (!D.running || ["waiting_approval", "waiting_plan"].includes(D.run.status) || !!S.edit); }
 function bothPending() { const D = S.detail; return !!(D && D.reviews && D.reviews.count && D.plan && D.plan.steps && D.plan.steps.length && !D.plan.approved); }
 async function refresh() {
   const lr = await call("listRuns"); if (lr.ok) S.runs = lr.data;
@@ -1832,14 +2312,14 @@ async function refresh() {
   } else if (!$("#homeText")) renderHome();
 }
 document.addEventListener("keydown", (e) => {
-  if (e.ctrlKey && (e.key === "n" || e.key === "N")) { e.preventDefault(); goHome(); }
+  if (modKey(e) && (e.key === "n" || e.key === "N")) { e.preventDefault(); goHome(); }
   if (e.key === "Escape" && openPop) { closePop(); return; }
-  if (e.ctrlKey && e.key === "Enter" && !S.current && !S.preparing) { e.preventDefault(); create(); return; }
+  if (modKey(e) && e.key === "Enter" && !S.current && !S.preparing) { e.preventDefault(); create(); return; }
   const tag = (e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "textarea" || !S.detail) return;  // 입력 중의 Ctrl+Enter 는 보내기 — 승인이 아님, Esc 도 멈춤이 아님
   if (e.key === "Escape" && S.detail.running) { call("stop", S.current).then(refresh); return; }
-  if (e.ctrlKey && e.key === "Enter") {
-    if (S.edit) return;
+  if (modKey(e) && e.key === "Enter") {
+    if (S.edit || !gateOpen()) return;  // 보이지 않는 카드를 단축키로 승인하지 않게
     if (bothPending()) approveShown("both");
     else if (S.detail.reviews && S.detail.reviews.count) approveShown("reviews");
     else if (S.detail.plan && S.detail.plan.steps && !S.detail.plan.approved) approveShown("plan");
@@ -1852,8 +2332,9 @@ document.addEventListener("keydown", (e) => {
     call("answer", S.current, perm.id, JSON.stringify(data)).then(refresh);
   }
 });
-function goHome() { closePop(); S.edit = null; S.current = null; S.detail = null; S.sig = { feed: "", right: "", side: "", cbar: "" }; S.preparing = false; renderSide(); renderHome(); }
+function goHome() { closePop(); delete S.draft.name; S.edit = null; S.current = null; S.detail = null; S.sig = { feed: "", right: "", side: "", cbar: "" }; S.preparing = false; renderSide(); renderHome(); }
 $("#newbtn").addEventListener("click", goHome);
+{ const k = $("#newbtn kbd"); if (k) k.textContent = MOD + " N"; }  // macOS 는 ⌘ N
 $("#runq").addEventListener("input", (e) => { S.runQ = e.target.value; renderSide(); });
 $("#runq").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.target.value = ""; S.runQ = ""; renderSide(); e.target.blur(); } });
 
@@ -1861,15 +2342,16 @@ new QWebChannel(qt.webChannelTransport, async (ch) => {
   api = ch.objects.api;
   api.created.connect((raw) => {
     const r = JSON.parse(raw); S.preparing = false;
-    if (r.error) { toast(r.error); renderHome(); return; }
-    S.draft.request = ""; S.draft.attachments = []; delete S.draft.new_branch; openRun(r.run_id).then(() => r.start && startRun());
+    if (r.error) { S.createError = r.error; renderHome(); return; }
+    S.createError = null;
+    S.draft.request = ""; S.draft.attachments = []; delete S.draft.name; delete S.draft.new_branch; openRun(r.run_id).then(() => r.start && startRun());
   });
   const b = await call("bootstrap");
   if (b.ok) applyLang(b.data.i18n);
   if (b.ok) { S.agents = b.data.agents; S.runs = b.data.runs; S.kinds = b.data.kinds; S.policy = b.data.default_policy; S.permModes = b.data.permission_modes || []; S.sandbox = b.data.sandbox || { ready: false }; $("#ver").textContent = "v" + b.data.version;
     const def = b.data.defaults || {};  // 지난번 새 작업의 선택
     S.defaults = def;
-    for (const k of ["agent", "model", "effort", "max_rounds", "plan_approval", "confirm_at", "auth"]) if (def[k] != null && def[k] !== "") S.draft[k] = def[k];
+    for (const k of ["agent", "model", "effort", "max_rounds", "plan_approval", "confirm_at", "auth", "depth"]) if (def[k] != null && def[k] !== "") S.draft[k] = def[k];
     if (def.policy) S.draft.policy = { ...def.policy };
     pickReadyAgent(); }
   const sc = await call("shortcutStatus"); if (sc.ok) S.shortcut = sc.data;
@@ -1888,10 +2370,19 @@ new QWebChannel(qt.webChannelTransport, async (ch) => {
   api.linkChecked.connect((raw) => { const r = JSON.parse(raw); S.links = S.links || {};
     S.links[r.url] = { state: r.ok ? "ok" : r.needs_login ? "login" : "error", error: r.error };
     if (r.needs_login) { toast("로그인이 필요한 링크입니다 — 앱 브라우저 창에서 로그인해 주세요", 7000); loginLink(r.url); }
-    if (!S.current) renderHome(); });
+    if (!S.current) renderHome(); else drawMsgAtts(); });
   api.linkSaved.connect((raw) => { const r = JSON.parse(raw); if (!r.path) return; const d = S.draft;
     d.attachments = (d.attachments || []).map((x) => (x === r.url ? r.path : x)); delete (S.links || {})[r.url];
-    toast("로그인한 페이지의 내용을 첨부했습니다", 5000); if (!S.current) renderHome(); });
+    S.msgAtts = (S.msgAtts || []).map((x) => (x === r.url ? r.path : x));
+    const had = (S.current ? S.msgAtts || [] : d.attachments || []).includes(r.path);
+    if (!had) addAtts([r.path]);
+    toast("가져온 화면을 첨부했습니다", 5000); if (!S.current) renderHome(); else { drawMsgAtts(); updateSendMode(); } });
+  if (api.browserToggled) api.browserToggled.connect((st) => {
+    S.browserOpen = st === "open";
+    document.getElementById("app").classList.toggle("browsing", S.browserOpen);  // 브라우저가 오른쪽 패널 자리를 대신한다
+    const b = document.querySelector("#head .linkbtn");
+    if (b) { b.classList.toggle("on", S.browserOpen); b.setAttribute("aria-pressed", String(S.browserOpen)); b.title = S.browserOpen ? "브라우저 닫기" : "오른쪽에 브라우저 열기"; }
+  });
   api.agentsChanged.connect((raw) => { S.agents = JSON.parse(raw); pickReadyAgent(); renderSide(); if (!S.current) renderHome(); });
   // 진행 중일 때만 자주(1.5초), 한가하면 5초, 창이 가려져 있으면 쉰다 — 앱이 쓸데없이 일하지 않게
   const tick = async () => {
@@ -1910,3 +2401,33 @@ new QWebChannel(qt.webChannelTransport, async (ch) => {
   setInterval(() => { if (!document.hidden) agentsNow(); }, 300000);
   window.addEventListener("focus", agentsNow);  // 로그인 터미널 등 다른 창에서 돌아왔을 때
 });
+
+// 영역 폭 끌기 — 사이드바와 오른쪽 판의 폭을 끌어 바꾼다 (이 PC 에 기억, 두 번 누르면 처음 폭)
+(function resizers() {
+  const app = document.getElementById("app"); if (!app) return;
+  const LIM = { side: [200, 380, 252], right: [300, 760, 360] };
+  const load = (k) => { try { return parseInt(localStorage.getItem("wb.w." + k) || "", 10) || 0; } catch (e) { return 0; } };
+  const keep = (k, v) => { try { localStorage.setItem("wb.w." + k, String(v)); } catch (e) { /* 저장 못 해도 이번에는 적용 */ } };
+  const set = (k, v) => { const [lo, hi] = LIM[k]; v = Math.max(lo, Math.min(hi, Math.round(v))); app.style.setProperty(k === "side" ? "--side-w" : "--right-w", v + "px"); return v; };
+  for (const k of ["side", "right"]) { const v = load(k); if (v) set(k, v); }
+  const place = () => {
+    const side = app.querySelector(".side"), right = app.querySelector(".right");
+    hs.l.style.left = (side ? side.getBoundingClientRect().right : 252) + "px";
+    hs.r.style.left = (right ? right.getBoundingClientRect().left : innerWidth - 360) + "px";
+  };
+  const hs = { l: h("div", { class: "resizer l", title: "끌어서 폭 바꾸기 — 두 번 누르면 처음 폭" }), r: h("div", { class: "resizer r", title: "끌어서 폭 바꾸기 — 두 번 누르면 처음 폭" }) };
+  app.append(hs.l, hs.r);
+  const drag = (k, el) => (e) => {
+    e.preventDefault(); el.classList.add("drag"); document.body.classList.add("resizing");
+    const move = (ev) => { const v = k === "side" ? ev.clientX : innerWidth - ev.clientX; set(k, v); place(); };
+    const up = (ev) => { removeEventListener("mousemove", move); removeEventListener("mouseup", up); el.classList.remove("drag"); document.body.classList.remove("resizing");
+      keep(k, parseInt(getComputedStyle(app).getPropertyValue(k === "side" ? "--side-w" : "--right-w"), 10) || LIM[k][2]); };
+    addEventListener("mousemove", move); addEventListener("mouseup", up);
+  };
+  hs.l.addEventListener("mousedown", drag("side", hs.l)); hs.r.addEventListener("mousedown", drag("right", hs.r));
+  hs.l.addEventListener("dblclick", () => { keep("side", set("side", LIM.side[2])); place(); });
+  hs.r.addEventListener("dblclick", () => { keep("right", set("right", LIM.right[2])); place(); });
+  new ResizeObserver(place).observe(app); new MutationObserver(place).observe(app, { attributes: true, attributeFilter: ["class"] });
+  place();
+})();
+

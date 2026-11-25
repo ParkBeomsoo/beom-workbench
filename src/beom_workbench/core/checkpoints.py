@@ -15,7 +15,23 @@ from beom_workbench.common.response import ToolError
 # 스냅샷에 넣지 않는 것 — 빌드 결과·의존성·캐시, 그리고 툴킷의 임시 폴더(명령 스크립트·내보내기). 라운드마다 쌓여 숨은 저장소가 불지 않게.
 EXCLUDE = [".git/", ".beom-workbench/", "node_modules/", "target/", "__pycache__/", ".venv/", "venv/", "dist/", "build/",
            ".beom/tmp/", ".next/", ".nuxt/", ".turbo/", ".gradle/", ".pytest_cache/", "coverage/", ".cache/"]
+# 변경 탭·파일 되돌리기에서 빼는 것 — 프로그램이 아닌 툴킷 작업 파일(.beom/: 합격 케이스·첨부)과 검증이 남기는 커버리지 데이터.
+# 작업 브랜치 커밋과 같은 기준이다 (프로그램만). 예전 실행의 숨은 저장소가 이미 추적하는 파일도 여기서 걸러진다.
+HIDDEN = [":(exclude).beom", ":(exclude,glob)**/.coverage", ":(exclude,glob)**/.coverage.*", ":(exclude,glob)**/htmlcov/**",
+          ":(exclude,glob)**/.nyc_output/**"]
 MAX_DIFF = 400_000
+
+
+def hidden(path: str) -> bool:
+    """변경 탭에 보이지 않는(되돌리지 않는) 경로인가."""
+    p = path.replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    name = p.rsplit("/", 1)[-1]
+    return p == ".beom" or p.startswith(".beom/") or name == ".coverage" or name.startswith(".coverage.") \
+        or "/htmlcov/" in "/" + p or "/.nyc_output/" in "/" + p
+
+
 _LIST_CACHE: dict[str, tuple] = {}
 
 
@@ -80,7 +96,7 @@ class Checkpoints:
         return tuple(out)
 
     def list(self) -> list[dict]:
-        if not (self.shadow / "HEAD").exists():
+        if not (self.shadow / "HEAD").exists() or not Path(self.root).is_dir():  # 작업 폴더를 지웠으면 되돌릴 곳도 없다 (git 이 그 폴더에서 못 돈다)
             return []
         key = str(self.shadow)
         stamp = self._stamp()
@@ -106,8 +122,9 @@ class Checkpoints:
         # 화면용 비교는 따로 둔 인덱스로 — 라운드 스냅샷(실행기)과 같은 인덱스를 동시에 잠그지 않게
         idx = self.shadow / "index.view"
         _git(self.shadow, self.root, "add", "-A", ".", index=idx)
-        stat = _git(self.shadow, self.root, "diff", "--cached", "--numstat", "--no-renames", base, check=False, index=idx).stdout
-        names = _git(self.shadow, self.root, "diff", "--cached", "--name-status", "--no-renames", base, check=False,
+        spec = ["--", ".", *HIDDEN]
+        stat = _git(self.shadow, self.root, "diff", "--cached", "--numstat", "--no-renames", base, *spec, check=False, index=idx).stdout
+        names = _git(self.shadow, self.root, "diff", "--cached", "--name-status", "--no-renames", base, *spec, check=False,
                      index=idx).stdout
         status = {}
         for line in names.splitlines():
@@ -122,8 +139,24 @@ class Checkpoints:
                 path = path.split(" => ")[-1].rstrip("}") if " => " in path else path
                 files.append({"path": path, "added": None if add == "-" else int(add), "removed": None if rem == "-" else int(rem),
                               "status": status.get(path, "M")})
-        diff = _git(self.shadow, self.root, "diff", "--cached", "--no-renames", base, check=False, index=idx).stdout
+        diff = _git(self.shadow, self.root, "diff", "--cached", "--no-renames", base, *spec, check=False, index=idx).stdout
         return {"files": files, "diff": diff[:MAX_DIFF], "truncated": len(diff) > MAX_DIFF, "base": base}
+
+    def revert_paths(self, base: str, paths: list[str]) -> list[str]:
+        """파일 몇 개만 그 체크포인트 상태로 — 그때 없던 파일은 지운다. 툴킷 작업 파일(.beom)은 건드리지 않는다."""
+        done = []
+        for rel in paths:
+            if hidden(rel):
+                continue
+            target = (self.root / rel).resolve()
+            if not str(target).startswith(str(self.root.resolve())) or target == self.root.resolve():
+                continue
+            if _git(self.shadow, self.root, "cat-file", "-e", f"{base}:{rel}", check=False).returncode == 0:
+                _git(self.shadow, self.root, "checkout", "-q", base, "--", rel)
+            elif target.is_file():
+                target.unlink()
+            done.append(rel)
+        return done
 
     def restore(self, checkpoint: str) -> dict:
         """대상 폴더를 그 체크포인트 상태로 되돌린다. 되돌리기 전 상태도 체크포인트로 남겨 다시 되돌릴 수 있다."""
@@ -131,11 +164,14 @@ class Checkpoints:
         if checkpoint not in known:
             raise ToolError("not_found", "없는 체크포인트")
         before = self.snapshot("되돌리기 전")
-        added = _git(self.shadow, self.root, "diff", "--name-only", "--no-renames", "--diff-filter=A", checkpoint, before).stdout.splitlines()
+        # 툴킷 작업 폴더(.beom — 합격 케이스·보조 파일)와 커버리지 기록은 되돌리지 않는다 — 변경 탭·파일 되돌리기와 같은 기준
+        added = _git(self.shadow, self.root, "diff", "--name-only", "--no-renames", "--diff-filter=A", checkpoint, before,
+                     "--", ".", *HIDDEN).stdout.splitlines()
+        added = [rel for rel in added if not hidden(rel)]
         for rel in added:
             p = (self.root / rel)
             if p.is_file() and str(p.resolve()).startswith(str(self.root.resolve())):
                 p.unlink()
-        _git(self.shadow, self.root, "checkout", "-q", checkpoint, "--", ".")
+        _git(self.shadow, self.root, "checkout", "-q", checkpoint, "--", ".", *HIDDEN)
         after = self.snapshot("되돌림")
         return {"restored": checkpoint, "removed_files": added, "undo": before, "now": after}

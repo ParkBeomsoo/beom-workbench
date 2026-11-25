@@ -27,8 +27,16 @@ from time import perf_counter
 from typing import Any, Callable
 
 
-class ToolError(Exception):
-    """도구 실행 중 예상된 실패 — envelope 의 errors 로 변환된다."""
+try:  # MCP 서버는 자기 오류 종류만 글을 에이전트에게 넘기고, 그 밖의 예외는 'Error executing tool …' 만 남긴다 (글이 지워진다)
+    from mcp.server.mcpserver.exceptions import ToolError as _SdkToolError
+except Exception:  # noqa: BLE001 — 서버 라이브러리 없이 쓰는 곳(앱·CLI)
+    _SdkToolError = Exception
+
+
+class ToolError(_SdkToolError):
+    """도구 실행 중 예상된 실패 — envelope 의 errors 로 변환된다. MCP 서버 라이브러리의 오류 종류에서 만들어, 도구가 이것을 던지면
+    까닭과 다음에 할 일이 에이전트에게 그대로 간다 (실험: wb_task 가 '프로젝트 파일을 찾지 못함'으로 실패했는데 Codex 에는
+    'Error executing tool wb_task' 만 보여 무엇을 고칠지 몰랐다)."""
 
     def __init__(self, code: str, message: str, recovery: str | None = None, data: Any = None) -> None:
         super().__init__(message)
@@ -36,6 +44,9 @@ class ToolError(Exception):
         self.message = message
         self.recovery = recovery
         self.data = data
+
+    def __str__(self) -> str:
+        return self.message + (f" — 다음에 할 일: {self.recovery}" if self.recovery else "")
 
 
 class Envelope:

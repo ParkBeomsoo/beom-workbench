@@ -44,20 +44,33 @@ t() {  # 안내 문구 하나 — 키 하나에 네 언어
   esac
 }
 
-if command -v pipx >/dev/null 2>&1; then PIPX="pipx"
-elif command -v python3 >/dev/null 2>&1; then
-  if ! python3 -m pipx --version >/dev/null 2>&1; then
-    t pipx
-    python3 -m pip install --user --quiet pipx || { t pipxFail; exit 1; }
-    python3 -m pipx ensurepath >/dev/null 2>&1 || true
+# Python 3.11 이상을 고른다 — macOS 의 기본 python3(/usr/bin)는 3.9 라 그대로 쓰면 pipx 가 설치를 거절한다
+PY=""
+for c in python3.13 python3.12 python3.11 python3; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+    PY="$(command -v "$c")"; break
   fi
-  PIPX="python3 -m pipx"
+done
+if [ -z "$PY" ]; then t needPy; exit 1; fi
+
+if command -v pipx >/dev/null 2>&1; then PIPX="pipx"
+elif [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+  # Homebrew 파이썬은 pip --user 를 막는다(PEP 668 externally-managed) — pipx 는 brew 로
+  t pipx
+  brew install pipx >/dev/null || { t pipxFail; exit 1; }
+  pipx ensurepath >/dev/null 2>&1 || true
+  PIPX="pipx"
 else
-  t needPy; exit 1
+  if ! "$PY" -m pipx --version >/dev/null 2>&1; then
+    t pipx
+    "$PY" -m pip install --user --quiet pipx || { t pipxFail; exit 1; }
+    "$PY" -m pipx ensurepath >/dev/null 2>&1 || true
+  fi
+  PIPX="$PY -m pipx"
 fi
 
 t install
-$PIPX install --force "$SPEC"
+$PIPX install --force --python "$PY" "$SPEC"
 BIN="$($PIPX environment --value PIPX_BIN_DIR)"
 WB="$BIN/beom-workbench"
 
@@ -65,6 +78,10 @@ t engines
 "$WB" setup --apply codebase-memory-mcp ast-grep >/dev/null || true
 "$WB" doctor >/dev/null || t engFail
 
+if [ "$(uname -s)" = "Darwin" ] && [ "${BEOM_SHORTCUT:-}" != "none" ]; then
+  # ~/Applications/beom-workbench.app — Finder·Launchpad·Spotlight 에서 연다 (BEOM_SHORTCUT=none 이면 만들지 않음)
+  "$WB" app --shortcut start >/dev/null && t scOk
+fi
 if [ "$(uname -s)" = "Linux" ]; then
   CHOICE="${BEOM_SHORTCUT:-}"
   if [ -z "$CHOICE" ] && [ -t 0 ]; then

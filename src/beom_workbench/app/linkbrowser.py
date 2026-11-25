@@ -2,7 +2,7 @@
 
 - 내용 파악이 목적이다. 기획서는 표·목록·그림(화면 설계·흐름도)·첨부 문서가 내용의 절반이라 화면 글만 베끼지 않는다:
   본문 HTML 을 마크다운으로 바꿔 구조를 살리고(접힌 블록도 포함), 그림과 첨부 파일은 이 창의 로그인으로 받아 같은 폴더에 둔다.
-- 컨플루언스·지라는 로그인한 세션으로 그 사이트의 REST API 를 불러 본문만 깨끗하게 받는다 — 페이지 + 하위 페이지 + 댓글 + 첨부,
+- 위키 문서·이슈는 페이지 자체(주소·페이지 정보)로 알아보고, 로그인한 세션으로 그 사이트의 REST API 를 불러 본문만 깨끗하게 받는다 — 페이지 + 하위 페이지 + 댓글 + 첨부,
   이슈 + 하위 작업 + 연결된 이슈 + 댓글 + 첨부. API 가 막혀 있으면 보이는 페이지의 본문 영역을 같은 방식으로 바꾼다.
 - 로그인 정보(쿠키)는 앱 화면과 분리된 전용 프로필에 남는다 (툴킷 홈의 cache/browser). 다음에 같은 사이트는 다시 로그인하지 않는다.
 - 이 창에는 앱의 내부 통로(QWebChannel)가 없다 — 외부 페이지가 앱 기능을 부를 수 없다.
@@ -19,7 +19,7 @@ from pathlib import Path
 from PySide6.QtCore import QTimer, QUrl, Signal
 from PySide6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEnginePage, QWebEngineProfile
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from beom_workbench.core import docs
 
@@ -99,6 +99,83 @@ _GRAB = r"""(() => {
 })()"""
 
 
+_COOKIES: dict = {}
+# 패널 겉모습 — 앱(app.css)의 '먹과 호박'과 같은 색·글꼴·모서리 (기본 Qt 단추는 앱과 따로 놀았다)
+PANE_QSS = """
+#pane { background: #f7f6f3; border-left: 1px solid rgba(40, 34, 24, .14); }
+#pane QLabel { color: #505a56; font-family: "Pretendard Variable", "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo"; font-size: 12px; }
+#pane QLabel#title { color: #1a1f1d; font-size: 14px; font-weight: 700; }
+#pane QLabel#host { color: #6b706d; font-size: 12px; }
+#pane QFrame#hint { background: #ffffff; border: 1px solid rgba(40, 34, 24, .12); border-radius: 10px; }
+#pane QFrame#hint QLabel { color: #505a56; font-size: 12px; }
+#pane QFrame#line { background: rgba(40, 34, 24, .12); max-height: 1px; min-height: 1px; border: 0; }
+#pane QLineEdit { border: 1px solid rgba(40, 34, 24, .18); border-radius: 15px; padding: 5px 12px; background: #efede8; color: #1a1f1d;
+  font-family: "Pretendard Variable", "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo"; font-size: 13px; selection-background-color: #f0b55a; min-height: 18px; }
+#pane QLineEdit:hover { background: #ebe8e2; }
+#pane QLineEdit:focus { border: 2px solid #a85a08; padding: 4px 11px; background: #ffffff; }
+#pane QPushButton { border: 1px solid rgba(40, 34, 24, .2); border-radius: 8px; padding: 6px 12px; background: #ffffff; color: #1a1f1d;
+  font-family: "Pretendard Variable", "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo"; font-size: 13px; font-weight: 600; min-height: 20px; }
+#pane QPushButton:hover { background: #efede8; }
+#pane QPushButton:focus { border: 2px solid #a85a08; padding: 5px 11px; }
+#pane QPushButton#primary { background: #a85a08; border-color: #a85a08; color: #ffffff; }
+#pane QPushButton#primary:hover { background: #bd6a12; }
+#pane QPushButton#allow:checked { background: #fdf1e1; border-color: #d99a4a; color: #7a4206; }
+#pane QPushButton:disabled { color: #8a8f8c; background: #efede8; border-color: rgba(40, 34, 24, .12); }
+#pane QToolButton { border: 0; border-radius: 8px; background: transparent; padding: 0; }
+#pane QToolButton:hover { background: #e9e6e0; }
+#pane QToolButton:pressed { background: #dedad2; }
+#pane QToolButton:focus { border: 2px solid #a85a08; }
+"""
+
+# 앱 화면과 같은 선 아이콘 (24 칸, 1.7 굵기) — Qt 기본 아이콘은 운영체제마다 모양이 달라 패널만 낯설어 보였다
+_ICONS = {
+    "back": '<path d="M14.5 6 8.5 12l6 6"/>',
+    "fwd": '<path d="M9.5 6l6 6-6 6"/>',
+    "reload": '<path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19 4.5v4h-4"/>',
+    "close": '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+    "globe": '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.3 3.6 5.1 3.6 8.5s-1.2 6.2-3.6 8.5M12 3.5C9.6 5.8 8.4 8.6 8.4 12s1.2 6.2 3.6 8.5"/>',
+    "camera": '<path d="M4 8.5h3l1.6-2.5h6.8L17 8.5h3v10H4z"/><circle cx="12" cy="13" r="3.3"/>',
+    "shield": '<path d="M12 3.5 19 6v5.5c0 4.2-3 7.6-7 9-4-1.4-7-4.8-7-9V6z"/>',
+}
+
+
+_BLANK = """<!doctype html><meta charset="utf-8"><style>
+html,body{height:100%;margin:0;background:#fbfaf8;font:13px/1.6 "Pretendard Variable",Pretendard,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:#505a56}
+.b{height:100%;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box}
+.c{max-width:320px;text-align:center}.c b{display:block;font-size:15px;color:#1a1f1d;margin-bottom:6px}
+ol{text-align:left;margin:14px 0 0;padding-left:20px}li{margin:4px 0}
+</style><div class="b"><div class="c"><b>위 주소창에 사이트 주소를 넣으세요</b>
+로그인이 필요한 관리자 화면·문서를 여기서 열고
+<ol><li>필요하면 이 안에서 로그인</li><li>원하는 화면에서 '이 화면 가져오기' — 대화에 첨부</li>
+<li>에이전트가 직접 찍어야 하면 '에이전트도 이 사이트 보기'</li></ol></div></div>"""
+
+
+def _icon(name: str, color: str = "#3d4441", size: int = 18):
+    from PySide6.QtCore import QByteArray, Qt
+    from PySide6.QtGui import QIcon, QPainter, QPixmap
+    from PySide6.QtSvg import QSvgRenderer
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="1.7" '
+           f'stroke-linecap="round" stroke-linejoin="round">{_ICONS[name]}</svg>')
+    pm = QPixmap(size * 3, size * 3)  # 고해상도 화면에서도 또렷하게
+    pm.fill(Qt.transparent)
+    pa = QPainter(pm)
+    QSvgRenderer(QByteArray(svg.encode())).render(pa)
+    pa.end()
+    pm.setDevicePixelRatio(3)
+    return QIcon(pm)
+
+
+def _ckey(c) -> tuple:
+    return (bytes(c.name()).decode("utf-8", "replace"), c.domain(), c.path())
+
+
+def _cdict(c) -> dict:
+    exp = c.expirationDate()
+    return {"name": bytes(c.name()).decode("utf-8", "replace"), "value": bytes(c.value()).decode("utf-8", "replace"), "domain": c.domain(),
+            "path": c.path() or "/", "secure": c.isSecure(), "httpOnly": c.isHttpOnly(),
+            **({"expires": int(exp.toSecsSinceEpoch())} if exp.isValid() else {})}
+
+
 def _profile(settings) -> QWebEngineProfile:
     if "p" not in _PROFILE:
         from beom_workbench.core import storage
@@ -109,6 +186,10 @@ def _profile(settings) -> QWebEngineProfile:
         prof.setCachePath(str(root / "cache"))
         prof.setHttpCacheMaximumSize(50 * 1024 * 1024)  # 문서 몇 개 읽는 창 — 캐시가 끝없이 커지지 않게
         prof.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
+        store = prof.cookieStore()
+        store.cookieAdded.connect(lambda c: _COOKIES.__setitem__(_ckey(c), _cdict(c)))
+        store.cookieRemoved.connect(lambda c: _COOKIES.pop(_ckey(c), None))
+        store.loadAllCookies()
         _PROFILE["p"] = prof
     return _PROFILE["p"]
 
@@ -143,43 +224,177 @@ def text_len(doc: docs.LinkDoc) -> int:
     return sum(len(re.sub(r"\x00IMG\d+\x00", "", md).strip()) for _, md in doc.parts)
 
 
-class LinkBrowser(QDialog):
-    """로그인 창. 가져오면 saved(url, 문서 .md 경로), 닫으면 saved(url, "")."""
+class LinkBrowser(QWidget):
+    """앱 오른쪽 브라우저 패널 — 로그인하고 지금 보이는 화면·문서를 가져온다(saved(첨부 키, .md 경로)), 그 사이트를 에이전트가 찍게
+    허락한다(로그인 상태를 툴킷 홈에 — browser_auth). 닫으면 saved(키, "") 와 closed. 대화 옆 패널에 두어 대화를 보면서 쓴다."""
     saved = Signal(str, str)
+    closed = Signal()
 
-    def __init__(self, settings, url: str, parent=None):
+    def __init__(self, settings, url: str = "", parent=None):
         super().__init__(parent)
         self.settings, self.url, self._done = settings, url, False
         self._queue: list[dict] = []
         self._files: dict[str, tuple[bytes, str]] = {}
         self._doc: docs.LinkDoc | None = None
         self._dl = None
-        self.setWindowTitle("로그인하고 문서 가져오기")
-        self.resize(1100, 820)
         self.profile = _profile(settings)
         self.view = QWebEngineView(self)
         self.view.setPage(_Page(self.profile, self.view))
-        self.info = QLabel("이 창에서 로그인해 주세요. 문서가 보이면 '이 문서 가져오기'를 누르세요 — 본문·표·그림·첨부 파일을 함께 가져옵니다.")
+        from PySide6.QtCore import QSize
+        from PySide6.QtWidgets import QFrame, QToolButton
+
+        def tool(name, tip, fn):
+            b = QToolButton()
+            b.setIcon(_icon(name))
+            b.setIconSize(QSize(18, 18))
+            b.setFixedSize(30, 30)
+            b.setToolTip(tip)
+            b.clicked.connect(fn)
+            return b
+        # 1줄: 제목 — 오른쪽 끝에 닫기 (머리줄의 '브라우저' 단추를 다시 눌러도 닫힌다)
+        mark = QLabel()
+        mark.setPixmap(_icon("globe", "#a85a08", 16).pixmap(16, 16))
+        title = QLabel("브라우저")
+        title.setObjectName("title")
+        self.host = QLabel("")
+        self.host.setObjectName("host")
+        close = tool("close", "브라우저 닫기 — 위 '브라우저' 단추를 다시 눌러도 닫힙니다", self.close_pane)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        head.addWidget(mark)
+        head.addWidget(title)
+        head.addWidget(self.host, 1)
+        head.addWidget(close)
+        # 2줄: 이동 — 뒤로·앞으로·새로 고침 + 둥근 주소창
+        self.back_btn = tool("back", "뒤로", self.view.back)
+        self.fwd_btn = tool("fwd", "앞으로", self.view.forward)
+        reload_ = tool("reload", "새로 고침", self.view.reload)
+        self.addr = QLineEdit()
+        self.addr.setPlaceholderText("주소를 넣고 Enter — 예: admin.example.com")
+        self.addr.returnPressed.connect(self._go)
+        nav = QHBoxLayout()
+        nav.setSpacing(2)
+        for w in (self.back_btn, self.fwd_btn, reload_):
+            nav.addWidget(w)
+        nav.addSpacing(6)
+        nav.addWidget(self.addr, 1)
+        # 3줄: 안내와 할 일 — 카드 하나에
+        self.info = QLabel("로그인이 필요하면 아래 화면에서 로그인하세요. 원하는 화면에서 '이 화면 가져오기'를 누르면 화면 모습과 내용이 첨부됩니다.")
         self.info.setWordWrap(True)
-        self.grab_btn = QPushButton("이 문서 가져오기")
+        self.grab_btn = QPushButton(_icon("camera", "#ffffff", 16), " 이 화면 가져오기")
         self.grab_btn.setDefault(True)
         self.grab_btn.clicked.connect(self._grab)
-        cancel = QPushButton("닫기")
-        cancel.clicked.connect(self.close)
-        top = QHBoxLayout()
-        top.addWidget(self.info, 1)
-        top.addWidget(cancel)
-        top.addWidget(self.grab_btn)
+        self.allow_btn = QPushButton(_icon("shield", "#7a4206", 16), " 에이전트도 이 사이트 보기")
+        self.allow_btn.setObjectName("allow")
+        self.allow_btn.setCheckable(True)
+        self.allow_btn.setToolTip("이 사이트에 로그인한 상태로 에이전트가 필요한 메뉴 화면을 찍게 합니다 (12시간). 비밀번호·쿠키는 에이전트에게 가지 않습니다.")
+        self.allow_btn.clicked.connect(self._toggle_allow)
+        acts = QHBoxLayout()
+        acts.setSpacing(6)
+        acts.addWidget(self.grab_btn)
+        acts.addWidget(self.allow_btn)
+        acts.addStretch(1)
+        self.grab_btn.setObjectName("primary")
+        card = QFrame()
+        card.setObjectName("hint")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(12, 10, 12, 10)
+        cl.setSpacing(8)
+        cl.addWidget(self.info)
+        cl.addLayout(acts)
+        line = QFrame()
+        line.setObjectName("line")
+        self.setObjectName("pane")
+        from PySide6.QtCore import Qt as _Qt
+        self.setAttribute(_Qt.WA_StyledBackground, True)  # 없으면 #pane 배경이 칠해지지 않고 운영체제 회색이 보인다
+        self.setStyleSheet(PANE_QSS)
+        top = QVBoxLayout()
+        top.setContentsMargins(14, 11, 10, 10)
+        top.setSpacing(9)
+        top.addLayout(head)
+        top.addLayout(nav)
+        top.addWidget(card)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
         lay.addLayout(top)
-        lay.addWidget(self.view, 1)
-        self.view.urlChanged.connect(lambda u: self.setWindowTitle(f"로그인하고 문서 가져오기 — {u.host()}"))
+        lay.addWidget(line)
+        lay.addWidget(self.view, 1)  # 웹 화면은 패널 끝까지 — 여백 없이
+        self.view.urlChanged.connect(self._url_changed)
         self.profile.downloadRequested.connect(self._download_requested)
-        self.view.load(QUrl(url))
+        if url:
+            self.view.load(QUrl(url))
+        else:
+            self._blank()
+
+    def _blank(self) -> None:
+        """주소 없이 열었을 때 — 흰 빈칸 대신 무엇을 하면 되는지."""
+        self.view.setHtml(_BLANK)
+        self.addr.clear()
+        self.host.clear()
+        self.grab_btn.setEnabled(False)  # 가져올 화면이 아직 없다 (안내 화면은 urlChanged 가 늦거나 오지 않는다)
+
+    def open(self, url: str, key: str = "") -> None:
+        """다른 주소로 — key 는 가져오면 바꿀 첨부(로그인이 필요했던 링크)."""
+        self.url, self._done = key or url, False
+        self.grab_btn.setEnabled(True)
+        if url:
+            self.view.load(QUrl(url))
+        elif not self.view.url().host():
+            self._blank()
+
+    def _go(self) -> None:
+        u = self.addr.text().strip()
+        if u and not re.match(r"https?://", u):
+            u = "https://" + u
+        if u:
+            self.view.load(QUrl(u))
+
+    def _host(self) -> str:
+        return self.view.url().host().lower()
+
+    def _url_changed(self, u) -> None:
+        web = u.scheme() in ("http", "https")
+        self.addr.setText(u.toString() if web else "")  # 안내 화면(about:blank·data:)의 주소는 보이지 않게
+        self.host.setText(u.host() if web else "")
+        self.grab_btn.setEnabled(web)
+        h = self.view.history()
+        self.back_btn.setEnabled(h.canGoBack())
+        self.fwd_btn.setEnabled(h.canGoForward())
+        self._sync_allow()
+
+    def _sync_allow(self) -> None:
+        from beom_workbench.core import browser_auth
+        host = self._host()
+        on = any(h["host"] == host for h in browser_auth.hosts(self.settings)) if host else False
+        self.allow_btn.setChecked(on)  # 켜져 있으면 눌린 모양 — 다시 누르면 끊는다
+        self.allow_btn.setText(" 에이전트 허락됨 — 눌러서 끊기" if on else " 에이전트도 이 사이트 보기")
+        self.allow_btn.setEnabled(bool(host))
+
+    def _toggle_allow(self) -> None:
+        from beom_workbench.core import browser_auth
+        host = self._host()
+        if not host:
+            return
+        if any(h["host"] == host for h in browser_auth.hosts(self.settings)):
+            browser_auth.forget(self.settings, host)
+            self.info.setText(f"{host} — 에이전트 허락을 끊었습니다.")
+        else:
+            got = browser_auth.allow(self.settings, host, list(_COOKIES.values()))
+            self.info.setText(f"{host} — 에이전트가 로그인한 상태로 이 사이트의 화면을 찍을 수 있습니다 (12시간, 쿠키 {got['cookies']}개). "
+                              "로그인을 마친 뒤에 눌러야 그 상태가 쓰입니다.")
+        self._sync_allow()
+
+    def close_pane(self) -> None:
+        if not self._done and self.url:
+            self.saved.emit(self.url, "")
+        self._done = True
+        self.hide()
+        self.closed.emit()
 
     # ---- 1단계: 문서 조각
     def _grab(self) -> None:
+        self._shot = self.view.grab()  # 누른 순간 보이는 화면 — 관리자 화면처럼 글보다 모양이 중요한 페이지의 근거
         self.grab_btn.setEnabled(False)
         self.info.setText("가져오는 중…")
         self._polls = 0
@@ -274,17 +489,13 @@ class LinkBrowser(QDialog):
         slug = re.sub(r"[^\w가-힣-]+", "-", doc.title or "page")[:40].strip("-") or "page"
         folder = links_dir(self.settings) / f"{slug}-{time.strftime('%Y%m%d-%H%M%S')}"
         f = doc.write(folder, self._files)
+        shot = getattr(self, "_shot", None)
+        if shot is not None and not shot.isNull() and shot.save(str(Path(f).parent / "화면.png"), "PNG"):
+            with open(f, "a", encoding="utf-8") as out:  # 읽을 거리에 함께 — 에이전트가 그림으로 읽는다
+                out.write("\n\n## 가져올 때 보이던 화면\n\n로그인한 창에서 '가져오기'를 누른 순간의 모습이다 — 이 화면의 틀·메뉴·버튼·목록 배치를 따른다.\n\n"
+                          "![가져올 때 보이던 화면](화면.png)\n")
         shutil.rmtree(self._tmp(), ignore_errors=True)
-        self._done = True
         self.saved.emit(self.url, str(f))
-        self.close()
-
-    def closeEvent(self, e) -> None:  # noqa: N802
-        try:
-            self.profile.downloadRequested.disconnect(self._download_requested)
-        except (RuntimeError, TypeError):
-            pass
-        if not self._done:
-            self.saved.emit(self.url, "")
-            self._done = True
-        super().closeEvent(e)
+        self.url, self._doc, self._files = "", None, {}  # 패널은 열린 채 — 다음 화면도 가져올 수 있다
+        self.grab_btn.setEnabled(True)
+        self.info.setText("가져왔습니다 — 대화 입력창의 첨부에 넣었습니다. 다른 화면도 가져올 수 있습니다.")

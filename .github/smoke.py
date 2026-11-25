@@ -52,7 +52,8 @@ def core() -> None:
         assert (work / "inside.txt").is_file() and not outside.exists() and b"captured=piped" in out.stdout
     if sys.platform != "win32":
         s = sandbox.claude_settings({"target_root": str(repo), "policy": {}})["sandbox"]
-        assert s["enabled"] and s["allowUnsandboxedCommands"] is False, s
+        # 격리는 켜고, 막힌 명령은 권한 확인을 거쳐 격리 밖에서 다시 시도할 수 있다 (권한 규칙이 허락·카드·거절을 정한다)
+        assert s["enabled"] and s["allowUnsandboxedCommands"] is True and s["autoAllowBashIfSandboxed"] is False, s
     print("core ok")
 
 

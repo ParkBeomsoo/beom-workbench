@@ -10,8 +10,8 @@ import sys
 from importlib import resources
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QEvent, QObject, QRectF, Qt, QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPixmap
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
 from PySide6.QtWebEngineCore import (QWebEnginePage, QWebEngineSettings, QWebEngineUrlRequestJob, QWebEngineUrlScheme,
@@ -65,6 +65,8 @@ class ProtoHandler(QWebEngineUrlSchemeHandler):
             if f.suffix.lower() not in (".html", ".htm") or not f.is_file() or f.is_symlink() or f.stat().st_size > 3 * 1024 * 1024:
                 raise FileNotFoundError(f)
             html = f.read_text(encoding="utf-8", errors="replace")
+            from beom_workbench.core import wfkit
+            html = wfkit.inline(html, d)  # 공통 부품(_kit.css)을 화면 안에 — 격리된 틀은 바깥 파일을 읽지 않는다
         except Exception:  # noqa: BLE001 — 없는 화면·잘못된 주소
             job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
             return
@@ -80,45 +82,39 @@ class ProtoHandler(QWebEngineUrlSchemeHandler):
 APP_NAME = "beom-workbench"
 APP_ID = "beom.workbench.app"
 BG = "#f6f6f3"
+BRAND = "#a85a08"  # app.css --signal (밝은 테마) — 아이콘 '작업대'의 호박
 
 
 def _icon_pixmap(size: int) -> QPixmap:
-    """작업 표시줄·트레이 아이콘 — 비취색 바탕에 흰 마름모 테두리와 속 (사이드바 로고와 같은 모양)."""
+    """작업 표시줄·트레이·바로가기 아이콘 — 사이드바 로고와 같은 파일(web/mark.svg)을 그린다 (따로 그리면 비율이 어긋났다)."""
+    from PySide6.QtSvg import QSvgRenderer
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
-    s = size / 64
-    g = QLinearGradient(QPointF(0, 0), QPointF(size, size))
-    g.setColorAt(0, QColor("#22876f"))
-    g.setColorAt(1, QColor("#155e4e"))
-    p.setPen(Qt.NoPen)
-    p.setBrush(g)
-    p.drawRoundedRect(QRectF(2 * s, 2 * s, 60 * s, 60 * s), 15 * s, 15 * s)
-
-    def diamond(cx: float, cy: float, r: float) -> QPainterPath:
-        path = QPainterPath()
-        path.moveTo(cx * s, (cy - r) * s)
-        path.lineTo((cx + r) * s, cy * s)
-        path.lineTo(cx * s, (cy + r) * s)
-        path.lineTo((cx - r) * s, cy * s)
-        path.closeSubpath()
-        return path
-
-    pen = QPen(QColor("#ffffff"), 5.5 * s)
-    pen.setJoinStyle(Qt.MiterJoin)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    p.drawPath(diamond(32, 32, 17))
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor("#ffffff"))
-    p.drawPath(diamond(32, 32, 6.5))
+    # 32px 이하(작업 표시줄·탭)는 그림자 없는 작은 판 — 큰 판의 그림자·얇은 금색이 작은 크기에서 뭉개졌다
+    art = "mark-small.svg" if size <= 32 else "mark.svg"
+    QSvgRenderer(QByteArray((web_root() / art).read_bytes())).render(p, QRectF(0, 0, size, size))
     p.end()
     return pm
 
 
-def write_icon_files(home: Path) -> Path:
-    """바로가기용 아이콘 파일 — app.ico(여러 크기 PNG 를 담은 ICO)와 app.png. 앱 창이 없어도 그린다."""
+def refresh_icon_files(home: Path) -> None:
+    """바로가기가 가리키는 아이콘 파일이 있는데 지금 그림과 다르면 다시 쓴다 — 로고를 바꿔도 바로가기는 예전 그림으로 남았다."""
+    ico = home / "app" / "app.ico"
+    if not ico.is_file():
+        return
+    try:
+        old = ico.read_bytes()
+        new_ico = write_icon_files(home, dry=True)
+        if new_ico != old:
+            write_icon_files(home)
+    except Exception:  # noqa: BLE001 — 아이콘을 못 써도 앱은 그대로
+        pass
+
+
+def write_icon_files(home: Path, dry: bool = False):
+    """바로가기용 아이콘 파일 — app.ico(여러 크기 PNG 를 담은 ICO)와 app.png. 앱 창이 없어도 그린다. dry=True 면 쓰지 않고 ICO 바이트만."""
     import struct
 
     from PySide6.QtCore import QBuffer, QByteArray, QIODevice
@@ -126,7 +122,8 @@ def write_icon_files(home: Path) -> Path:
 
     if QGuiApplication.instance() is None:
         _app = QGuiApplication([])  # noqa: F841 — 그림을 그리려면 하나 있어야 한다
-    home.mkdir(parents=True, exist_ok=True)
+    if not dry:
+        home.mkdir(parents=True, exist_ok=True)
     blobs = []
     for size in (16, 24, 32, 48, 64, 128, 256):
         ba = QByteArray()
@@ -140,6 +137,8 @@ def write_icon_files(home: Path) -> Path:
         entries += struct.pack("<BBBBHHII", size % 256, size % 256, 0, 0, 1, 32, len(png), offset)
         data += png
         offset += len(png)
+    if dry:
+        return head + entries + data
     ico = home / "app" / "app.ico"  # 바로가기가 가리키므로 지워도 되는 cache/ 가 아니라 app/
     ico.parent.mkdir(parents=True, exist_ok=True)
     ico.write_bytes(head + entries + data)
@@ -236,6 +235,14 @@ class Window(QMainWindow):
         self.settings = settings or load_settings()
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(app_icon())
+        try:  # 앱 바깥 부품(브라우저 패널의 단추·주소창)도 앱과 같은 글꼴로
+            from PySide6.QtGui import QFontDatabase
+            QFontDatabase.addApplicationFont(str(web_root() / "fonts" / "PretendardVariable.woff2"))
+            for f in (Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "malgun.ttf",):
+                if f.is_file():
+                    QFontDatabase.addApplicationFont(str(f))
+        except Exception:  # noqa: BLE001 — 글꼴이 없으면 시스템 글꼴
+            pass
         self.resize(1400, 880)
         self.setMinimumSize(1080, 680)
         self.view = QWebEngineView(self)
@@ -259,7 +266,14 @@ class Window(QMainWindow):
         page.setWebChannel(self.channel)
         self.view.setContextMenuPolicy(Qt.NoContextMenu)
         self.view.load(QUrl.fromLocalFile(str(web_root() / "index.html")))
-        self.setCentralWidget(self.view)
+        # 앱 화면 | 브라우저 패널 — 다른 작업 도구처럼 대화 옆에 붙는다 (처음에는 닫혀 있다)
+        from PySide6.QtWidgets import QSplitter
+        self.split = QSplitter(Qt.Horizontal, self)
+        self.split.addWidget(self.view)
+        self.split.setChildrenCollapsible(False)
+        self.view.setMinimumWidth(640)
+        self.browser = None
+        self.setCentralWidget(self.split)
         self.tray = QSystemTrayIcon(app_icon(), self)
         self.tray.setToolTip(APP_NAME)
         self.tray.activated.connect(lambda *_: (self.showNormal(), self.activateWindow()))
@@ -267,6 +281,33 @@ class Window(QMainWindow):
         self.tray.show()
         self.api.notify.connect(self._notify)
         self.api.attention.connect(self._flash)
+
+    def show_browser(self, url: str = "", key: str = "") -> None:
+        """오른쪽 브라우저 패널 — 처음 열 때 만든다. 가져온 화면은 대화 입력창(또는 새 작업)의 첨부로 간다."""
+        import json as _json
+
+        from beom_workbench.app.linkbrowser import LinkBrowser
+        if self.browser is None:
+            self.browser = LinkBrowser(self.settings, "", self.split)
+            self.browser.setMinimumWidth(420)
+            self.browser.setMaximumWidth(720)  # 대화가 눌리지 않게 — 넓게 보려면 창을 키운다
+            self.split.setStretchFactor(0, 1)
+            self.split.setStretchFactor(1, 0)
+            self.browser.saved.connect(lambda u, p: self.api.linkSaved.emit(_json.dumps({"url": u, "path": p}, ensure_ascii=False)))
+            self.browser.closed.connect(lambda: self.api.browserToggled.emit("closed"))
+            self.split.addWidget(self.browser)
+        if not self.browser.isVisible():
+            self.browser.show()
+            from PySide6.QtCore import QTimer as _QT
+
+            def size():  # 앱의 오른쪽 패널 자리를 브라우저가 대신한다 — 대화는 그대로 넓게 (앱 화면 780px 이상)
+                w = max(self.split.width(), self.width())
+                pane = max(420, min(640, w - 780))
+                self.split.setSizes([w - pane, pane])
+            _QT.singleShot(0, size)
+            _QT.singleShot(200, size)  # 패널이 처음 자리 잡은 뒤 한 번 더 (처음 한 번은 크기 힌트에 밀렸다)
+        self.browser.open(url, key)
+        self.api.browserToggled.emit("open")
 
     def _dropped(self, paths: list[str]) -> None:
         import json
@@ -342,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setWindowIcon(app_icon())
     w = Window()
     w.show()
+    refresh_icon_files(w.settings.home)
 
     def tidy():  # 예전 배치 옮기기·오래된 휴지통 비우기·남은 파일 정리 — 창을 띄운 뒤 뒤에서 (실패해도 앱은 그대로)
         try:

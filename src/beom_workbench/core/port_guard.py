@@ -17,9 +17,10 @@ import getpass
 import hashlib
 import json
 import os
+import re
 import subprocess
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from beom_workbench.core import ledger
 
@@ -27,7 +28,9 @@ SKIP_DIRS = {".git", "node_modules", "target", "__pycache__", ".venv", "venv", "
              ".pytest_cache", ".mypy_cache", ".next", ".gradle"}
 MAX_FILES = 20000
 MAX_FILE_BYTES = 4 * 1024 * 1024
-HUMAN_CHANNELS = {"mcp-elicitation", "cli-tty", "desktop-app"}
+# decision-change: 사용자가 계획 카드에서 결정을 바꾼 결과로 고친 기준 — 사용자의 선택이 승인이다 (실행기만 이 채널로 승인한다).
+# 이 이름이 빠져 있어 결정을 바꾼 실행이 자동 승인에서 멈췄다 (실험 128)
+HUMAN_CHANNELS = {"mcp-elicitation", "cli-tty", "desktop-app", "decision-change"}
 
 
 def _now() -> str:
@@ -43,18 +46,32 @@ def _sha(obj) -> str:
 
 def _git_files(root: Path) -> list[str] | None:
     try:
-        out = subprocess.run(["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z"],
+        out = subprocess.run(["git", "-C", str(root), "ls-files", "-co", "-t", "--exclude-standard", "-z"],
                              capture_output=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if out.returncode != 0:
         return None
-    # -C 로 들어간 폴더 기준 상대 경로로 나온다 (하위 폴더가 대상이면 그 아래만)
-    return sorted(p for p in out.stdout.decode("utf-8", "replace").split("\0") if p and not _toolkit_path(p))
+    # -C 로 들어간 폴더 기준 상대 경로로 나온다 (하위 폴더가 대상이면 그 아래만). -t 로 추적('H' 등)·미추적('?')을 가른다
+    files = []
+    for entry in out.stdout.decode("utf-8", "replace").split("\0"):
+        tag, _, rel = entry.partition(" ")
+        if not rel or _toolkit_path(rel) or (tag == "?" and _generated(rel)):
+            continue
+        files.append(rel)
+    return sorted(files)
+
+
+def _generated(rel: str) -> bool:
+    """추적하지 않는 빌드·캐시 산출물 — .gitignore 가 없어도 지문에 넣지 않는다. 검증·테스트가 돌 때마다 생기는
+    __pycache__ 같은 것이 지문을 바꾸면 '검증 뒤 대상 코드가 바뀜' 으로 방금 한 검증이 무효가 된다."""
+    parts = rel.split("/")
+    return rel.endswith((".pyc", ".pyo")) or any(p in SKIP_DIRS for p in parts[:-1])
 
 
 def _toolkit_path(rel: str) -> bool:
-    return rel.startswith(".beom/") or "/.beom/" in rel
+    # .gitignore 는 프로그램이 아니다 — 툴킷이 인계 때 .beom/ 을 더하면 '검증 뒤 코드가 바뀜'이 되어 다시 검증하느라 한 라운드를 더 썼다 (실험 135)
+    return rel.startswith(".beom/") or "/.beom/" in rel or rel == ".gitignore" or rel.endswith("/.gitignore")
 
 
 def _walk_files(root: Path) -> list[str]:
@@ -62,6 +79,8 @@ def _walk_files(root: Path) -> list[str]:
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and d != ".beom")
         for f in sorted(filenames):
+            if f == ".gitignore":
+                continue
             files.append(Path(dirpath, f).relative_to(root).as_posix())
             if len(files) >= MAX_FILES:
                 return files
@@ -88,16 +107,25 @@ def _file_digest(p: Path, st) -> bytes:
 _FP: dict[str, tuple[float, str]] = {}
 
 
-def target_fingerprint(root: str | Path, fresh: bool = False, max_age: float = 0) -> str:
+def target_fingerprint(root: str | Path, fresh: bool = False, max_age: float = 0, extra: list | tuple = ()) -> str:
     """대상 저장소의 파일 목록·내용 지문 (git 이면 추적+미추적(무시 제외) 파일, 아니면 흔한 빌드 폴더 제외).
     max_age: 화면 표시용 — 그 초 안에 잰 값이 있으면 다시 걷지 않는다 (검증·완료 판정은 언제나 새로)."""
     # 파일 목록은 매번 새로 (다른 프로세스 — 에이전트의 MCP 서버 — 가 남긴 지문과 맞아야 한다). 내용은 _file_digest 캐시로.
     import time
-    key = str(Path(root).resolve())
+    key = str(Path(root).resolve()) + "|" + "|".join(str(x) for x in extra)
     hit = _FP.get(key)
     if max_age and not fresh and hit and time.monotonic() - hit[0] < max_age:
         return hit[1]
     value = _fingerprint(Path(root))
+    if extra:  # 대상 폴더 밖(같은 저장소)에 매핑한 구현 파일 — 바뀌면 검증이 낡았다
+        h = hashlib.sha256(value.encode())
+        for p in extra:
+            p = Path(p)
+            try:
+                h.update(str(p).encode() + b"\0" + _file_digest(p, p.stat()))
+            except OSError:
+                h.update(str(p).encode() + b"\0missing")
+        value = h.hexdigest()
     _FP[key] = (time.monotonic(), value)
     return value
 
@@ -126,9 +154,23 @@ def _fingerprint(root: Path) -> str:
 
 # ---------------------------------------------------------------- 케이스 규칙
 
-def case_rules(cases: list[dict]) -> dict[str, str]:
-    """케이스 이름 → 내용(입력·비교 규칙) 지문. 이름이 같은데 지문이 다르면 케이스가 바뀐 것."""
-    return {c.get("name") or f"#{i}": _sha({k: v for k, v in c.items() if k != "name"}) for i, c in enumerate(cases)}
+RULES_V = 2  # 케이스 지문의 방식 — 2: 선택자·기다리는 시간을 뺀다. 1(표시 없음)로 남은 예전 기록과는 예전 방식으로 견준다
+
+
+def case_rules(cases: list[dict], legacy: bool = False) -> dict[str, str]:
+    """케이스 이름 → 내용(입력·비교 규칙) 지문. 이름이 같은데 지문이 다르면 케이스가 바뀐 것.
+    화면 요소를 찾는 방법(선택자·기다리는 시간)은 무엇을 확인하는지가 아니다 — 그것만 고쳐도 사용자 승인을 다시 기다렸다.
+    legacy: 예전 방식(전부 넣음) — 예전 방식으로 남은 기록과 견줄 때."""
+    pick = (lambda c: c) if legacy else _shown
+    return {c.get("name") or f"#{i}": _sha(pick({k: v for k, v in c.items() if k != "name"})) for i, c in enumerate(cases)}
+
+
+def rules_of(detail: dict, other: dict) -> tuple[dict, dict]:
+    """두 기록(detail·other)의 케이스 지문을 같은 방식으로 — 한쪽이 예전 방식이면 둘 다 예전 방식으로."""
+    if detail.get("rules_v") == other.get("rules_v"):
+        return detail.get("rules") or {}, other.get("rules") or {}
+    old = lambda d: d.get("rules_legacy") if d.get("rules_v") else d.get("rules")  # noqa: E731
+    return old(detail) or {}, old(other) or {}
 
 
 def case_change(baseline: dict[str, str], rules: dict[str, str]) -> dict | None:
@@ -237,6 +279,138 @@ def is_approved(conn, port_id: str, item_id: str, fp: str) -> bool:
     return (item_id, fp) in _approved(_logs(conn, port_id))
 
 
+# ---------------------------------------------------------------- 원래 있던 테스트
+
+BASELINE_FILE_MAX, BASELINE_TOTAL_MAX = 100_000, 2_000_000
+
+
+def record_baseline(conn, port_id: str, root: Path, store: Path | None = None) -> None:
+    """작업을 시작할 때(첫 요구사항·슬라이스 단계, 코드를 고치기 전) 원래 있던 테스트 파일을 기록 사슬에 남긴다 — 한 번만.
+    원래 테스트는 '예전 동작' 을 기대한다. 요청으로 동작이 바뀌면 고쳐야 하지만, 맞추려고 고치거나 지우면 회귀를 가린다.
+    바뀐 것은 사람이 차이를 보고 확인한다 (tests_changed).
+    store: 원래 소스를 둘 파일 (원장 폴더) — 바꾼 함수를 부르는 기존 코드(연관된 곳)를 찾을 때 쓴다 (impact). 사슬에는 지문만."""
+    if any(lg["action"] == "baseline_tests" for lg in _logs(conn, port_id)):
+        return
+    from beom_workbench.core import layout
+    root = Path(root)
+    files, total = {}, 0
+    for f in sorted(layout.test_files(root)):
+        try:
+            data = Path(f).read_bytes()
+        except OSError:
+            continue
+        ent = {"sha": hashlib.sha256(data).hexdigest()}
+        if len(data) <= BASELINE_FILE_MAX and total + len(data) <= BASELINE_TOTAL_MAX:
+            ent["text"] = data.decode("utf-8", "replace")
+            total += len(data)
+        files[os.path.relpath(f, root).replace("\\", "/")] = ent
+    extra = {}
+    if store is not None:
+        from beom_workbench.core import impact
+        text = json.dumps(impact.snapshot(root), ensure_ascii=False)
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(text, encoding="utf-8")
+        extra = {"sources_file": store.name, "sources_sha": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+    record(conn, port_id, "baseline_tests", {"files": files, **extra})
+
+
+def baseline(conn, port_id: str) -> dict | None:
+    return next((lg["payload"] for lg in _logs(conn, port_id) if lg["action"] == "baseline_tests"), None)
+
+
+def baseline_sources(conn, port_id: str, folder: Path) -> dict:
+    """작업을 시작할 때 기록한 원래 소스 {경로: {sha, text?}} — 기록이 없거나 파일이 기록 뒤에 바뀌었으면 {}."""
+    b = baseline(conn, port_id) or {}
+    f = Path(folder) / b["sources_file"] if b.get("sources_file") else None
+    if not f or not f.is_file():
+        return {}
+    text = f.read_text(encoding="utf-8")
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != b.get("sources_sha"):
+        return {}  # 툴킷 밖에서 바뀐 기록 — 쓰지 않는다
+    return json.loads(text)
+
+
+def tests_changed(conn, port_id: str, root: Path) -> list[dict] | None:
+    """원래 있던 테스트 중 바뀌거나 지워진 것 — [{file, state, diff}] (없으면 None)."""
+    import difflib
+    base = baseline(conn, port_id)
+    if not base:
+        return None
+    out = []
+    for rel, ent in sorted((base.get("files") or {}).items()):
+        try:
+            now = (Path(root) / rel).read_bytes()
+        except OSError:
+            now = None
+        if now is not None and hashlib.sha256(now).hexdigest() == ent["sha"]:
+            continue
+        if now is None:
+            diff = "(지움)"
+        elif "text" in ent:
+            old_l, new_l = ent["text"].splitlines(), now.decode("utf-8", "replace").splitlines()
+            ops = difflib.SequenceMatcher(None, [x.rstrip() for x in old_l], [x.rstrip() for x in new_l], autojunk=False).get_opcodes()
+            if all(tag in ("equal", "insert") for tag, *_ in ops):
+                continue  # 원래 줄은 그대로 두고 테스트를 더하기만 함 — 원래 기대를 바꾸지 않았다
+            diff = "\n".join(difflib.unified_diff(old_l, new_l, f"{rel} (원래)", f"{rel} (지금)", lineterm="", n=1))[:4000]
+        else:
+            diff = "(파일이 커서 차이를 보여 주지 못함)"
+        out.append({"file": rel, "state": "deleted" if now is None else "changed", "diff": diff})
+    return out or None
+
+
+def measurable(root: Path, rel: str, browser: set | None = None) -> bool:
+    """툴킷이 합격 케이스를 돌리며 이 파일의 실행 범위를 잴 수 있나 — 케이스가 띄우는 파이썬·node 프로세스에서 도는 파일.
+    브라우저에서 도는 화면 코드(페이지가 불러오는 JS·JSX 등)와 다른 언어는 못 잰다 (사람 확인 카드로)."""
+    from beom_workbench.core import layout, port
+    if not rel.endswith((".py", *port.NODE_RUN_EXTS)):
+        return False
+    if browser is None:
+        browser = layout.browser_files(root)
+    return rel.replace("\\", "/") not in browser
+
+
+def coverage_gap(conn, port_id: str) -> dict | None:
+    """구현 파일이 모두 툴킷이 잴 수 없는 언어이고 측정 기록도 없으면 그 파일들 — 사람 확인으로 넘길 것.
+    없으면 에이전트가 커버리지 도구를 찾고 설치하려 하거나, 없는 '생략 승인' 을 사용자에게 요청하며 같은 자리를 돈다."""
+    last = conn.execute("SELECT detail FROM port_check WHERE port_id = ? AND kind = 'adequacy:target' ORDER BY rowid DESC LIMIT 1",
+                        (port_id,)).fetchone()
+    if last:
+        # 측정은 됐지만 도구가 읽지 못한 화면 코드(JSX 등)가 있으면 그것만 사람 확인으로
+        rows = (json.loads(last["detail"]) if isinstance(last["detail"], str) else last["detail"] or {}).get("rows") or []
+        files = sorted({r["target"].rsplit(":", 1)[0] for r in rows if r.get("unmeasurable")})
+        return {"files": files, "exts": sorted({PurePosixPath(f).suffix for f in files})} if files else None
+    if conn.execute("SELECT 1 FROM port_check WHERE port_id = ? AND kind LIKE 'adequacy%' LIMIT 1", (port_id,)).fetchone():
+        return None
+    row = conn.execute("SELECT target_root FROM port WHERE id = ?", (port_id,)).fetchone()
+    if not row:
+        return None
+    root = Path(row["target_root"])
+    files = sorted({m.group(1).replace("\\", "/") for r in conn.execute(
+        "SELECT target_ref FROM port_map WHERE port_id = ? AND status = 'ported'", (port_id,)).fetchall()
+        if (m := re.fullmatch(r"(.+?):\d+", r["target_ref"] or ""))})
+    files = [f for f in files if not f.startswith(".beom/")]
+    from beom_workbench.core import layout
+    browser = layout.browser_files(root)
+    if not files or any(measurable(root, f, browser) for f in files):
+        return None
+    return {"files": files, "exts": sorted({PurePosixPath(f).suffix or PurePosixPath(f).name for f in files})}
+
+
+_HOW_KEYS = {"selector", "selectors", "sel", "wait_ms", "wait", "timeout", "timeout_ms"}
+
+
+def _shown(ex: dict) -> dict:
+    """기대값 승인의 지문에 넣을 것 — 사용자가 승인하는 것(무엇을 넣고 무엇이 나와야 하는지). 목록 안 순서와 화면 요소를 찾는 방법
+    (선택자·기다리는 시간)은 뺀다. 실험: 케이스 하나를 끼워 넣거나 선택자만 고쳐도 순서가 밀린 뒤 케이스까지 모두 다시 승인을 기다렸다."""
+    def strip(v):
+        if isinstance(v, dict):
+            return {k: strip(x) for k, x in v.items() if k not in _HOW_KEYS}
+        if isinstance(v, list):
+            return [strip(x) for x in v]
+        return v
+    return strip({k: v for k, v in ex.items() if k != "order"})
+
+
 def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | None) -> list[dict]:
     """사람 확인이 필요한 항목과 승인 여부. 지문은 '지금 보여 줄 내용' 기준 — 내용이 바뀌면 예전 승인은 무효."""
     approved = _approved(_logs(conn, port_id))
@@ -266,10 +440,11 @@ def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | Non
         items.append({"item_id": r["item_id"], "kind": "omitted", "fingerprint": fp,
                       "summary": f"생략: {r['label']} — 사유: {r['note']}", "proposed_by": r["actor"]})
     for name, ex in sorted(((last_capture or {}).get("detail", {}).get("expectations") or {}).items()):
-        fp = _sha({"name": name, **ex})
+        fp = _sha({"name": name, **_shown(ex)})
+        legacy_fp = _sha({"name": name, **ex})  # 예전 방식으로 승인한 것도 그대로 인정한다
         src = ex["source"]
         was = "원본에 없음(새 동작)" if ex["new"] else f"원본 status {src['status']} {src['body']}"
-        items.append({"item_id": f"expect:{name}", "kind": "expectation", "fingerprint": fp,
+        items.append({"item_id": f"expect:{name}", "kind": "expectation", "fingerprint": fp, "legacy_fingerprint": legacy_fp,
                       "summary": f"기대값 '{name}' — {'원본에 없는 새 동작' if ex['new'] else '원본과 다르게'}",
                       "detail": [{"case": name, "diff": f"{was[:200]} → 기대 {json.dumps(ex['expect'], ensure_ascii=False)[:200]}"}]})
     change = (last_capture or {}).get("detail", {}).get("change") if last_capture else None
@@ -278,8 +453,50 @@ def reviews(conn, port_id: str, last_diff: dict | None, last_capture: dict | Non
         items.append({"item_id": f"cases:{last_capture['id']}", "kind": "case_change", "fingerprint": fp,
                       "summary": f"케이스 변경 — 빠짐 {len(change['removed'])}개, 바뀜 {len(change['changed'])}개 (이전 capture 대비)",
                       "detail": change})
+    root_row = conn.execute("SELECT target_root FROM port WHERE id = ?", (port_id,)).fetchone()
+    changed = tests_changed(conn, port_id, Path(root_row["target_root"])) if root_row and root_row["target_root"] else None
+    if changed:
+        items.append({"item_id": "tests", "kind": "tests_changed", "fingerprint": _sha(changed),
+                      "summary": f"원래 있던 테스트 {len(changed)}개를 바꾸거나 지움 — 원래 테스트는 예전 동작을 기대합니다. "
+                                 "요청으로 동작이 바뀐 만큼만 고쳤는지 차이를 보고 승인하세요",
+                      "detail": [{"case": c["file"], "diff": c["diff"]} for c in changed[:20]]})
+    imp = conn.execute("SELECT detail FROM port_check WHERE port_id = ? AND kind = 'impact' ORDER BY rowid DESC LIMIT 1",
+                       (port_id,)).fetchone()
+    if imp:
+        d = json.loads(imp["detail"]) if isinstance(imp["detail"], str) else imp["detail"] or {}
+        left = [c for c in d.get("callers") or [] if c.get("executed") is not True]
+        if left:
+            items.append({"item_id": "impact", "kind": "impact", "fingerprint": _sha(left),
+                          "summary": f"바꾼 함수를 부르는 기존 코드 {len(left)}곳을 합격 케이스가 거치지 않음 — 이 동작들이 그대로인지 "
+                                     "확인되지 않았습니다. 영향이 없거나 따로 확인했으면 승인하세요",
+                          "detail": {"files": [f"{c['target']} {c['caller']} → {', '.join(c['calls'])}" for c in left[:20]]}})
+    rules = conn.execute("SELECT detail FROM port_check WHERE port_id = ? AND kind = 'screen_rules' ORDER BY rowid DESC LIMIT 1",
+                         (port_id,)).fetchone()
+    if rules:
+        d = json.loads(rules["detail"]) if isinstance(rules["detail"], str) else rules["detail"] or {}
+        found = d.get("findings") or []
+        if d.get("held"):  # 자동 실행 — 에이전트가 고치지 않고 두기로 한 곳(까닭과 함께)만. 나머지는 에이전트가 고칠 차례다
+            found = [f for f in found if f.get("kept")]
+        if found:
+            # 지문은 파일·내용으로만 — 줄 번호를 넣으면 다른 곳을 고쳐 줄이 밀릴 때마다 승인한 카드가 다시 뜬다
+            # 개수가 든 요약(공백만 바꾼 줄 N곳 등)은 숫자를 빼고 — 개수만 바뀌어도 승인한 카드가 다시 떴다
+            fp = _sha(sorted({(f["at"].rsplit(":", 1)[0], re.sub(r"\d+", "#", f["summary"])) for f in found}))
+            reuse = sum(1 for f in found if f.get("kind") == "reuse")
+            parts = ([f"다른 화면들과 다르게 만든 곳 {len(found) - reuse}개"] if len(found) > reuse else []) +                     ([f"이미 있는 문구·함수·클래스·값 목록을 다시 만든 곳 {reuse}개"] if reuse else [])
+            items.append({"item_id": "screen_rules", "kind": "screen_rules", "fingerprint": fp,
+                          "summary": " · ".join(parts) + " — 이 프로젝트의 기존 코드(근거)와 견준 결과입니다. 일부러 그렇게 한 것이 "
+                                     "맞으면 승인하세요",
+                          "detail": {"files": [f"{f['at']} {f['summary']}" + (f" ← {f['evidence'][0]}" if f.get("evidence") else "")
+                                               + (f" — 그대로 둔 까닭: {f['kept']}" if f.get("kept") else "")
+                                               for f in found[:20]]}})
+    gap = coverage_gap(conn, port_id)
+    if gap:
+        items.append({"item_id": "coverage", "kind": "coverage_unmeasured", "fingerprint": _sha(gap),
+                      "summary": f"실행 범위 측정 불가 ({', '.join(gap['exts'])}) — 툴킷이 이 파일들의 실행 범위를 재지 못해 케이스·테스트가 "
+                                 "구현 코드를 모두 거쳤는지 확인하지 못했습니다. 합격 케이스·화면 확인·테스트 결과로 충분하면 승인하세요",
+                      "detail": {"files": gap["files"]}})
     for it in items:
-        it["approved"] = (it["item_id"], it["fingerprint"]) in approved
+        it["approved"] = (it["item_id"], it["fingerprint"]) in approved or (it["item_id"], it.pop("legacy_fingerprint", None)) in approved
     return items
 
 

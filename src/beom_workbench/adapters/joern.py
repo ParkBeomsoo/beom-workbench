@@ -69,14 +69,29 @@ def find_java21() -> str | None:
     explicit = os.environ.get("BEOM_WORKBENCH_JAVA_HOME")
     if explicit and Path(explicit).exists():
         return explicit
+    import sys
+    if sys.platform == "darwin":  # macOS 는 JDK 자리를 java_home 이 안다 (/Library/Java/JavaVirtualMachines/…/Contents/Home)
+        import subprocess
+        for v in ("21", "23", "25"):
+            try:
+                r = subprocess.run(["/usr/libexec/java_home", "-v", v], capture_output=True, timeout=10)
+            except (OSError, subprocess.SubprocessError):
+                break
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.decode("utf-8", "replace").strip()
     candidates = []
     for base in (Path.home() / ".jdks", Path("C:/Program Files/Java"), Path("C:/Program Files/Microsoft"),
-                 Path("C:/Program Files/Eclipse Adoptium"), Path("/usr/lib/jvm")):
+                 Path("C:/Program Files/Eclipse Adoptium"), Path("/usr/lib/jvm"), Path("/opt/homebrew/opt"), Path("/usr/local/opt")):
         if base.exists():
-            candidates.extend(p for p in base.iterdir() if p.is_dir())
+            for p in base.iterdir():
+                if p.is_dir():  # Homebrew 의 openjdk@21 은 libexec/openjdk.jdk/Contents/Home 아래에 bin 이 있다
+                    home = p / "libexec" / "openjdk.jdk" / "Contents" / "Home"
+                    candidates.append(home if home.is_dir() else p)
     for p in sorted(candidates, key=lambda p: p.name, reverse=True):
         name = p.name.lower()
-        if any(tag in name for tag in ("-21", "21.", "jdk21", "jdk-21", "ms-21", "-23", "23.", "-25", "25.")):
+        if p.name == "Home":  # Homebrew openjdk@21/libexec/openjdk.jdk/Contents/Home — 버전은 위쪽 폴더 이름에
+            name = p.parents[3].name.lower()
+        if any(tag in name for tag in ("-21", "21.", "jdk21", "jdk-21", "ms-21", "@21", "-23", "23.", "@23", "-25", "25.", "@25")):
             if (p / "bin" / ("java.exe" if os.name == "nt" else "java")).exists():
                 return str(p)
     return None

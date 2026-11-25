@@ -120,12 +120,3 @@ def get(conn, ev_id: str) -> dict:
     return row
 
 
-def revalidate(conn, project: dict, ev: dict) -> list[str]:
-    """근거 위치의 스니펫이 아직 같은지 재검사 (증분 재분석용). 바뀐 위치 목록 반환."""
-    stale = []
-    for loc in ev["locations"]:
-        try:
-            validate_location(conn, project, loc)
-        except ToolError:
-            stale.append(f"{loc['path']}:{loc['start_line']}-{loc['end_line']}")
-    return stale

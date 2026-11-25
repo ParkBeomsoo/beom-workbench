@@ -33,6 +33,14 @@ def system_language() -> str | None:
             code = locale.windows_locale.get(langid)
         except (AttributeError, OSError):
             code = None
+    elif sys.platform == "darwin":  # Finder 에서 연 앱에는 LANG 이 없고, 있어도 터미널 설정이다 — 시스템 언어는 AppleLanguages
+        try:
+            import subprocess
+            out = subprocess.run(["defaults", "read", "-g", "AppleLanguages"], capture_output=True, timeout=5).stdout.decode("utf-8", "replace")
+            m = re.search(r'"?([a-zA-Z]{2})[-_"\s,]', out)
+            code = m.group(1) if m else None
+        except (OSError, subprocess.SubprocessError):
+            code = None
     if not code:
         for var in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
             if os.environ.get(var):

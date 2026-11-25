@@ -109,6 +109,8 @@ wb_unit_next(agent) → wb_unit_context(unit_id, agent) [next_offset 이 있으�
      "다르다"가 아니라 "바꾼 값이 맞다"까지 검증된다. 원본에 없는 새 동작은 `new: true` + `expect`.
      기대값은 사용자가 원하는 동작을 말해 준 대로 적고, 대상 코드의 출력을 그대로 베껴 기대값으로 만들지 않는다.
      기대값도 사용자 승인 대상이다 (원본 응답과 기대값을 나란히 보여 준다).
+     다른 언어로 옮길 때 원본 런타임의 산물(JS 의 `undefined`·`[object Object]` 문자열화, 원본식 숫자 표기, UTF-16 길이,
+     옵션을 원본 정규식 문법으로 해석)은 재현하지 않고 대상 언어의 자연스러운 동작(예: `TypeError`)을 `expect` 로 적는다.
    - 값까지 정할 수 없는 차이(형식만 다름 등)는 `wb_port_accept`(사유 필수)로 **제안**만 한다. 생략(omitted)과
      capture 사이의 케이스 삭제·변경도 같다 — 모두 사용자 승인 전까지 게이트 미충족.
    - 원본을 계측할 수 없으면(릴리스 빌드 바이너리 등) `target_coverage_report`(+`target_coverage_cmd`)로 대상 커버리지를 잰다.
