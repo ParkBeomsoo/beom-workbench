@@ -574,7 +574,7 @@ class LinkDoc:
 
     @property
     def via(self) -> str:
-        return {"confluence-api": "컨플루언스 API(로그인한 세션)", "jira-api": "지라 API(로그인한 세션)",
+        return {"confluence-api": "위키 API(로그인한 세션)", "jira-api": "이슈 API(로그인한 세션)",
                 "page-login": "앱 브라우저에서 로그인한 페이지", "page": "공개 페이지"}.get(self.how, self.how)
 
 

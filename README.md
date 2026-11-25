@@ -190,10 +190,12 @@ Keyboard shortcuts use ⌘ on macOS (⌘N new task, ⌘Enter start or approve) a
 time with a note on how to re-save them (detected by content, not just extension). Links are saved so the agent can understand
 them, not just as flat text: the page is converted to Markdown that keeps headings, lists and tables (merged cells included) and
 collapsed sections, and its images and attached files are downloaded next to it (Word, PowerPoint and Excel attachments are also
-converted to text) — a spec page is often half tables and screen mock-ups. For a page behind a login (e.g. Confluence, Jira) the app
-asks you to sign in: it opens the browser panel, you log in there and press **Get this document**. For Confluence it reads the
-page through the site's own REST API with that signed-in session, together with its child pages, comments and attachments; for Jira,
-the issue with its description, sub-tasks, linked issues, comments and attachments. Other sites use the main content of the page.
+converted to text) — a spec page is often half tables and screen mock-ups. For a page behind a login (an internal wiki, an issue
+tracker, an admin screen) the app asks you to sign in: it opens the browser panel, you log in there and press **Get this document**.
+Pages of one widely used wiki and issue tracker pair (recognized by the page ID or issue key in the page, nothing to configure) are
+read through the site's own REST API with that signed-in session: a wiki page with its child pages, comments and attachments, an
+issue with its description, sub-tasks, linked issues, comments and attachments. Every other site — other wikis and trackers included —
+uses the main content of the signed-in page, with the images and files it links to; child pages and comments are not followed.
 Sign-ins are kept in a separate app profile (clear them under **Storage → Document sign-ins**).
 
 **Browser panel** — the *Browser* button in the run header opens a browser on the right side of the window; press it again (or ✕) to

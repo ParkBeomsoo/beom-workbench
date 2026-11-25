@@ -517,7 +517,7 @@ function linkPop(anchor, d) {
     h("button", { class: "pi", onclick: () => { const u = input.value.trim(); closePop(); call("openBrowser", /^https?:\/\//.test(u) ? u : ""); } },
       h("span", { class: "pl" }, h("b", { text: "오른쪽 브라우저에서 열기" })),
       h("span", { class: "pd", text: "로그인해 여러 화면을 둘러보며 가져오거나, 에이전트가 그 사이트 화면을 찍게 허락합니다" })),
-    h("div", { class: "pnote", text: "공개 페이지는 바로 내용을 가져옵니다. 로그인이 필요한 페이지(개발·스테이징 관리자 화면, 컨플루언스·지라 등)는 앱 안의 브라우저 창이 열립니다 — 로그인하고 원하는 화면으로 간 뒤 '이 페이지 가져오기'를 누르면 그 화면 캡처와 내용이 첨부됩니다. 로그인 정보는 에이전트에게 넘어가지 않습니다." })) });
+    h("div", { class: "pnote", text: "공개 페이지는 바로 내용을 가져옵니다. 로그인이 필요한 페이지(개발·스테이징 관리자 화면, 사내 위키·이슈 관리 등)는 앱 안의 브라우저 창이 열립니다 — 로그인하고 원하는 화면으로 간 뒤 '이 페이지 가져오기'를 누르면 그 화면 캡처와 내용이 첨부됩니다. 로그인 정보는 에이전트에게 넘어가지 않습니다." })) });
   setTimeout(() => input.focus(), 0);
 }
 function attachPop(anchor, d) {
@@ -535,7 +535,7 @@ function attachPop(anchor, d) {
       h("span", { class: "pl" }, h("b", { text: "파일 선택" })), h("span", { class: "pd", text: "md · txt · pdf · docx · pptx · xlsx · hwpx · 이미지 — 오피스·한글 문서는 글로 바꿔 함께 넘깁니다. 한글 .hwp 는 HWPX 로 저장해 주세요" })),
     h("div", { class: "pt sub2", text: "링크" }),
     h("div", { class: "pf", style: "border:none;margin:0;padding-top:0" }, link),
-    h("div", { class: "pnote", text: "공개 페이지는 내용을 저장해 넘깁니다. 로그인이 필요한 페이지(컨플루언스·지라·개발·스테이징 관리자 화면 등)는 앱 안의 브라우저 창에서 로그인을 요청하고, 로그인한 뒤 보이는 화면과 내용을 가져옵니다." + (d ? "" : " 화면 캡처는 입력창에 붙여 넣거나 끌어다 놓아도 됩니다.") })) });
+    h("div", { class: "pnote", text: "공개 페이지는 내용을 저장해 넘깁니다. 로그인이 필요한 페이지(사내 위키·이슈 관리·개발·스테이징 관리자 화면 등)는 앱 안의 브라우저 창에서 로그인을 요청하고, 로그인한 뒤 보이는 화면과 내용을 가져옵니다." + (d ? "" : " 화면 캡처는 입력창에 붙여 넣거나 끌어다 놓아도 됩니다.") })) });
   setTimeout(() => link.focus(), 0);
 }
 const PLAN_EXAMPLES = [

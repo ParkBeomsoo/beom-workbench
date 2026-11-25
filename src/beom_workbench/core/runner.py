@@ -2548,7 +2548,9 @@ class Runner:
             mid_feedback = bool(not revising and not follow_up and self._new_messages() and run["round"] > 0)
             # 사용자의 새 메시지(추가 요청·도중에 보낸 고칠 점·승인 대신 보낸 수정)를 받은 라운드는 새 한 바퀴 — 진행 단계를 처음부터 앞으로만
             # (도중에 고칠 점을 받고 기준을 고치면 '구현'에서 '확인'으로 뒤로 튀어 보였다)
-            new_pass = bool(self._new_messages())
+            # 승인 카드에서 결정을 바꾼 알림(from=decision)은 새 한 바퀴가 아니다 — 승인과 함께 구현으로 넘어간다 (예전엔 이 알림 때문에
+            # 구현을 누른 뒤 단계 표시가 '기준·계획'으로 돌아갔다)
+            new_pass = any(not m.get("delivered") and m.get("from") not in ("edit", "decision") for m in run.get("messages") or [])
             nxt = run["round"] + 1
             # 라운드 번호와 '새 한 바퀴' 표시를 한 번에 — 따로 쓰면 그 사이 화면이 새 라운드를 이전 결과의 '검증' 단계로 보여 준다
             run = self._set(round=nxt, **({"revision_round": nxt, "revision_touched": False,

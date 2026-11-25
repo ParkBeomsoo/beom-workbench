@@ -86,7 +86,8 @@ def approve_plan(settings: Settings, run_id: str, shown_sig: str, changes: dict 
             r.setdefault("messages", []).append({
                 "text": "계획을 승인하면서 사전 설계 결정을 바꿨다 — 요구사항·합격 케이스·계획·구현을 이 결정에 맞춘다. "
                         "이번 라운드에 고치는 요구사항·케이스는 사용자 결정의 결과라 툴킷이 자동 승인한다 (다시 확인을 기다리지 않는다):\n"
-                        + "\n".join(f"- {c}" for c in changed) + ("\n" + "\n".join(tied) if tied else ""), "at": _now(), "delivered": False})
+                        + "\n".join(f"- {c}" for c in changed) + ("\n" + "\n".join(tied) if tied else ""), "at": _now(), "delivered": False,
+                "from": "decision"})  # 사용자가 카드에서 고른 결과 — 새 요청이 아니라 승인의 일부 (진행 단계를 처음으로 되돌리지 않는다)
             if new_look:
                 # 디자인 범위를 바꾸기로 했다 — 다음 계획에 붙일 시안은 사용자가 보고 골라야 한다 (자동 승인하면 시안을 고를 기회가 없다)
                 r["messages"][-1]["text"] += ("\n- 디자인을 바꾸기로 했으니 시안 2개 이상을 만들어 '디자인 방향' 결정의 looks 로 붙인 계획을 다시 "
